@@ -229,10 +229,10 @@ drc["pwell_to_pwell"] = 0.470
 drc.add_layer("nwell", width=0.470, spacing=0.470)
 drc.add_enclosure("nwell", layer="active", enclosure=0.150)
 
-# The PDK reports a 0.0388 um^2 poly minimum area.  OpenRAM's transistor
-# generator intentionally does not grow gate polygons to satisfy area checks
-# (doing so changes the LVS device); keep the generated geometry usable and
-# leave this check to the PDK KLayout deck.
+# The PDK reports 0.0388 um^2 POLY and 0.0555 um^2 ACT minimum areas.
+# OpenRAM's transistor generator intentionally does not grow gate/diffusion
+# polygons to satisfy area checks (doing so changes the LVS device); keep the
+# generated geometry usable and leave these checks to the PDK KLayout deck.
 drc.add_layer("poly", width=0.060, spacing=0.120, area=0.0)
 drc["poly_extend_active"] = 0.060
 drc["active_enclose_gate"] = 0.140
@@ -241,9 +241,11 @@ drc["poly_to_field_poly"] = 0.120
 drc["minarea_poly"] = 0.0
 drc.add_layer("active", width=0.081, spacing=0.110, area=0.0)
 
-# The released PDK has separate NP/PP masks.  OpenRAM's generic implant rule
-# is set to the conservative NP minimum so both generated implant masks pass
-# the common geometry checks.
+# The released PDK has separate NP/PP masks with different minimum widths
+# and spacings (NP 0.400/0.361 um, PP 0.181/0.400 um).  OpenRAM exposes
+# one generic implant rule and does not apply minwidth_implant to each
+# transistor implant polygon; keep the generic value as a conservative
+# router constraint, but leave NP/PP signoff to the PDK KLayout deck.
 drc.add_layer("implant", width=0.400, spacing=0.400)
 drc.add_enclosure("implant", layer="active", enclosure=0.0)
 drc.add_enclosure("implant", layer="contact", enclosure=0.0)
@@ -271,6 +273,9 @@ metal_rules = {
 for metal, (width, spacing, area) in metal_rules.items():
     drc.add_layer(metal, width=width, spacing=spacing, area=area)
 
+# LEF VIARULEs require 0.11 um ordinary via spacing and 0.13 um spacing
+# between cuts in an array.  OpenRAM has only one via-to-via rule, so use
+# the conservative array value to avoid under-constraining generated arrays.
 via_rules = {
     "via1": ("m1", "m2"),
     "via2": ("m2", "m3"),
@@ -278,7 +283,7 @@ via_rules = {
     "via4": ("m4", "m5"),
 }
 for via, (lower, upper) in via_rules.items():
-    drc.add_layer(via, width=0.090, spacing=0.110, area=0.0081)
+    drc.add_layer(via, width=0.090, spacing=0.130, area=0.0081)
     drc.add_enclosure(lower, layer=via, enclosure=0.040)
     drc.add_enclosure(upper, layer=via, enclosure=0.040)
 
