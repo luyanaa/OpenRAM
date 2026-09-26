@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>ICsprout55 OpenRAM DRC adapter</description>
+ <version/>
+ <category>drc</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>true</show-in-menu>
+ <group-name>drc_scripts</group-name>
+ <menu-path>tools_menu.drc.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>drc-dsl-xml</dsl-interpreter-name>
+<text><![CDATA[
+# ICsprout55 OpenRAM adapter for the provisional PDK KLayout DRC deck.
+require 'tmpdir'
+pdk_root = ENV['ICSPROUT55_PDK']
+raise 'ICSPROUT55_PDK is not set' if pdk_root.nil? || pdk_root.empty?
+$top = $topcell if defined?($topcell) && $topcell
+$report = $output if defined?($output) && $output
+
+# OpenRAM-generated SRAMs are hierarchical: the released standard-cell and
+# parameterized-cell interiors are not the interconnect under investigation.
+# Keep the default run focused on direct top-level macro wiring, while
+# preserving a full-layout escape hatch with -rd top_interconnect=false.
+top_interconnect = !defined?($top_interconnect) ||
+                   $top_interconnect.nil? ||
+                   $top_interconnect.to_s.downcase == 'true'
+if top_interconnect
+  top_name = if defined?($topcell) && $topcell
+               $topcell
+             elsif defined?($top) && $top
+               $top
+             end
+  raise 'top_interconnect requires -rd topcell=<top> or -rd top=<top>' if top_name.nil? || top_name.empty?
+
+  source_layout = RBA::Layout.new
+  source_layout.read($input)
+  source_cell = source_layout.cell(top_name)
+  raise "top cell #{top_name} was not found in #{$input}" if source_cell.nil?
+
+  top_layout = RBA::Layout.new
+  top_layout.dbu = source_layout.dbu
+  top_cell = top_layout.create_cell(top_name)
+  source_layout.layer_indices.each do |layer_index|
+    layer_info = source_layout.get_info(layer_index)
+    target_layer = top_layout.layer(layer_info)
+    source_cell.shapes(layer_index).each do |shape|
+      top_cell.shapes(target_layer).insert(shape)
+    end
+  end
+
+  top_input = File.join(Dir.tmpdir, "ics55_top_interconnect_#{Process.pid}.gds")
+  top_layout.write(top_input)
+  $input = top_input
+  $top = top_name
+  $no_feol = true
+  $no_density = true
+  $no_antenna = true
+  $no_mom = true
+  at_exit { File.delete(top_input) if File.exist?(top_input) }
+end
+
+deck_path = File.join(pdk_root, 'libs.tech', 'drc', 'ics55_drc.drc')
+deck = File.read(deck_path)
+deck = deck.sub(
+  'SCRIPT_DIR = File.expand_path(File.dirname(__FILE__))',
+  "SCRIPT_DIR = #{File.join(pdk_root, 'libs.tech', 'drc').inspect}",
+)
+eval(deck, binding, deck_path)
+]]></text>
+</klayout-macro>

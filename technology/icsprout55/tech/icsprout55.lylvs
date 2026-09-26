@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>ICsprout55 OpenRAM LVS adapter</description>
+ <version/>
+ <category>lvs</category>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <shortcut/>
+ <show-in-menu>true</show-in-menu>
+ <group-name>lvs_scripts</group-name>
+ <menu-path>tools_menu.lvs.end</menu-path>
+ <interpreter>dsl</interpreter>
+ <dsl-interpreter-name>lvs-dsl-xml</dsl-interpreter-name>
+ <text><![CDATA[
+# ICsprout55 OpenRAM adapter for the provisional PDK KLayout LVS deck.
+pdk_root = ENV['ICSPROUT55_PDK']
+raise 'ICSPROUT55_PDK is not set' if pdk_root.nil? || pdk_root.empty?
+
+deck_path = File.join(pdk_root, 'libs.tech', 'lvs', 'ics55.lvs')
+deck = File.read(deck_path)
+deck = deck.sub(
+  'SCRIPT_DIR = File.expand_path(File.dirname(__FILE__))',
+  "SCRIPT_DIR = #{File.join(pdk_root, 'libs.tech', 'lvs').inspect}",
+)
+eval(deck, binding, deck_path)
+]]></text>
+</klayout-macro>

@@ -99,43 +99,52 @@ class sram():
     def save(self):
         """ Save all the output files while reporting time to do it as well. """
 
-        # Import this at the last minute so that the proper tech file
-        # is loaded and the right tools are selected
+        # Import this at the last minute so that the proper tech file is loaded
+        # and the right tools are selected.
+        from openram import tech
         from openram import verify
         from openram.characterizer import functional
         from openram.characterizer import delay
+        analytical_only = tech.spice.get("analytical_only", False)
 
-        # Save the spice file
+        # Save the spice file.
         start_time = datetime.datetime.now()
         spname = OPTS.output_path + self.s.name + ".sp"
         debug.print_raw("SP: Writing to {0}".format(spname))
         self.sp_write(spname)
 
-        # Save a functional simulation file with default period
-        functional(self.s,
-                   spname,
-                   cycles=200,
-                   output_path=OPTS.output_path)
+        # Functional and timing characterization require fitted analog device
+        # cards.  A technology may explicitly opt out while still producing
+        # structural SPICE, GDS, LEF, and Verilog outputs.
+        if not analytical_only:
+            functional(self.s,
+                       spname,
+                       cycles=200,
+                       output_path=OPTS.output_path)
         print_time("Spice writing", datetime.datetime.now(), start_time)
 
-        # Save stimulus and measurement file
-        start_time = datetime.datetime.now()
-        debug.print_raw("DELAY: Writing stimulus...")
-        d = delay(self.s, spname, ("TT", 5, 25), output_path=OPTS.output_path)
-        if (self.s.num_spare_rows == 0):
-            probe_address = "1" * self.s.addr_size
-        else:
-            probe_address = "0" + "1" * (self.s.addr_size - 1)
-        probe_data = self.s.word_size - 1
-        d.analysis_init(probe_address, probe_data)
-        d.targ_read_ports.extend(self.s.read_ports)
-        d.targ_write_ports = [self.s.write_ports[0]]
-        d.write_delay_stimulus()
-        print_time("DELAY", datetime.datetime.now(), start_time)
+        if not analytical_only:
+            # Save stimulus and measurement file with the default period.
+            start_time = datetime.datetime.now()
+            debug.print_raw("DELAY: Writing stimulus...")
+            d = delay(self.s, spname, ("TT", 5, 25), output_path=OPTS.output_path)
+            if (self.s.num_spare_rows == 0):
+                probe_address = "1" * self.s.addr_size
+            else:
+                probe_address = "0" + "1" * (self.s.addr_size - 1)
+            probe_data = self.s.word_size - 1
+            d.analysis_init(probe_address, probe_data)
+            d.targ_read_ports.extend(self.s.read_ports)
+            d.targ_write_ports = [self.s.write_ports[0]]
+            d.write_delay_stimulus()
+            print_time("DELAY", datetime.datetime.now(), start_time)
 
-        # Save trimmed spice file
+        # Save a trimmed structural spice file.
         temp_trim_sp = "{0}trimmed.sp".format(OPTS.output_path)
         self.sp_write(temp_trim_sp, lvs=False, trim=True)
+
+        if analytical_only:
+            debug.print_raw("Characterization skipped: technology has no fitted analog SPICE cards.")
 
         if not OPTS.netlist_only:
             # Write the layout
@@ -171,25 +180,13 @@ class sram():
                                     output_path=OPTS.output_path)
         print_time("LVS writing", datetime.datetime.now(), start_time)
 
-        # Save the extracted spice file
-        if OPTS.use_pex:
+        if not analytical_only:
+            # Characterize the design only when an analog device model exists.
             start_time = datetime.datetime.now()
-            # Output the extracted design if requested
-            pexname = OPTS.output_path + self.s.name + ".pex.sp"
-            spname = OPTS.output_path + self.s.name + ".sp"
-            verify.run_pex(self.s.name, gdsname, spname, output=pexname)
-            sp_file = pexname
-            print_time("Extraction", datetime.datetime.now(), start_time)
-        else:
-            # Use generated spice file for characterization
-            sp_file = spname
-
-        # Characterize the design
-        start_time = datetime.datetime.now()
-        from openram.characterizer import lib
-        debug.print_raw("LIB: Characterizing... ")
-        lib(out_dir=OPTS.output_path, sram=self.s, sp_file=sp_file)
-        print_time("Characterization", datetime.datetime.now(), start_time)
+            from openram.characterizer import lib
+            debug.print_raw("LIB: Characterizing... ")
+            lib(out_dir=OPTS.output_path, sram=self.s, sp_file=sp_file)
+            print_time("Characterization", datetime.datetime.now(), start_time)
 
         # Write the config file
         start_time = datetime.datetime.now()
@@ -200,16 +197,16 @@ class sram():
             pass
         debug.print_raw("Config: Writing to {0}".format(OPTS.output_path + OPTS.output_name + '.py'))
         print_time("Config", datetime.datetime.now(), start_time)
-
-        # Write the datasheet
-        start_time = datetime.datetime.now()
-        from openram.datasheet import datasheet_gen
-        dname = OPTS.output_path + self.s.name + ".html"
-        debug.print_raw("Datasheet: Writing to {0}".format(dname))
-        datasheet_gen.datasheet_write(dname)
-        print_time("Datasheet", datetime.datetime.now(), start_time)
-
-        # Write a verilog model
+        if not analytical_only:
+            # Write the datasheet from characterization results.
+            start_time = datetime.datetime.now()
+            from openram.datasheet import datasheet_gen
+            dname = OPTS.output_path + self.s.name + ".html"
+            debug.print_raw("Datasheet: Writing to {0}".format(dname))
+            datasheet_gen.datasheet_write(dname)
+            print_time("Datasheet", datetime.datetime.now(), start_time)
+        else:
+            debug.print_raw("Datasheet skipped: technology has no characterization data.")
         start_time = datetime.datetime.now()
         vname = OPTS.output_path + self.s.name + '.v'
         debug.print_raw("Verilog: Writing to {0}".format(vname))
