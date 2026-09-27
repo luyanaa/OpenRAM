@@ -4,6 +4,7 @@ word_size = 1
 num_words = 16
 tech_name = "icsprout55"
 stdcell_library = "H7CR"
+bitcell = "pbitcell"
 
 # The ICsprout55 analog cards are not fitted.  Keep generation analytical.
 analytical_delay = True

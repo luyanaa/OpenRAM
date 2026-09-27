@@ -152,19 +152,23 @@ class dff_buf(design):
                             width=self.width,
                             height=vdd_pin.height())
 
+        def add_m2_pin(text, pin):
+            if pin.layer != "m2":
+                self.add_via_stack_center(from_layer=pin.layer,
+                                          to_layer="m2",
+                                          offset=pin.center())
+            self.add_layout_pin_rect_center(
+                text=text,
+                layer="m2",
+                offset=pin.center(),
+                width=max(pin.width(), self.m2_width),
+                height=max(pin.height(), self.m2_width))
+
         clk_pin = self.dff_inst.get_pin("clk")
-        self.add_layout_pin(text="clk",
-                            layer=clk_pin.layer,
-                            offset=clk_pin.ll(),
-                            width=clk_pin.width(),
-                            height=clk_pin.height())
+        add_m2_pin("clk", clk_pin)
 
         din_pin = self.dff_inst.get_pin("D")
-        self.add_layout_pin(text="D",
-                            layer=din_pin.layer,
-                            offset=din_pin.ll(),
-                            width=din_pin.width(),
-                            height=din_pin.height())
+        add_m2_pin("D", din_pin)
 
         dout_pin = self.inv2_inst.get_pin("Z")
         mid_pos = dout_pin.center() + vector(self.m2_nonpref_pitch, 0)

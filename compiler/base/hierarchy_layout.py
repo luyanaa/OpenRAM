@@ -975,7 +975,7 @@ class layout():
             if len(v) < 2:
                 debug.warning("Pins don't align well so copying pins instead of connecting with pin.")
                 for inst,pin in v:
-                    self.add_layout_pin(pin.name,
+                    self.add_layout_pin(pin_name,
                                         pin.layer,
                                         pin.ll(),
                                         pin.width(),
@@ -1437,9 +1437,13 @@ class layout():
             i.gds_write_file(gds_layout)
         for i in self.objs:
             i.gds_write_file(gds_layout)
-        for pin_name in self.pin_map.keys():
-            for pin in self.pin_map[pin_name]:
-                pin.gds_write_file(gds_layout)
+        # Library cells already carry their foundry pin labels in the source
+        # GDS.  Re-emitting OpenRAM's logical aliases here duplicates labels
+        # on the LVS purpose and can create false top-level nets.
+        if not self.is_library_cell:
+            for pin_name in self.pin_map.keys():
+                for pin in self.pin_map[pin_name]:
+                    pin.gds_write_file(gds_layout)
 
         # If it's not a premade cell
         # and we didn't add our own boundary,

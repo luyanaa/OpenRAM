@@ -788,7 +788,11 @@ class VlsiLayout:
                 pass
             for boundary in shapes:
                 if self.labelInRectangle(user_coordinate, boundary):
-                    pin_shapes.append((lpp, boundary))
+                    # Purpose selects which text labels are consumed; routing
+                    # pins use the physical drawing layer independent of that
+                    # text purpose.
+                    pin_lpp = (lpp[0], None)
+                    pin_shapes.append((pin_lpp, boundary))
 
             try:
                 self.pins[label_text]

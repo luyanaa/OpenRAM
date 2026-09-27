@@ -51,7 +51,7 @@ class ptristate_inv(pgate):
         self.route_supply_rails()
         self.place_ptx()
         self.add_well_contacts()
-        self.extend_wells(self.well_pos)
+        self.extend_wells()
         self.connect_rails()
         self.route_inputs()
         self.route_outputs()
@@ -79,17 +79,34 @@ class ptristate_inv(pgate):
         # Height is an input parameter, so it is not recomputed.
 
     def add_ptx(self):
-        """ Create the PMOS and NMOS transistors. """
+        # The two series devices share an internal drain node.  Leave the
+        # first device's drain as active-only and keep the contact on the
+        # output-side device; this removes redundant adjacent M1 contacts
+        # while preserving the same extracted transistor topology.
         self.nmos = factory.create(module_type="ptx",
                                    width=self.nmos_width,
                                    mults=1,
-                                   tx_type="nmos")
-
+                                   tx_type="nmos",
+                                   add_source_contact="m1",
+                                   add_drain_contact=False)
+        self.nmos_output = factory.create(module_type="ptx",
+                                          width=self.nmos_width,
+                                          mults=1,
+                                          tx_type="nmos",
+                                          add_source_contact="m1",
+                                          add_drain_contact="m1")
         self.pmos = factory.create(module_type="ptx",
                                    width=self.pmos_width,
                                    mults=1,
-                                   tx_type="pmos")
-
+                                   tx_type="pmos",
+                                   add_source_contact="m1",
+                                   add_drain_contact=False)
+        self.pmos_output = factory.create(module_type="ptx",
+                                          width=self.pmos_width,
+                                          mults=1,
+                                          tx_type="pmos",
+                                          add_source_contact="m1",
+                                          add_drain_contact="m1")
     def route_supply_rails(self):
         """ Add vdd/gnd rails to the top and bottom. """
         self.add_layout_pin_rect_center(text="gnd",
@@ -117,10 +134,11 @@ class ptristate_inv(pgate):
 
 
         # These are the tristate PMOS/NMOS
-        self.pmos2_inst = self.add_inst(name="ptri_pmos2", mod=self.pmos)
+        self.pmos2_inst = self.add_inst(name="ptri_pmos2",
+                                        mod=self.pmos_output)
         self.connect_inst(["out", "en_bar", "n1", "vdd"])
         self.nmos2_inst = self.add_inst(name="ptri_nmos2",
-                                        mod=self.nmos)
+                                        mod=self.nmos_output)
         self.connect_inst(["out", "en", "n2", "gnd"])
 
     def place_ptx(self):
@@ -151,6 +169,24 @@ class ptristate_inv(pgate):
 
         # This will help with the wells
         self.well_pos = vector(0, self.nmos1_inst.uy())
+
+    def route_single_gate(self, inst, name, position="left"):
+        """Expose one transistor gate on the routing layer."""
+        gate_pin = inst.get_pin("G")
+        gate_center = gate_pin.center()
+        via = self.add_via_stack_center(
+            offset=gate_center,
+            from_layer="poly",
+            to_layer=self.route_layer,
+            directions=("V", "V"),
+        )
+        self.add_layout_pin_rect_center(
+            text=name,
+            layer=self.route_layer,
+            offset=gate_center,
+            width=via.mod.second_layer_width,
+            height=via.mod.second_layer_height,
+        )
 
     def route_inputs(self):
         """ Route the gates """

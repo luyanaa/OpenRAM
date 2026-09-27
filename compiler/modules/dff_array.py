@@ -66,13 +66,17 @@ class dff_array(design):
         for row in range(self.rows):
             for col in range(self.columns):
                 name = "dff_r{0}_c{1}".format(row, col)
-                self.dff_insts[row, col]=self.add_inst(name=name,
-                                                       mod=self.dff)
+                self.dff_insts[row, col] = self.add_inst(name=name,
+                                                         mod=self.dff)
                 instance_ports = [self.get_din_name(row, col),
                                   self.get_dout_name(row, col)]
                 for port in self.dff.pins:
                     if port != 'D' and port != 'Q':
-                        instance_ports.append(port)
+                        # Hard DFFs keep foundry pin names (CK/VDD/VSS)
+                        # internally while the surrounding OpenRAM hierarchy
+                        # uses clk/vdd/gnd.
+                        instance_ports.append(
+                            self.dff.get_original_pin_name(port))
                 self.connect_inst(instance_ports)
 
     def place_dff_array(self):
@@ -127,40 +131,49 @@ class dff_array(design):
                 self.add_power_pin("gnd", gnd_pin.rc(), start_layer=gnd_pin.layer)
 
     def add_layout_pins(self):
+        def add_m2_pin(text, pin):
+            # Released ICsprout55 DFF macros expose M1 pins.  Promote them
+            # through a local via so the array keeps OpenRAM's M2 data-pin
+            # contract used by the surrounding SRAM routing.
+            if pin.layer != "m2":
+                self.add_via_stack_center(from_layer=pin.layer,
+                                          to_layer="m2",
+                                          offset=pin.center())
+            self.add_layout_pin_rect_center(
+                text=text,
+                layer="m2",
+                offset=pin.center(),
+                width=max(pin.width(), self.m2_width),
+                height=max(pin.height(), self.m2_width))
+
         for row in range(self.rows):
             for col in range(self.columns):
                 din_pin = self.dff_insts[row, col].get_pin("D")
-                debug.check(din_pin.layer == "m2", "DFF D pin not on metal2")
-                self.add_layout_pin(text=self.get_din_name(row, col),
-                                    layer=din_pin.layer,
-                                    offset=din_pin.ll(),
-                                    width=din_pin.width(),
-                                    height=din_pin.height())
+                add_m2_pin(self.get_din_name(row, col), din_pin)
 
                 dout_pin = self.dff_insts[row, col].get_pin("Q")
-                debug.check(dout_pin.layer == "m2", "DFF Q pin not on metal2")
-                self.add_layout_pin(text=self.get_dout_name(row, col),
-                                    layer=dout_pin.layer,
-                                    offset=dout_pin.ll(),
-                                    width=dout_pin.width(),
-                                    height=dout_pin.height())
+                add_m2_pin(self.get_dout_name(row, col), dout_pin)
 
-        # Create vertical spines to a single horizontal rail
-        clk_pin = self.dff_insts[0, 0].get_pin("clk")
-        clk_ypos = 2 * self.m3_pitch + self.m3_width
-        debug.check(clk_pin.layer == "m2", "DFF clk pin not on metal2")
+        # Keep the clock rail off the parent data-bus track.  The SRAM
+        # top-level data bus is also M3; using the second M3 pitch here
+        # places the rail directly on that bus after DFF placement.
+        clk_ypos = 3 * self.m3_pitch + self.m3_width
         self.add_layout_pin_segment_center(text="clk",
                                            layer="m3",
                                            start=vector(0, clk_ypos),
                                            end=vector(self.width, clk_ypos))
         for col in range(self.columns):
             clk_pin = self.dff_insts[0, col].get_pin("clk")
-            # Make a vertical strip for each column
+            if clk_pin.layer != "m2":
+                self.add_via_stack_center(from_layer=clk_pin.layer,
+                                          to_layer="m2",
+                                          offset=clk_pin.center())
+            # Make a vertical strip for each column.
             self.add_rect(layer="m2",
-                          offset=clk_pin.ll().scale(1, 0),
+                          offset=vector(clk_pin.cx() - 0.5 * self.m2_width, 0),
                           width=self.m2_width,
                           height=self.height)
-            # Drop a via to the M3 pin
-            self.add_via_stack_center(from_layer=clk_pin.layer,
+            # Drop a via to the M3 pin.
+            self.add_via_stack_center(from_layer="m2",
                                       to_layer="m3",
                                       offset=vector(clk_pin.cx(), clk_ypos))

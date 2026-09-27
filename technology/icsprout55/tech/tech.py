@@ -22,16 +22,14 @@ from openram import drc as d
 
 tech_modules = d.module_type()
 
-# The PDK does not release SRAM macros.  Use OpenRAM's parameterized cells so
-# generation does not silently depend on a nonexistent hard-cell library.
-for module_type in ("bitcell", "dummy_bitcell", "replica_bitcell"):
-    for num_ports in (1, 2):
-        tech_modules["{}_{}port".format(module_type, num_ports)] = {
-            "bitcell": "pbitcell",
-            "dummy_bitcell": "dummy_pbitcell",
-            "replica_bitcell": "replica_pbitcell",
-        }[module_type]
-tech_modules["dff"] = "ics55_dff"
+# OpenRAM's setup_bitcell() handles the parameterized bitcell path when the
+# configuration sets OPTS.bitcell = "pbitcell".  Do not alias the generated
+# bitcell_1port/2port names here: that leaves OPTS.bitcell reporting a
+# different identity from the class factory actually instantiates.
+#
+# Keep the bitcell override table empty for now.  Add explicit entries only
+# when ICsprout55 supplies a real port-specific cell (for example,
+# ics55_bitcell_1rw_1r).
 tech_modules["sense_amp"] = "ics55_sense_amp"
 tech_modules["write_driver"] = "ics55_write_driver"
 
@@ -123,6 +121,11 @@ layer = {
     "mem": (351, 12),
 }
 
+# The foundry cell GDS carries duplicate M1 pin labels on purposes 2 and 6.
+# OpenRAM should consume purpose-2 pin shapes; the LVS deck independently
+# consumes purpose-6 text labels.
+special_purposes = {81: 2}
+
 use_purpose = {}
 
 # Layer names consumed by external OpenRAM/P&R integrations.
@@ -200,6 +203,22 @@ if stdcell_library not in _stdcell_variants:
         )
     )
 stdcell_variant = _stdcell_variants[stdcell_library]
+# The released H7C standard-cell libraries contain DFF macros that are
+# DRC/LVS-clean in the ICsprout55 PDK.  Use the matching VT variant instead
+# of generating the flop from OpenRAM transistors.  OpenRAM's dff_array
+# supplies ports in D/Q/clock/supply order, so the local SPICE wrapper uses
+# that order while the GDS labels retain the foundry CK/D/Q names.
+cell_properties.names["dff"] = "DFFQX1{}".format(stdcell_variant["suffix"])
+cell_properties.dff.port_map = {
+    "D": "D",
+    "Q": "Q",
+    "clk": "CK",
+    "vdd": "VDD",
+    "gnd": "VSS",
+}
+cell_properties.dff.port_order = ["D", "Q", "clk", "vdd", "gnd"]
+
+ 
 if _pdk_root:
     stdcell_library_root = os.path.join(
         _pdk_root, "libs.ref", "ics55_LLSC_{}".format(stdcell_library)
@@ -247,7 +266,7 @@ drc.add_layer("active", width=0.081, spacing=0.110, area=0.0)
 # transistor implant polygon; keep the generic value as a conservative
 # router constraint, but leave NP/PP signoff to the PDK KLayout deck.
 drc.add_layer("implant", width=0.400, spacing=0.400)
-drc.add_enclosure("implant", layer="active", enclosure=0.0)
+drc.add_enclosure("implant", layer="active", enclosure=0.200)
 drc.add_enclosure("implant", layer="contact", enclosure=0.0)
 drc["implant_to_channel"] = 0.0
 drc["implant_to_contact"] = 0.0
@@ -257,7 +276,11 @@ drc.add_layer("contact", width=0.090, spacing=0.110, area=0.0081)
 drc.add_enclosure("active", layer="contact", enclosure=0.010)
 drc.add_enclosure("poly", layer="contact", enclosure=0.010)
 drc.add_enclosure("m1", layer="contact", enclosure=0.040)
-drc["active_contact_to_gate"] = 0.062
+# Leave additional lateral clearance between active contacts and the gate.
+# The ICsprout55 PDK requires M2 center-to-center clearance that is larger
+# than the minimum OpenRAM transistor template provides; this margin keeps
+# M1/M2 escape vias separated without changing channel L/W.
+drc["active_contact_to_gate"] = 0.184
 drc["poly_contact_to_gate"] = 0.051
 drc["contact_to_gate"] = 0.062
 drc["contact_to_poly"] = 0.051
