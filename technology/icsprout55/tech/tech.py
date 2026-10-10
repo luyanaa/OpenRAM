@@ -168,12 +168,15 @@ layer = {
 # stay on the drawing purpose.  Never use purpose 2: it is metal dummy.
 label_purpose = 6
 
+# Names as in the ICsprout55 technology LEF (N551P6M.lef) and the foundry
+# memory-compiler LEFs, so the macro LEF reads into Innovus/OpenROAD as is.
 layer_names = {
-    "active": "ACT", "nwell": "NW", "nimplant": "NP", "pimplant": "PP",
+    "active": "ACT", "nwell": "NW1", "nimplant": "NP", "pimplant": "PP",
     "poly": "POLY", "contact": "CT", "active_contact": "CT",
-    "poly_contact": "CT", "m1": "M1", "via1": "V1", "m2": "M2", "via2": "V2",
-    "m3": "M3", "via3": "V3", "m4": "M4", "via4": "V4", "m5": "M5",
-    "text": "M1TXT", "boundary": "CELLBOUND",
+    "poly_contact": "CT", "m1": "MET1", "via1": "VIA1", "m2": "MET2",
+    "via2": "VIA2", "m3": "MET3", "via3": "VIA3", "m4": "MET4",
+    "via4": "VIA4", "m5": "MET5",
+    "text": "MET1", "boundary": "OVERLAP",
 }
 
 

@@ -108,3 +108,24 @@ Both decks gave identical results on every layout tried so far.
   dff_buf, dff_buf_array (SC9T); sense_amp, write_driver and their arrays
   (1RW and 1W+1R pitches).  7T (H7CR): LVS CORRECT; DRC only the vendor
   cell's own 104 results.
+
+### 2026-10-10 (evening) — first clean macros
+* **16x4 1RW (SC9T): DRC 0 and LVS CORRECT on both decks.**
+  **64x8 1RW (SC9T): DRC 0 and LVS CORRECT on both decks.**
+* Harness fix: an LVS run is CORRECT only if the *overall* comparison banner
+  is; the tapeout deck prints per-HCELL banners (it has HCELL entries for the
+  9T library), which the first parser mistook for an overall result.  All
+  earlier leaf verdicts were re-checked with the fixed parser.
+* Issues found and fixed on the way (all would have been silicon defects):
+  - din bits shorted through dff_array's M3 clock rail, which crossed the D
+    pins where the top level lands its via stacks -> optional `clk_rail_y`
+    on the DFF module, used by dff_array/dff_buf_array/dff_inv_array;
+  - Q pads of mirrored DFF rows overlapping across the shared rail;
+  - dff_buf Q and Qb at the same height, joined by the parent's M3 route;
+  - SA dout landing pad next to the array M3 supply rail (dout now on M3).
+* Control logic builds its gates at the DFF height; pnand2/pnand3 need
+  >= 2.4 um under these rules, so the DFF slot is 2.7 um (1.5 x 9T row).
+* Generic OpenRAM fixes: factory.get_mods with technology-overridden types,
+  pbitcell analytical model import, sram.save tech `finalize_gds` hook, .lib
+  and datasheet kept when there are no device models.
+* LEF layer names follow the ICsprout55 tech LEF (MET1..MET5, VIA1..VIA4).

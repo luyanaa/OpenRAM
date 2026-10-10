@@ -182,139 +182,110 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     nwl = layout.layer(NW[0], NW[1])
     top_cell.shapes(nwl).insert(added)
 
-    # Metal enclosed-area (MET1_A_2/METn_A_2 >= 0.18 um2) and slit spacing:
-    # fill small holes of a metal polygon when no other shape of that layer
-    # sits inside the hole (the fill is then on the same net).
-    n_holes = 0
-    for (lp, _a, _s) in METAL_AREA:
-        li = layout.find_layer(lp[0], lp[1])
-        if li is None:
-            continue
-        metal = kdb.Region(top_cell.begin_shapes_rec(li))
-        metal.merge()
-        holes = metal.holes()
-        fill = kdb.Region()
-        for h in holes.each():
-            if h.area() >= um2(HOLE_MAX):
-                continue
-            hr = kdb.Region(h)
-            if not (metal & hr).is_empty():
-                continue
-            fill.insert(h)
-            n_holes += 1
-        top_cell.shapes(li).insert(fill)
+    # ---- metal clean-up (spatially indexed: each check only looks at the
+    # shapes in a small window around the polygon being fixed)
+    def local(li, box, extra=None):
+        r = kdb.Region(top_cell.begin_shapes_rec_overlapping(li, box))
+        if extra is not None:
+            r += extra.interacting(kdb.Region(box))
+        r.merge()
+        return r
 
-    # Same-net notches (MET1_S_1/METn_S_1 inside one polygon, e.g. a rail-end
-    # via pad next to a source strap): close each polygon by half the spacing
-    # and keep the fill where it stays one spacing away from other polygons.
-    n_notch = 0
-    for (lp, _a, space) in METAL_AREA:
-        li = layout.find_layer(lp[0], lp[1])
-        if li is None:
-            continue
-        metal = kdb.Region(top_cell.begin_shapes_rec(li))
-        metal.merge()
-        h = um(space / 2) + 1
-        fill = kdb.Region()
-        for poly in metal.each():
-            pr = kdb.Region(poly)
-            closed = pr.sized(h).sized(-h)
-            add = closed - pr
-            if add.is_empty():
-                continue
-            others = metal - pr
-            for piece in add.each():
-                if kdb.Region(piece).sized(um(space)).interacting(others).is_empty():
-                    fill.insert(piece)
-                    n_notch += 1
-        top_cell.shapes(li).insert(fill)
-
-    # Metal minimum area (MET1_A_1, METn_A_1): OpenRAM leaves small landing
-    # pads in via stacks and on pins.  Grow each under-area polygon in a
-    # direction with room, keeping the layer spacing to all other metal.
-    n_area_fixed = 0
-    n_area_left = 0
+    n_holes = n_notch = n_area_fixed = n_area_left = 0
     for (lp, min_area, space) in METAL_AREA:
         li = layout.find_layer(lp[0], lp[1])
         if li is None:
             continue
+        sp = um(space)
+        metal = kdb.Region(top_cell.begin_shapes_rec(li))
+        metal.merge()
+
+        # Enclosed area (MET*_A_2 >= 0.18 um2) and slits: fill small holes
+        # that contain no other metal (the fill is then on the same net).
+        holes = metal.holes().with_area(None, um2(HOLE_MAX), False)
+        fill = holes.not_overlapping(metal)
+        n_holes += fill.count()
+        top_cell.shapes(li).insert(fill)
+
+        # Same-net notches (MET*_S_1 inside one polygon): close by half the
+        # spacing; keep a piece only if it stays one spacing away from every
+        # polygon but its own.
+        h = sp // 2 + 1
+        add = (metal + fill).sized(h).sized(-h) - (metal + fill)
+        notch = kdb.Region()
+        for piece in add.each():
+            pr = kdb.Region(piece)
+            loc = local(li, piece.bbox().enlarged(2 * sp, 2 * sp), notch)
+            if loc.interacting(pr.sized(sp)).count() == 1:
+                notch.insert(piece)
+        n_notch += notch.count()
+        top_cell.shapes(li).insert(notch)
+
+        # Minimum area (MET1_A_1/METn_A_1): grow under-area polygons where
+        # there is room, else bridge to a nearby polygon of the same net.
         metal = kdb.Region(top_cell.begin_shapes_rec(li))
         metal.merge()
         small = metal.with_area(None, um2(min_area), False)
         added_m = kdb.Region()
+        vli = lli = None
+        if lp in LOWER:
+            vli = layout.find_layer(*LOWER[lp][0])
+            lli = layout.find_layer(*LOWER[lp][1])
         for poly in small.each():
             box = poly.bbox()
-            area = poly.area()
-            need = um2(min_area) - area
-            others = (metal - kdb.Region(poly)) + added_m
+            need = um2(min_area) - poly.area()
+            win = box.enlarged(int(4 * um(0.56)), int(4 * um(0.56)))
+            loc = local(li, win, added_m)
             ok = False
-            # prefer growing along the longer side
             dirs = ["x", "y"] if box.width() >= box.height() else ["y", "x"]
             for d in dirs:
                 side = box.height() if d == "x" else box.width()
                 ext = int(-(-need // side)) + 1
                 ext = ((ext + GRID - 1) // GRID) * GRID
-                for sign in ("both", "+", "-"):
-                    if d == "x":
-                        if sign == "both":
-                            h = ((ext + 1) // 2 + GRID - 1) // GRID * GRID
-                            r = kdb.Box(box.left - h, box.bottom, box.right + h, box.top)
-                        elif sign == "+":
-                            r = kdb.Box(box.left, box.bottom, box.right + ext, box.top)
-                        else:
-                            r = kdb.Box(box.left - ext, box.bottom, box.right, box.top)
-                    else:
-                        if sign == "both":
-                            h = ((ext + 1) // 2 + GRID - 1) // GRID * GRID
-                            r = kdb.Box(box.left, box.bottom - h, box.right, box.top + h)
-                        elif sign == "+":
-                            r = kdb.Box(box.left, box.bottom, box.right, box.top + ext)
-                        else:
-                            r = kdb.Box(box.left, box.bottom - ext, box.right, box.top)
-                    cand = kdb.Region(r)
-                    if not cand.sized(um(space)).interacting(others).is_empty():
-                        continue
-                    added_m.insert(r)
-                    ok = True
-                    break
+                half = ((ext + 1) // 2 + GRID - 1) // GRID * GRID
+                cands = ([kdb.Box(box.left - half, box.bottom, box.right + half, box.top),
+                          kdb.Box(box.left, box.bottom, box.right + ext, box.top),
+                          kdb.Box(box.left - ext, box.bottom, box.right, box.top)] if d == "x" else
+                         [kdb.Box(box.left, box.bottom - half, box.right, box.top + half),
+                          kdb.Box(box.left, box.bottom, box.right, box.top + ext),
+                          kdb.Box(box.left, box.bottom - ext, box.right, box.top)])
+                for r in cands:
+                    # only the pad itself may be within one spacing
+                    if loc.interacting(kdb.Region(r).sized(sp)).count() == 1:
+                        added_m.insert(r)
+                        ok = True
+                        break
                 if ok:
                     break
-            if not ok and lp in LOWER:
-                # Bridge to a nearby polygon of the same net (both reach one
-                # polygon of the layer below through vias).
-                via_lp, low_lp = LOWER[lp]
-                vli = layout.find_layer(*via_lp)
-                lli = layout.find_layer(*low_lp)
-                if vli is not None and lli is not None:
-                    vias = kdb.Region(top_cell.begin_shapes_rec(vli))
-                    low = kdb.Region(top_cell.begin_shapes_rec(lli))
-                    low.merge()
-                    mine = low.interacting(vias & kdb.Region(poly))
-                    near = (metal - kdb.Region(poly)).interacting(kdb.Region(poly).sized(um(space)))
-                    for q in near.each():
-                        theirs = low.interacting(vias & kdb.Region(q))
-                        if (mine & theirs).is_empty():
-                            continue
-                        bb = box + q.bbox()
-                        if box.width() > box.height():
-                            bridge = kdb.Box(min(box.left, q.bbox().left), max(box.bottom, q.bbox().bottom),
-                                             max(box.right, q.bbox().right), min(box.top, q.bbox().top))
-                        else:
-                            bridge = kdb.Box(max(box.left, q.bbox().left), min(box.bottom, q.bbox().bottom),
-                                             min(box.right, q.bbox().right), max(box.top, q.bbox().top))
-                        if bridge.width() <= 0 or bridge.height() <= 0:
-                            continue
-                        rest = (metal - kdb.Region(poly)) - kdb.Region(q)
-                        if kdb.Region(bridge).sized(um(space)).interacting(rest).is_empty():
-                            added_m.insert(bridge)
-                            ok = True
-                            break
+            if not ok and vli is not None and lli is not None:
+                vias = kdb.Region(top_cell.begin_shapes_rec_overlapping(vli, win))
+                low = local(lli, win)
+                me = kdb.Region(poly)
+                mine = low.interacting(vias & me)
+                for q in (loc - me).interacting(me.sized(sp)).each():
+                    theirs = low.interacting(vias & kdb.Region(q))
+                    if (mine & theirs).is_empty():
+                        continue
+                    qb = q.bbox()
+                    if box.width() > box.height():
+                        bridge = kdb.Box(min(box.left, qb.left), max(box.bottom, qb.bottom),
+                                         max(box.right, qb.right), min(box.top, qb.top))
+                    else:
+                        bridge = kdb.Box(max(box.left, qb.left), min(box.bottom, qb.bottom),
+                                         min(box.right, qb.right), max(box.top, qb.top))
+                    if bridge.width() <= 0 or bridge.height() <= 0:
+                        continue
+                    if loc.interacting(kdb.Region(bridge).sized(sp)).count() <= 2:
+                        added_m.insert(bridge)
+                        ok = True
+                        break
             if ok:
                 n_area_fixed += 1
             else:
                 n_area_left += 1
                 report("ics55_finalize: cannot fix min area of {} polygon at {}".format(lp, box))
         top_cell.shapes(li).insert(added_m)
+
     top_cell.shapes(layout.layer(NP[0], NP[1])).insert(np_)
     top_cell.shapes(layout.layer(PP[0], PP[1])).insert(pp)
     layout.write(out_gds)
