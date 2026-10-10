@@ -86,3 +86,25 @@ Both decks gave identical results on every layout tried so far.
   over poly end-caps inside it (NP_EN_3/PP_EN_3).
 * Leaf LVS of blocks whose supply rails are joined by the parent power grid
   (e.g. predecoders) uses `VIRTUAL CONNECT NAME vdd gnd` — leaf checks only.
+
+### 2026-10-10 (later)
+* `custom/ics55_dff.py`: one 5.2 x 1.8 um slot for 7T and 9T DFFs with its
+  own N/P taps; D/Q/clk lifted to M2 by bare via1 on the foundry pins (the
+  foundry M1 is untouched); clock as a full-height M2 strip clear of the rail
+  end supply vias.  Library DFF netlists are 7-terminal (VNW/VPW) because the
+  cells are tapless and label their wells; the slot ties them to vdd/gnd.
+* `import_stdcells.py` adds rectangular pin shapes *inside* the existing M1
+  (OpenRAM's GDS pin finder only accepts rectangles; the rails are notched).
+* `custom/ics55_gen.py` + `ics55_sense_amp.py` + `ics55_write_driver.py`:
+  generated latch sense amplifier and en-gated pull-down write driver (scn4m
+  topologies), pitch-matched to the bitcell.  Strips on a 0.23 um pin grid,
+  channel routing with lower/upper M3 track sets joined by short M4
+  connectors, M2 crossing lines.  The netlist comes from layout-less
+  `ics55_mos` devices declared by the same strip calls.
+* dff_buf: Qb pin via moved onto inv1's output strap (it shorted to the
+  second inverter's PMOS/vdd metal; only the OS deck's flat LVS flagged it —
+  the tapeout deck compares the 9T DFF as an HCELL).
+* Leaf results, both decks, DRC 0 + LVS CORRECT: ics55_dff, dff_array,
+  dff_buf, dff_buf_array (SC9T); sense_amp, write_driver and their arrays
+  (1RW and 1W+1R pitches).  7T (H7CR): LVS CORRECT; DRC only the vendor
+  cell's own 104 results.
