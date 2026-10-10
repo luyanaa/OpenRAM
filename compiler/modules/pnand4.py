@@ -223,8 +223,10 @@ class pnand4(pgate):
         self.output_yoffset = pmos_drain_bottom - 0.5 * self.route_layer_width - self.route_layer_space
 
         bottom_pin = self.nmos1_inst.get_pin("D")
+        # Either source/drain contact of the bottom NMOS may be the highest
+        bottom_uy = max(bottom_pin.uy(), self.nmos1_inst.get_pin("S").uy())
         # active contact metal to poly contact metal spacing
-        active_contact_to_poly_contact = bottom_pin.uy() + self.m1_space + 0.5 * self.poly_contact.second_layer_height
+        active_contact_to_poly_contact = bottom_uy + self.m1_space + 0.5 * self.poly_contact.second_layer_height
         # active diffusion to poly contact spacing
         # doesn't use nmos uy because that is calculated using offset + poly height
         active_top = self.nmos1_inst.by() + self.nmos1_inst.mod.active_height

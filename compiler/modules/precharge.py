@@ -199,6 +199,18 @@ class precharge(design):
         offset_height = self.upper_pmos1_inst.uy() + \
                         self.active_contact.height + \
                         self.nwell_extend_active
+        # Optional technology rules: tap active spacing to transistor
+        # active and to (field) poly, for tap implant islands.
+        tap_bottom = max(self.upper_pmos1_inst.by() + self.upper_pmos1_inst.mod.active_offset.y
+                         + self.upper_pmos1_inst.mod.active_height + getattr(self, "tap_to_active", 0),
+                         self.upper_pmos1_inst.uy() + self.poly_extend_active
+                         + getattr(self, "tap_to_poly", 0))
+        tap = factory.create(module_type="contact",
+                             layer_stack=self.active_stack,
+                             implant_type="n",
+                             well_type="n")
+        offset_height = max(offset_height,
+                            tap_bottom + 0.5 * tap.height - tap.first_layer_position.y)
         self.well_contact_pos = self.upper_pmos1_inst.get_pin("D").center().scale(1, 0) + \
                                 vector(0, offset_height)
         self.well_contact = self.add_via_center(layers=self.active_stack,

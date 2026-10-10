@@ -200,6 +200,15 @@ class pgate(design):
         if cell_props.pgate.add_implants:
             self.extend_implants()
 
+    def tap_space(self):
+        """
+        Active spacing between a well tap and a transistor.  Technologies
+        whose implant rules need more room than plain active spacing
+        (for example a butted opposite-implant island) define the optional
+        tap_to_active rule.
+        """
+        return max(self.active_space, getattr(self, "tap_to_active", 0))
+
     def add_nwell_contact(self, pmos, pmos_pos):
         """ Add an nwell contact next to the given pmos device. """
 
@@ -207,7 +216,7 @@ class pgate(design):
 
         # To the right a spacing away from the pmos right active edge
         contact_xoffset = pmos_pos.x + pmos.active_width \
-                          + self.active_space
+                          + self.tap_space()
 
         # Must be at least an well enclosure of active down
         # from the top of the well
@@ -320,7 +329,7 @@ class pgate(design):
 
         # To the right a spacing away from the nmos right active edge
         contact_xoffset = nmos_pos.x + nmos.active_width \
-                          + self.active_space
+                          + self.tap_space()
         # Allow an nimplant below it under the rail
         contact_yoffset = max(0.5 * self.implant_width + self.implant_enclose_active,
                               self.get_tx_insts("nmos")[0].by())

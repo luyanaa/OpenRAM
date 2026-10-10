@@ -2,12 +2,30 @@
 #
 # ICsprout55 OpenRAM technology definition.
 
-"""OpenRAM technology data for the provisional ICsprout55 digital PDK.
+"""OpenRAM technology data for ICsprout 55LLULP (1P6M, 1.2 V core devices).
 
-The physical values below are taken from the released ICsprout55 technology
-LEF, GDS-derived rule tables, and layer map.  The timing/current/capacitance
-values marked as analytical defaults are only used by OpenRAM's analytical
-estimators; this port intentionally has no fitted analog SPICE model cards.
+Geometry rules are taken from the ICsprout 55nm design-rule manual and the
+foundry Calibre DRC decks (55LLULP1225 tapeout deck V1.21 and the open
+55LLULP1233 REV1_0_OS deck), rounded up to keep generated layout clean under
+both.  Implants (NP/PP) are not drawn to final shape by the generators; see
+``ics55_finalize.py``, which derives legal implants after GDS generation.
+
+Standard cells: OpenRAM only takes the D flip-flop from a foundry library.
+``stdcell_library`` selects it:
+
+  ===========  =============  =======================================
+  key          cell           library
+  ===========  =============  =======================================
+  SC9T         DFFQX1_9TSVT   official 9-track SVT (tapeout library)
+  SC9TL/SC9TH  DFFQX1_9T{LVT,HVT}
+  H7CR         DFFQX1H7R      open 7-track SVT (icsprout55-pdk)
+  H7CL/H7CH    DFFQX1H7{L,H}
+  ===========  =============  =======================================
+
+The DFF is wrapped by ``ics55_dff`` into one fixed 9-track-sized slot with its
+own well taps, so the macro floorplan does not depend on the library choice.
+Timing/current values marked analytical are only used by OpenRAM's analytical
+estimators; the foundry analog models are not used by this port.
 """
 
 import os
@@ -21,18 +39,9 @@ from openram import drc as d
 ###################################################
 
 tech_modules = d.module_type()
-
-# OpenRAM's setup_bitcell() handles the parameterized bitcell path when the
-# configuration sets OPTS.bitcell = "pbitcell".  Do not alias the generated
-# bitcell_1port/2port names here: that leaves OPTS.bitcell reporting a
-# different identity from the class factory actually instantiates.
-#
-# Keep the bitcell override table empty for now.  Add explicit entries only
-# when ICsprout55 supplies a real port-specific cell (for example,
-# ics55_bitcell_1rw_1r).
+tech_modules["dff"] = "ics55_dff"
 tech_modules["sense_amp"] = "ics55_sense_amp"
 tech_modules["write_driver"] = "ics55_write_driver"
-
 
 cell_properties = d.cell_properties()
 cell_properties.ptx.model_is_subckt = False
@@ -42,11 +51,46 @@ layer_properties = d.layer_properties()
 
 
 ###################################################
+# Standard-cell library selection
+###################################################
+
+_stdcell_variants = {
+    #          dff cell          vt     nmos model        pmos model     track height
+    "SC9T":  ("DFFQX1_9TSVT", "svt", "nm1p2_svt_lp", "pm1p2_svt_lp", 1.8),
+    "SC9TL": ("DFFQX1_9TLVT", "lvt", "nm1p2_lvt_lp", "pm1p2_lvt_lp", 1.8),
+    "SC9TH": ("DFFQX1_9THVT", "hvt", "nm1p2_hvt_lp", "pm1p2_hvt_lp", 1.8),
+    "H7CR":  ("DFFQX1H7R", "svt", "nm1p2_svt_lp", "pm1p2_svt_lp", 1.4),
+    "H7CL":  ("DFFQX1H7L", "lvt", "nm1p2_lvt_lp", "pm1p2_lvt_lp", 1.4),
+    "H7CH":  ("DFFQX1H7H", "hvt", "nm1p2_hvt_lp", "pm1p2_hvt_lp", 1.4),
+}
+_aliases = {"9T": "SC9T", "SC9TSVT": "SC9T", "7T": "H7CR"}
+
+stdcell_library = str(getattr(OPTS, "stdcell_library", "SC9T")).upper()
+stdcell_library = _aliases.get(stdcell_library, stdcell_library)
+if stdcell_library not in _stdcell_variants:
+    raise ValueError("Unsupported ICsprout55 stdcell_library '{}'; choose one of {}".format(
+        stdcell_library, ", ".join(_stdcell_variants)))
+stdcell_variant = dict(zip(("dff", "vt", "nmos", "pmos", "height"),
+                           _stdcell_variants[stdcell_library]))
+
+# The foundry DFF as a hard cell.  Its pins keep the foundry names
+# (D/Q/CK/VDD/VSS); ics55_dff presents OpenRAM's D/Q/clk/vdd/gnd.
+cell_properties.names["dff"] = stdcell_variant["dff"]
+cell_properties.dff.port_map = {"D": "D", "Q": "Q", "clk": "CK",
+                                "vdd": "VDD", "gnd": "VSS"}
+
+
+def lib_cell_names():
+    """Names of foundry hard cells whose layout must not be altered."""
+    return [v[0] for v in _stdcell_variants.values()]
+
+
+###################################################
 # GDS information and interconnect stacks
 ###################################################
 
 GDS = {
-    # ICsprout55 GDS is on a 1 nm database grid (0.001 um DBU).
+    # ICsprout55 GDS uses a 1 nm database unit.
     "unit": (0.001, 1e-9),
     "zoom": 0.05,
 }
@@ -58,12 +102,12 @@ m2_stack = ("m2", "via2", "m3")
 m3_stack = ("m3", "via3", "m4")
 m4_stack = ("m4", "via4", "m5")
 
-# Used by ROM generation and available for external P&R tooling.
-lef_rom_interconnect = ["m1", "m2", "m3", "m4", "m5"]
+lef_rom_interconnect = ["m1", "m2", "m3", "m4"]
 
 layer_indices = {
     "poly": 0,
     "active": 0,
+    "nwell": 0,
     "m1": 1,
     "m2": 2,
     "m3": 3,
@@ -77,7 +121,7 @@ layer_stacks = feol_stacks + beol_stacks
 
 preferred_directions = {
     "poly": "V",
-    "active": "H",
+    "active": "V",
     "m1": "H",
     "m2": "V",
     "m3": "H",
@@ -85,23 +129,21 @@ preferred_directions = {
     "m5": "H",
 }
 
-# OpenRAM's SRAM LEF writer exposes M1-M4; use M3/M4 for the global grid.
+# Macro-level supply grid on M3/M4; M5 and above are left for the SoC.
 power_grid = m3_stack
 
 
 ###################################################
-# GDS layer map
+# GDS layer map (Calibre deck LAYER MAP)
 ###################################################
 
 layer = {
-    "active": (2, 1),
-    "nwell": (9, 1),
-    "nimplant": (52, 1),
-    "pimplant": (53, 1),
-    "poly": (41, 1),
-    # CT is one physical mask; OpenRAM keeps separate stack names for the
-    # active and poly contact constructors.
-    "contact": (72, 1),
+    "active": (2, 1),           # ACTi
+    "nwell": (9, 1),            # NW1i
+    "nimplant": (52, 1),        # NPi   (regenerated by ics55_finalize)
+    "pimplant": (53, 1),        # PPi   (regenerated by ics55_finalize)
+    "poly": (41, 1),            # POLYi
+    "contact": (72, 1),         # CTi
     "active_contact": (72, 1),
     "poly_contact": (72, 1),
     "m1": (81, 1),
@@ -113,202 +155,104 @@ layer = {
     "m4": (84, 1),
     "via4": (94, 1),
     "m5": (85, 1),
-    "tm2": (103, 1),
-    "tv2": (113, 1),
     "text": (81, 6),
-    # CELLBOUND is the released standard-cell boundary purpose.
-    "boundary": (351, 12),
-    "mem": (351, 12),
+    "boundary": (351, 12),      # cell boundary, not a mask layer
 }
 
-# The foundry cell GDS carries duplicate M1 pin labels on purposes 2 and 6.
-# OpenRAM should consume purpose-2 pin shapes; the LVS deck independently
-# consumes purpose-6 text labels.
-special_purposes = {81: 2}
-
-use_purpose = {}
-
-# Layer names consumed by external OpenRAM/P&R integrations.
-layer_names = {
-    "active": "ACT",
-    "nwell": "NW",
-    "nimplant": "NP",
-    "pimplant": "PP",
-    "poly": "POLY",
-    "contact": "CT",
-    "active_contact": "CT",
-    "poly_contact": "CT",
-    "m1": "M1",
-    "via1": "V1",
-    "m2": "M2",
-    "via2": "V2",
-    "m3": "M3",
-    "via3": "V3",
-    "m4": "M4",
-    "via4": "V4",
-    "m5": "M5",
-    "tm2": "TM2",
-    "tv2": "TV2",
-    "text": "M1LBL",
-    "boundary": "CELLBOUND",
-    "mem": "CELLBOUND",
-}
-
+# Labels go on the *text* purpose (MET1text etc. = datatype 6); pin shapes
+# stay on the drawing purpose.  Never use purpose 2: it is metal dummy.
 label_purpose = 6
 
+layer_names = {
+    "active": "ACT", "nwell": "NW", "nimplant": "NP", "pimplant": "PP",
+    "poly": "POLY", "contact": "CT", "active_contact": "CT",
+    "poly_contact": "CT", "m1": "M1", "via1": "V1", "m2": "M2", "via2": "V2",
+    "m3": "M3", "via3": "V3", "m4": "M4", "via4": "V4", "m5": "M5",
+    "text": "M1TXT", "boundary": "CELLBOUND",
+}
+
 
 ###################################################
-# DRC/LVS rules
+# DRC rules
 ###################################################
-
-parameter = {
-    # Core 1.2 V transistor sizes are analytical starting points for generated
-    # SRAM cells, not characterized library values.
-    "min_tx_size": 0.15,
-    "beta": 3,
-    "6T_inv_nmos_size": 0.15,
-    "6T_inv_pmos_size": 0.30,
-    "6T_access_size": 0.15,
-}
-
-_here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_pdk_root = os.environ.get("ICSPROUT55_PDK")
-
-_stdcell_variants = {
-    "H7CR": {
-        "vt": "svt",
-        "suffix": "H7R",
-        "nmos": "nm1p2_svt_lp",
-        "pmos": "pm1p2_svt_lp",
-    },
-    "H7CL": {
-        "vt": "lvt",
-        "suffix": "H7L",
-        "nmos": "nm1p2_lvt_lp",
-        "pmos": "pm1p2_lvt_lp",
-    },
-    "H7CH": {
-        "vt": "hvt",
-        "suffix": "H7H",
-        "nmos": "nm1p2_hvt_lp",
-        "pmos": "pm1p2_hvt_lp",
-    },
-}
-
-stdcell_library = str(getattr(OPTS, "stdcell_library", "H7CR")).upper()
-if stdcell_library not in _stdcell_variants:
-    raise ValueError(
-        "Unsupported ICsprout55 stdcell_library '{}'; choose H7CR, H7CL, or H7CH".format(
-            stdcell_library
-        )
-    )
-stdcell_variant = _stdcell_variants[stdcell_library]
-# The released H7C standard-cell libraries contain DFF macros that are
-# DRC/LVS-clean in the ICsprout55 PDK.  Use the matching VT variant instead
-# of generating the flop from OpenRAM transistors.  OpenRAM's dff_array
-# supplies ports in D/Q/clock/supply order, so the local SPICE wrapper uses
-# that order while the GDS labels retain the foundry CK/D/Q names.
-cell_properties.names["dff"] = "DFFQX1{}".format(stdcell_variant["suffix"])
-cell_properties.dff.port_map = {
-    "D": "D",
-    "Q": "Q",
-    "clk": "CK",
-    "vdd": "VDD",
-    "gnd": "VSS",
-}
-cell_properties.dff.port_order = ["D", "Q", "clk", "vdd", "gnd"]
-
- 
-if _pdk_root:
-    stdcell_library_root = os.path.join(
-        _pdk_root, "libs.ref", "ics55_LLSC_{}".format(stdcell_library)
-    )
-else:
-    stdcell_library_root = ""
 
 drc = d.design_rules("icsprout55")
-drc["grid"] = 0.001
-# These paths support optional physical-verification tool invocation.  They do
-# not refer to, include, or configure any analog SPICE model directory.
-if _pdk_root:
-    drc["drc_rules"] = os.path.join(_pdk_root, "libs.tech", "drc", "ics55_drc.drc")
-    drc["lvs_rules"] = os.path.join(_pdk_root, "libs.tech", "lvs", "ics55.lvs")
-else:
-    drc["drc_rules"] = os.path.join(_here, "tech", "icsprout55.lydrc")
-    drc["lvs_rules"] = os.path.join(_here, "tech", "icsprout55.lylvs")
+# Database is 1 nm but keep generated geometry on a 5 nm grid.
+drc["grid"] = 0.005
+
+_here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+drc["drc_rules"] = ""
+drc["lvs_rules"] = ""
 drc["xrc_rules"] = ""
 drc["layer_map"] = os.path.join(_here, "layers.map")
 
-# Transistor and well rules.
-drc["minwidth_tx"] = 0.081
-drc["minlength_channel"] = 0.060
-drc["pwell_to_nwell"] = 0.0
-drc["nwell_to_nwell"] = 0.470
-drc["pwell_to_pwell"] = 0.470
-drc.add_layer("nwell", width=0.470, spacing=0.470)
-drc.add_enclosure("nwell", layer="active", enclosure=0.150)
+# --- Transistors (1.2 V core devices)
+# ACT_W_3a allows 0.12, but below 0.15 the contacted active becomes a dog-bone
+# that must clear the gate by 0.1 (PO_S_14/15).  Use 0.15 as the minimum.
+drc["minwidth_tx"] = 0.15
+drc["minlength_channel"] = 0.06      # PO_W_2a
 
-# The PDK reports 0.0388 um^2 POLY and 0.0555 um^2 ACT minimum areas.
-# OpenRAM's transistor generator intentionally does not grow gate/diffusion
-# polygons to satisfy area checks (doing so changes the LVS device); keep the
-# generated geometry usable and leave these checks to the PDK KLayout deck.
-drc.add_layer("poly", width=0.060, spacing=0.120, area=0.0)
-drc["poly_extend_active"] = 0.060
-drc["active_enclose_gate"] = 0.140
-drc["poly_to_active"] = 0.050
-drc["poly_to_field_poly"] = 0.120
-drc["minarea_poly"] = 0.0
-drc.add_layer("active", width=0.081, spacing=0.110, area=0.0)
+# --- N-well
+drc["pwell_to_nwell"] = 0
+drc.add_layer("nwell", width=0.47, spacing=0.47)            # NW1_W_1/NW1_S_1
+drc.add_enclosure("nwell", layer="active", enclosure=0.16,  # ACT_EN_1/2, ACT_S_5/8
+                  extension=0.16)
 
-# The released PDK has separate NP/PP masks with different minimum widths
-# and spacings (NP 0.400/0.361 um, PP 0.181/0.400 um).  OpenRAM exposes
-# one generic implant rule and does not apply minwidth_implant to each
-# transistor implant polygon; keep the generic value as a conservative
-# router constraint, but leave NP/PP signoff to the PDK KLayout deck.
-drc.add_layer("implant", width=0.400, spacing=0.400)
-drc.add_enclosure("implant", layer="active", enclosure=0.200)
-drc.add_enclosure("implant", layer="contact", enclosure=0.0)
-drc["implant_to_channel"] = 0.0
-drc["implant_to_contact"] = 0.0
+# --- Poly
+# PO_A_1 (0.04 um2) is met by the poly contact pad / wordline every gate
+# connects to, not by the bare gate, so it is left to Calibre.
+drc.add_layer("poly", width=0.06, spacing=0.18, area=0.0)   # PO_S_2 (wide)
+drc["poly_extend_active"] = 0.15     # PO_EX_2 0.14
+drc["poly_to_contact"] = 0.07        # CT_S_4
+drc["active_enclose_gate"] = 0.12    # PO_EX_1 0.11
+drc["poly_to_active"] = 0.06         # PO_S_11 0.05
+drc["poly_to_field_poly"] = 0.18
 
-# Contact and first-metal rules.
-drc.add_layer("contact", width=0.090, spacing=0.110, area=0.0081)
-drc.add_enclosure("active", layer="contact", enclosure=0.010)
-drc.add_enclosure("poly", layer="contact", enclosure=0.010)
-drc.add_enclosure("m1", layer="contact", enclosure=0.040)
-# Leave additional lateral clearance between active contacts and the gate.
-# The ICsprout55 PDK requires M2 center-to-center clearance that is larger
-# than the minimum OpenRAM transistor template provides; this margin keeps
-# M1/M2 escape vias separated without changing channel L/W.
-drc["active_contact_to_gate"] = 0.184
-drc["poly_contact_to_gate"] = 0.051
-drc["contact_to_gate"] = 0.062
-drc["contact_to_poly"] = 0.051
-drc["poly_to_contact"] = 0.051
+# --- Active
+drc.add_layer("active", width=0.12, spacing=0.13, area=0.04)  # ACT_S_1/2, ACT_A_1
 
-metal_rules = {
-    "m1": (0.090, 0.090, 0.042),
-    "m2": (0.100, 0.100, 0.052),
-    "m3": (0.100, 0.100, 0.052),
-    "m4": (0.100, 0.100, 0.052),
-    "m5": (0.100, 0.100, 0.052),
-}
-for metal, (width, spacing, area) in metal_rules.items():
-    drc.add_layer(metal, width=width, spacing=spacing, area=area)
+# --- Implants.  Used by the generators only for spacing decisions and as type
+# hints; final NP/PP shapes come from ics55_finalize.
+drc.add_layer("implant", width=0.18, spacing=0.0)
+drc.add_enclosure("implant", layer="active", enclosure=0.12)  # NP/PP_EN_2, _O_1
+drc.add_enclosure("implant", layer="contact", enclosure=0.06)
+drc["implant_to_channel"] = 0.30     # NP_S_5/PP_S_5
+drc["implant_to_contact"] = 0.06     # CT_S_6
+# Well-tap active to transistor active: the finalizer gives the tap an
+# opposite-type implant island (tap + 0.08), and the transistor active needs
+# 0.16 of its own implant beyond the gate exit (NP/PP_EX_1, SNP_68 macro).
+drc["tap_to_active"] = 0.26
+# ... and field poly needs 0.15 of its own implant (NP_EN_3/PP_EN_3).
+drc["tap_to_poly"] = 0.25
 
-# LEF VIARULEs require 0.11 um ordinary via spacing and 0.13 um spacing
-# between cuts in an array.  OpenRAM has only one via-to-via rule, so use
-# the conservative array value to avoid under-constraining generated arrays.
-via_rules = {
-    "via1": ("m1", "m2"),
-    "via2": ("m2", "m3"),
-    "via3": ("m3", "m4"),
-    "via4": ("m4", "m5"),
-}
-for via, (lower, upper) in via_rules.items():
-    drc.add_layer(via, width=0.090, spacing=0.130, area=0.0081)
-    drc.add_enclosure(lower, layer=via, enclosure=0.040)
-    drc.add_enclosure(upper, layer=via, enclosure=0.040)
+# --- Contact
+drc.add_layer("contact", width=0.09, spacing=0.14)          # CT_W_1, CT_S_1/1a
+drc.add_enclosure("active", layer="contact", enclosure=0.03, extension=0.03)  # CT_EN_2
+drc.add_enclosure("poly", layer="contact", enclosure=0.04, extension=0.04)    # CT_EN_3
+drc["tap_extend_contact"] = 0.03
+drc["active_contact_to_gate"] = 0.07   # CT_S_4 0.055
+drc["poly_contact_to_gate"] = 0.08     # CT_S_3 0.065
+drc["contact_to_gate"] = 0.07
+drc["contact_to_poly"] = 0.07
+drc["npc_enclose_poly"] = 0
+
+# --- Metals and vias
+drc.add_layer("m1", width=0.09, spacing=0.12, area=0.045)   # MET1_W_1, _S_1/_S_5, _A_1
+# CT_EN_4; the 0.09 extension makes a single-contact pad meet MET1_A_1.
+drc.add_enclosure("m1", layer="contact", enclosure=0.04, extension=0.09)
+drc.add_enclosure("m1", layer="via1", enclosure=0.04, extension=0.04)     # VIAn_EN_2
+
+for n in range(1, 5):
+    via = "via{}".format(n)
+    lower = "m{}".format(n)
+    upper = "m{}".format(n + 1)
+    drc.add_layer(via, width=0.09, spacing=0.14)            # VIAn_W_1, VIAn_S_1/S_2
+    drc.add_enclosure(upper, layer=via, enclosure=0.04, extension=0.04)
+    if n > 1:
+        drc.add_enclosure(lower, layer=via, enclosure=0.04, extension=0.04)
+
+for n in range(2, 6):
+    drc.add_layer("m{}".format(n), width=0.10, spacing=0.12, area=0.055)  # METn_W/S/A
 
 
 ###################################################
@@ -316,15 +260,13 @@ for via, (lower, upper) in via_rules.items():
 ###################################################
 
 spice = {}
-# These are the released digital CDL primitive model names.  No model files
-# are supplied here: ICsprout55 analog SPICE parameters are not fitted.
 spice["stdcell_library"] = stdcell_library
-spice["stdcell_variant"] = stdcell_variant["vt"]
-spice["stdcell_library_root"] = stdcell_library_root
 spice["nmos"] = stdcell_variant["nmos"]
 spice["pmos"] = stdcell_variant["pmos"]
 spice["fet_models"] = {}
 spice["analytical_only"] = True
+spice["power"] = "vdd"
+spice["ground"] = "gnd"
 
 # Corner metadata used by OpenRAM's analytical delay path.
 spice["feasible_period"] = 5
@@ -335,24 +277,20 @@ spice["fall_time"] = 0.005
 spice["temperatures"] = [0, 25, 85]
 spice["nom_temperature"] = 25
 
-# Analytical defaults only.  These are not extracted or fitted ICsprout55
-# analog parameters and must not be used as a signoff timing model.
+# Analytical defaults only (not fitted to the foundry models).
 spice["nom_threshold"] = 0.40
 spice["wire_unit_r"] = 0.1122       # M1 sheet resistance, ohm/square (LEF)
 spice["wire_unit_c"] = 7.63e-16     # M1 area capacitance, F/um^2 (LEF)
-spice["min_tx_drain_c"] = 0.7       # fF, analytical floor
-spice["min_tx_gate_c"] = 0.2        # fF, analytical floor
-spice["dff_setup"] = 9              # ps, analytical floor
-spice["dff_hold"] = 1               # ps, analytical floor
-spice["dff_in_cap"] = 0.21          # fF, analytical floor
-spice["dff_out_cap"] = 2.0          # fF, analytical floor
-
-# Generic analytical current/oxide values keep CACTI equations defined while
-# the PDK's fitted analog cards remain unavailable.
-spice["i_on_n"] = 4.0e-4            # A/um, analytical estimate
-spice["i_on_p"] = 1.5e-4            # A/um, analytical estimate
-spice["tox"] = 0.0015              # um, analytical estimate
-spice["eps_ox"] = 0.00245e-14      # F/um, analytical estimate
+spice["min_tx_drain_c"] = 0.7       # fF
+spice["min_tx_gate_c"] = 0.2        # fF
+spice["dff_setup"] = 60             # ps, foundry DFF Liberty order of magnitude
+spice["dff_hold"] = 20              # ps
+spice["dff_in_cap"] = 0.9           # fF
+spice["dff_out_cap"] = 2.0          # fF
+spice["i_on_n"] = 4.0e-4            # A/um
+spice["i_on_p"] = 1.5e-4            # A/um
+spice["tox"] = 0.0015               # um
+spice["eps_ox"] = 0.00245e-14       # F/um
 spice["cox"] = spice["eps_ox"] / spice["tox"]
 spice["c_g_ideal"] = spice["cox"] * drc["minlength_channel"]
 spice["c_overlap"] = 0.2 * spice["c_g_ideal"]
@@ -364,14 +302,19 @@ spice["wire_c_per_um"] = spice["wire_unit_c"] * drc["minwidth_m2"]
 spice["wire_r_per_um"] = spice["wire_unit_r"] / drc["minwidth_m2"]
 spice["mobility_n"] = 0.045e8
 spice["V_dsat"] = 0.0938
-spice["sa_transconductance"] = (
-    spice["mobility_n"]
-    * spice["cox"]
-    * (parameter["6T_access_size"] / parameter["min_tx_size"])
-    * spice["V_dsat"]
-)
 
-# Analytical leakage/activity defaults.
+parameter = {
+    "min_tx_size": 0.15,
+    "beta": 2,
+    # Logic-rule 6T bitcell (no foundry SRAM device rules are used).
+    "6T_inv_nmos_size": 0.36,
+    "6T_inv_pmos_size": 0.15,
+    "6T_access_size": 0.24,
+}
+spice["sa_transconductance"] = (spice["mobility_n"] * spice["cox"]
+                                * (parameter["6T_access_size"] / parameter["min_tx_size"])
+                                * spice["V_dsat"])
+
 spice["bitcell_leakage"] = 1
 spice["inv_leakage"] = 1
 spice["nand2_leakage"] = 1
@@ -381,7 +324,6 @@ spice["nor2_leakage"] = 1
 spice["dff_leakage"] = 1
 spice["default_event_frequency"] = 100
 
-# Delay-chain and sense-amp sizing defaults.
 parameter["le_tau"] = 2.25
 parameter["cap_relative_per_ff"] = 7.5
 parameter["dff_clk_cin"] = 30.6
@@ -398,9 +340,10 @@ parameter["bitcell_drain_cap"] = 0.1
 # Tool preferences
 ###################################################
 
-drc_name = "klayout"
-lvs_name = "klayout"
-pex_name = "klayout"
+# Physical verification is run with the foundry Calibre decks outside
+# OpenRAM (see technology/icsprout55/README.md).
+drc_name = "none"
+lvs_name = "none"
+pex_name = "none"
 
-# Generated SRAM cells are not hard macros.
 blackbox_bitcell = False

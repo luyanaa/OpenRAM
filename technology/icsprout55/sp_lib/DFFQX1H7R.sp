@@ -1,39 +1,30 @@
-* ICsprout55 H7C hard DFF extracted for OpenRAM.
-* Port order is D Q CK VDD VSS for OpenRAM's dff module.
-
-.SUBCKT INV A VDD VSS Y
-*.PININFO A:I Y:O VDD:B VSS:B
-MMN0 Y A VSS VSS nm1p2_svt_lp W=nw L=nl m=1
-MMP0 Y A VDD VDD pm1p2_svt_lp W=pw L=pl m=1
-.ENDS
-
-************************************************************************
-
+* DFFQX1H7R imported from ics55_LLSC_H7CR.cdl by import_stdcells.py
+* Flattened; port order D Q CK VDD VSS
 .SUBCKT DFFQX1H7R D Q CK VDD VSS
-*.PININFO CK:I D:I Q:O VDD:B VSS:B
-XXI14 net46 net24 net32 VDD VSS net33 / TSINV pl=6E-08 pw=1.5E-07 nl=6E-08
-+ nw=1.5E-07
-XXI6 D net32 net24 VDD VSS net33 / TSINV pl=6E-08 pw=2.8E-07 nl=6E-08 nw=2E-07
-XXI9 net46 net24 net32 VDD VSS net25 / TSINV pl=6E-08 pw=3.2E-07 nl=6E-08
-+ nw=2.3E-07
-XXI15 net9 net32 net24 VDD VSS net25 / TSINV pl=6E-08 pw=1.5E-07 nl=6E-08
-+ nw=1.5E-07
-XXI7 net33 VDD VSS net46 / INV pl=6E-08 pw=2.8E-07 nl=6E-08 nw=2E-07
-XXI13 net32 VDD VSS net24 / INV pl=6E-08 pw=2.8E-07 nl=6E-08 nw=2E-07
-XXI12 net25 VDD VSS Q / INV pl=6E-08 pw=3.4E-07 nl=6E-08 nw=2.4E-07
-XXI10 net25 VDD VSS net9 / INV pl=6E-08 pw=2.8E-07 nl=6E-08 nw=2E-07
-XXI4 CK VDD VSS net32 / INV pl=6E-08 pw=2.8E-07 nl=6E-08 nw=2E-07
-.ENDS
-
-************************************************************************
-
-.SUBCKT TSINV A CK CKN VDD VSS Y
-*.PININFO A:I CK:I CKN:I VDD:B VSS:B Y:B
-MMN0 Y CK net18 VSS nm1p2_svt_lp W=nw L=nl m=1
-MMN1 net18 A VSS VSS nm1p2_svt_lp W=nw L=nl m=1
-MMP1 net024 A VDD VDD pm1p2_svt_lp W=pw L=pl m=1
-MMP0 Y CKN net024 VDD pm1p2_svt_lp W=pw L=pl m=1
-.ENDS
-
-************************************************************************
-
+MXXI14_MN0 net33 net24 XXI14/net18 VSS nm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI14_MN1 XXI14/net18 net46 VSS VSS nm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI14_MP1 XXI14/net024 net46 VDD VDD pm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI14_MP0 net33 net32 XXI14/net024 VDD pm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI6_MN0 net33 net32 XXI6/net18 VSS nm1p2_svt_lp W=0.2u L=0.06u M=1
+MXXI6_MN1 XXI6/net18 D VSS VSS nm1p2_svt_lp W=0.2u L=0.06u M=1
+MXXI6_MP1 XXI6/net024 D VDD VDD pm1p2_svt_lp W=0.28u L=0.06u M=1
+MXXI6_MP0 net33 net24 XXI6/net024 VDD pm1p2_svt_lp W=0.28u L=0.06u M=1
+MXXI9_MN0 net25 net24 XXI9/net18 VSS nm1p2_svt_lp W=0.23u L=0.06u M=1
+MXXI9_MN1 XXI9/net18 net46 VSS VSS nm1p2_svt_lp W=0.23u L=0.06u M=1
+MXXI9_MP1 XXI9/net024 net46 VDD VDD pm1p2_svt_lp W=0.32u L=0.06u M=1
+MXXI9_MP0 net25 net32 XXI9/net024 VDD pm1p2_svt_lp W=0.32u L=0.06u M=1
+MXXI15_MN0 net25 net32 XXI15/net18 VSS nm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI15_MN1 XXI15/net18 net9 VSS VSS nm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI15_MP1 XXI15/net024 net9 VDD VDD pm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI15_MP0 net25 net24 XXI15/net024 VDD pm1p2_svt_lp W=0.15u L=0.06u M=1
+MXXI7_MN0 net46 net33 VSS VSS nm1p2_svt_lp W=0.2u L=0.06u M=1
+MXXI7_MP0 net46 net33 VDD VDD pm1p2_svt_lp W=0.28u L=0.06u M=1
+MXXI13_MN0 net24 net32 VSS VSS nm1p2_svt_lp W=0.2u L=0.06u M=1
+MXXI13_MP0 net24 net32 VDD VDD pm1p2_svt_lp W=0.28u L=0.06u M=1
+MXXI12_MN0 Q net25 VSS VSS nm1p2_svt_lp W=0.24u L=0.06u M=1
+MXXI12_MP0 Q net25 VDD VDD pm1p2_svt_lp W=0.34u L=0.06u M=1
+MXXI10_MN0 net9 net25 VSS VSS nm1p2_svt_lp W=0.2u L=0.06u M=1
+MXXI10_MP0 net9 net25 VDD VDD pm1p2_svt_lp W=0.28u L=0.06u M=1
+MXXI4_MN0 net32 CK VSS VSS nm1p2_svt_lp W=0.2u L=0.06u M=1
+MXXI4_MP0 net32 CK VDD VDD pm1p2_svt_lp W=0.28u L=0.06u M=1
+.ENDS DFFQX1H7R
