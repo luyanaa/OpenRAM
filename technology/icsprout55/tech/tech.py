@@ -75,9 +75,14 @@ stdcell_variant = dict(zip(("dff", "vt", "nmos", "pmos", "height"),
 
 # The foundry DFF as a hard cell.  Its pins keep the foundry names
 # (D/Q/CK/VDD/VSS); ics55_dff presents OpenRAM's D/Q/clk/vdd/gnd.
+# The cells are tapless, so their wells are separate terminals (VNW/VPW).
 cell_properties.names["dff"] = stdcell_variant["dff"]
-cell_properties.dff.port_map = {"D": "D", "Q": "Q", "clk": "CK",
-                                "vdd": "VDD", "gnd": "VSS"}
+cell_properties._dff = d.cell(["D", "Q", "clk", "vdd", "gnd", "vnw", "vpw"],
+                              ["INPUT", "OUTPUT", "INPUT", "POWER", "GROUND",
+                               "POWER", "GROUND"],
+                              port_map={"D": "D", "Q": "Q", "clk": "CK",
+                                        "vdd": "VDD", "gnd": "VSS",
+                                        "vnw": "VNW", "vpw": "VPW"})
 
 
 def lib_cell_names():

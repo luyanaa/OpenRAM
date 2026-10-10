@@ -152,23 +152,19 @@ class dff_buf(design):
                             width=self.width,
                             height=vdd_pin.height())
 
-        def add_m2_pin(text, pin):
-            if pin.layer != "m2":
-                self.add_via_stack_center(from_layer=pin.layer,
-                                          to_layer="m2",
-                                          offset=pin.center())
-            self.add_layout_pin_rect_center(
-                text=text,
-                layer="m2",
-                offset=pin.center(),
-                width=max(pin.width(), self.m2_width),
-                height=max(pin.height(), self.m2_width))
-
         clk_pin = self.dff_inst.get_pin("clk")
-        add_m2_pin("clk", clk_pin)
+        self.add_layout_pin(text="clk",
+                            layer=clk_pin.layer,
+                            offset=clk_pin.ll(),
+                            width=clk_pin.width(),
+                            height=clk_pin.height())
 
         din_pin = self.dff_inst.get_pin("D")
-        add_m2_pin("D", din_pin)
+        self.add_layout_pin(text="D",
+                            layer=din_pin.layer,
+                            offset=din_pin.ll(),
+                            width=din_pin.width(),
+                            height=din_pin.height())
 
         dout_pin = self.inv2_inst.get_pin("Z")
         mid_pos = dout_pin.center() + vector(self.m2_nonpref_pitch, 0)
@@ -181,12 +177,13 @@ class dff_buf(design):
                                   to_layer="m2",
                                   offset=q_pos)
 
-        qb_pos = self.mid_qb_pos + vector(0, 2 * self.m2_nonpref_pitch)
+        # Drop the Qb via on inv1's output strap (already the Qb net) so its
+        # landing pad cannot touch unrelated metal of the second inverter.
+        z1_pin = self.inv1_inst.get_pin("Z")
+        qb_pos = z1_pin.center()
         self.add_layout_pin_rect_center(text="Qb",
                                         layer="m2",
                                         offset=qb_pos)
-        self.add_path(self.route_layer, [self.mid_qb_pos, qb_pos])
-        a2_pin = self.inv2_inst.get_pin("A")
-        self.add_via_stack_center(from_layer=a2_pin.layer,
+        self.add_via_stack_center(from_layer=z1_pin.layer,
                                   to_layer="m2",
                                   offset=qb_pos)

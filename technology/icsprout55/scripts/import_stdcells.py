@@ -7,8 +7,8 @@ This script copies that cell, unmodified except for the removal of the 7T
 library's M1 *pin purpose* (81;2), which both Calibre decks map to M1 dummy
 (MET1dmi) and therefore flag.  The pin geometry is also drawn on 81;1, so no
 connectivity is lost.  The CDL is flattened to a 5-terminal transistor netlist
-(D Q CK VDD VSS); the 9T library's separate well terminals are tied VNW=VDD and
-VPW=VSS, which is how the surrounding OpenRAM well taps bias them.
+(D Q CK VDD VSS VNW VPW).  The wells are separate terminals because the cells
+are tapless; the ics55_dff wrapper ties them to vdd/gnd with its own taps.
 
 Usage:
   import_stdcells.py --h7c-gds DIR --h7c-cdl DIR --sc9t DIR
@@ -53,8 +53,45 @@ def import_gds(src, cell, dst):
     if pin is not None:
         for c in d.each_cell():
             c.shapes(pin).clear()
+    add_pin_rects(d, dc)
     d.write(dst)
     return dc.bbox()
+
+
+def add_pin_rects(layout, cell, grid=5):
+    """Add, under every M1 pin label, the largest rectangle that fits inside
+    the existing M1 polygon (redundant geometry: the mask union is unchanged).
+    OpenRAM's GDS pin finder only recognizes rectangular pin shapes, and the
+    foundry supply rails are notched polygons."""
+    m1 = layout.layer(81, 1)
+    poly = kdb.Region(cell.begin_shapes_rec(m1))
+    poly.merge()
+    added = 0
+    for lp in ((81, 6), (81, 1)):
+        li = layout.find_layer(*lp)
+        if li is None:
+            continue
+        for sh in cell.shapes(li).each():
+            if not sh.is_text():
+                continue
+            pt = kdb.Point(sh.text.x, sh.text.y)
+            host = [p for p in poly.each() if p.inside(pt) or kdb.Region(p).interacting(
+                kdb.Region(kdb.Box(pt.x - 1, pt.y - 1, pt.x + 1, pt.y + 1))).count()]
+            if not host:
+                continue
+            hr = kdb.Region(host[0])
+            box = kdb.Box(pt.x - 1, pt.y - 1, pt.x + 1, pt.y + 1)
+            grown = True
+            while grown:
+                grown = False
+                for dl, db_, dr, dt in ((grid, 0, 0, 0), (0, grid, 0, 0), (0, 0, grid, 0), (0, 0, 0, grid)):
+                    nb = kdb.Box(box.left - dl, box.bottom - db_, box.right + dr, box.top + dt)
+                    if (kdb.Region(nb) - hr).is_empty():
+                        box = nb
+                        grown = True
+            cell.shapes(m1).insert(box)
+            added += 1
+    return added
 
 
 def parse_cdl(path):
@@ -133,20 +170,32 @@ def flatten(subckts, name, nets, env, prefix, out, bulk_map):
 
 
 def import_sp(cdl, cell, dst, key):
+    """Write a flat 7-terminal netlist: D Q CK VDD VSS VNW VPW.
+
+    The foundry layouts are tapless and carry VNW/VPW labels on their wells,
+    so the wells are separate terminals; ics55_dff ties them to vdd/gnd
+    through its own taps.  The 9T CDL already has VNW/VPW; the 7T CDL ties
+    bulks to VDD/VSS, so PMOS bulks are moved to VNW and NMOS bulks to VPW.
+    """
     subckts = parse_cdl(cdl)
     sc = subckts[cell]
-    ports = ["D", "Q", "CK", "VDD", "VSS"]
-    nets = {p: p for p in sc["ports"]}
-    bulk_map = {"VNW": "VDD", "VPW": "VSS"}
+    ports = ["D", "Q", "CK", "VDD", "VSS", "VNW", "VPW"]
     out = []
-    flatten(subckts, cell, [bulk_map.get(p, p) for p in sc["ports"]], {}, "", out, bulk_map)
+    flatten(subckts, cell, sc["ports"], {}, "", out, {})
+    fixed = []
+    for line in out:
+        t = line.split()
+        if "VNW" not in sc["ports"]:
+            if t[5].startswith("pm"):
+                t[4] = "VNW"
+            else:
+                t[4] = "VPW"
+        fixed.append(" ".join(t))
     with open(dst, "w") as f:
         f.write("* {} imported from {} by import_stdcells.py\n".format(cell, os.path.basename(cdl)))
-        f.write("* Flattened; port order D Q CK VDD VSS")
-        if "VNW" in nets:
-            f.write("; well terminals tied VNW=VDD, VPW=VSS")
-        f.write("\n.SUBCKT {} {}\n".format(cell, " ".join(ports)))
-        f.write("\n".join(out) + "\n.ENDS {}\n".format(cell))
+        f.write("* Flattened; ports D Q CK VDD VSS VNW VPW (wells are separate terminals)\n")
+        f.write(".SUBCKT {} {}\n".format(cell, " ".join(ports)))
+        f.write("\n".join(fixed) + "\n.ENDS {}\n".format(cell))
     return len(out)
 
 

@@ -26,6 +26,7 @@ NW = (9, 1)
 PO = (41, 1)
 NP = (52, 1)
 PP = (53, 1)
+BOUNDARY = (351, 12)
 
 # Rules in micron (ICsprout55 DRM / Calibre deck)
 IMP_MIN_W = 0.18        # NP_W_1/PP_W_1, NP_S_1/PP_S_1
@@ -35,6 +36,7 @@ NW_NACT_S = 0.15        # NW to N+ active spacing (ACT_EN_1 equivalent)
 POLY_ENC = 0.155        # NP_EN_3/PP_EN_3 implant enclosure of field poly
 IMP_ENC_ACT = 0.125     # NP_EN_2/PP_EN_2 implant enclosure of active
 GRID = 5                # dbu (5 nm)
+HOLE_MAX = 0.20         # fill metal holes smaller than this (MET*_A_2 0.18)
 # (layer, min area um2 with margin, spacing um)
 METAL_AREA = [((81, 1), 0.046, 0.12), ((82, 1), 0.056, 0.12),
               ((83, 1), 0.056, 0.12), ((84, 1), 0.056, 0.12),
@@ -65,13 +67,19 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     lib_idx = [c.cell_index() for c in layout.each_cell() if c.name in lib_cells]
     # Boxes of library-cell instances (in top coordinates)
     lib_box = kdb.Region()
+    bnd_li = layout.find_layer(BOUNDARY[0], BOUNDARY[1])
     for ci in lib_idx:
+        cell_box = layout.cell(ci).bbox()
+        if bnd_li is not None:
+            bshapes = layout.cell(ci).shapes(bnd_li)
+            if not bshapes.is_empty():
+                cell_box = kdb.Region(bshapes).bbox()
         # enumerate placements of this cell
         it = kdb.RecursiveInstanceIterator(layout, top_cell)
         it.targets = [ci]
         while not it.at_end():
             trans = it.trans() * it.inst_trans()
-            lib_box.insert(layout.cell(ci).bbox().transformed(trans))
+            lib_box.insert(cell_box.transformed(trans))
             it.next()
     lib_box.merge()
 
@@ -171,6 +179,28 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     nwl = layout.layer(NW[0], NW[1])
     top_cell.shapes(nwl).insert(added)
 
+    # Metal enclosed-area (MET1_A_2/METn_A_2 >= 0.18 um2) and slit spacing:
+    # fill small holes of a metal polygon when no other shape of that layer
+    # sits inside the hole (the fill is then on the same net).
+    n_holes = 0
+    for (lp, _a, _s) in METAL_AREA:
+        li = layout.find_layer(lp[0], lp[1])
+        if li is None:
+            continue
+        metal = kdb.Region(top_cell.begin_shapes_rec(li))
+        metal.merge()
+        holes = metal.holes()
+        fill = kdb.Region()
+        for h in holes.each():
+            if h.area() >= um2(HOLE_MAX):
+                continue
+            hr = kdb.Region(h)
+            if not (metal & hr).is_empty():
+                continue
+            fill.insert(h)
+            n_holes += 1
+        top_cell.shapes(li).insert(fill)
+
     # Metal minimum area (MET1_A_1, METn_A_1): OpenRAM leaves small landing
     # pads in via stacks and on pins.  Grow each under-area polygon in a
     # direction with room, keeping the layer spacing to all other metal.
@@ -232,7 +262,8 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     layout.write(out_gds)
     return dict(nact=nact.count(), pact=pact.count(), ntap=ntap.count(),
                 ptap=ptap.count(), nw_added=added.count(),
-                area_fixed=n_area_fixed, area_left=n_area_left)
+                area_fixed=n_area_fixed, area_left=n_area_left,
+                holes_filled=n_holes)
 
 
 if __name__ == "__main__":
