@@ -26,6 +26,21 @@ Both decks gave identical results on every layout tried so far.
   `--margin` (default 0.4 µm) lets the derived implant extend past a
   stand-alone leaf, as its neighbours would in a real array.
 
+## Current results (both decks, density/chip-edge off, see below)
+
+| config (`configs/`) | size (um) | DRC tapeout | DRC OS | LVS tapeout | LVS OS |
+|---|---|---|---|---|---|
+| ics55_1rw_16x4 (SC9T) | 72.3 x 81.6 | 0 | 0 | CORRECT | CORRECT |
+| ics55_1rw_64x8 (SC9T) | | 0 | 0 | CORRECT | CORRECT |
+| ics55_1rw_256x8_mux4 (SC9T, 4 words/row) | | 0 | 0 | CORRECT | CORRECT |
+| ics55_1w1r_32x8 (SC9T, separate R/W clocks) | | 0 | 0 | CORRECT | CORRECT |
+| ics55_2rw_32x8 (SC9T) | | 0 | 0 | CORRECT | CORRECT |
+| ics55_1rw_16x4_h7cr (7T DFF) | | 138 | 138 | CORRECT | CORRECT |
+
+All 138 results of the 7T macro are inside the 17 vendor `DFFQX1H7R`
+instances (the vendor cell alone has the same categories); the generated
+layout around them is clean.
+
 ## Key design decisions
 
 1. **Bitcell**: no foundry SRAM bitcell/device kit is delivered (the LVS deck
@@ -129,3 +144,18 @@ Both decks gave identical results on every layout tried so far.
   pbitcell analytical model import, sram.save tech `finalize_gds` hook, .lib
   and datasheet kept when there are no device models.
 * LEF layer names follow the ICsprout55 tech LEF (MET1..MET5, VIA1..VIA4).
+
+### 2026-10-10 (night)
+* 64x8, 256x8 (column mux 4), 1W+1R 32x8 and 2RW 32x8 macros: all clean on
+  both decks.  7T variant: LVS CORRECT, DRC only inside the vendor DFF.
+* Finalizer metal clean-up rewritten with spatially indexed queries (the
+  256x8 macro took >9 min before, ~1 min now).
+
+## Open items
+* Functional/timing simulation: not done.  The `.lib` is OpenRAM's
+  analytical model.  The foundry models are encrypted HSPICE; a Spectre or
+  HSPICE run on the EDA VM (read/write, disturb, corners) is the next step
+  before relying on the logic-rule bitcell in silicon.
+* Antenna rules are part of the decks run and pass; density is chip-level.
+* Larger macros (e.g. 1-2 KB) were not run yet; compile time grows with the
+  OpenRAM router (256x8: ~2 min).
