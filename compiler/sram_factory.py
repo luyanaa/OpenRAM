@@ -162,9 +162,12 @@ class sram_factory:
             module_type = getattr(OPTS, module_type)
         try:
             mod_tuples = self.objects[module_type]
-            mods = [mod for kwargs, mod in mod_tuples]
         except KeyError:
-            mods = []
+            # Objects of a technology-overridden type are stored under the
+            # real (technology) module name.
+            (real_module_type, overridden) = self.get_techmodule_type(module_type)
+            mod_tuples = self.objects.get(real_module_type, [])
+        mods = [mod for kwargs, mod in mod_tuples]
         return mods
 
 

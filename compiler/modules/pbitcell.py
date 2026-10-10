@@ -7,6 +7,7 @@
 #
 from openram import debug
 from openram.base import logical_effort
+from openram.base.logical_effort import convert_farad_to_relative_c
 from openram.base import vector
 from openram.tech import drc, parameter, layer
 from openram.tech import cell_properties as props
@@ -1187,7 +1188,7 @@ class pbitcell(bitcell_base):
         # for stacked TXs, but internal loads do not see this size
         # estimation.
         write_port_load = self.num_w_ports \
-                          * logical_effort.convert_farad_to_relative_c(parameter['bitcell_drain_cap']) / 2
+                          * convert_farad_to_relative_c(parameter['bitcell_drain_cap']) / 2
         # min size NMOS gate load
         read_port_load = self.num_r_ports / 2
         total_load = load + read_port_load + write_port_load

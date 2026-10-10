@@ -8,10 +8,12 @@ from its surroundings.  This cell adds an N-tap and a P-tap in a column to
 the right of the DFF and normalizes the interface, so the same footprint is
 used whichever library is selected:
 
-* slot width  ``SLOT_W`` (the 7T DFF is the wider cell), height 1.8 um;
+* slot width  ``SLOT_W`` (the 7T DFF is the wider cell), height 2.7 um
+  (1.5 x the 9T row; the control-logic gates OpenRAM builds at the DFF
+  height need >= 2.4 um under the ICsprout55 rules);
 * gnd rail centred on y=0 with the library rail thickness, vdd rail centred
-  on y=1.8 (for the 1.4 um 7T cell the vdd rail is strapped up in the tap
-  column; the 7T N-well is extended up to the 9T N-well top);
+  on y=2.7; the library vdd rail (1.4 or 1.8 um) is strapped up in the tap
+  column and the N-well is extended to the slot top;
 * D, Q and clk are brought to M2 with a bare via1 on the foundry M1 pin, so
   the foundry M1 geometry is never touched.
 
@@ -24,17 +26,23 @@ from openram.sram_factory import factory
 from openram.tech import drc, spice, stdcell_variant
 
 
-SLOT_H = 1.8      # 9-track row height
+SLOT_H = 2.7      # 1.5 x the 9-track row: room for the 1.4/1.8 um DFFs and
+                  # for the control-logic gates built at this height
 SLOT_W = 5.2      # widest DFF (7T, 4.4) + tap column
-NW_TOP = 2.0      # 9T N-well top (mirrored rows share the well)
+NW_TOP = SLOT_H + 0.2  # mirrored rows share the well
 TAP_X = 4.75      # tap active left edge
 CLK_X = 0.225     # left edge of the M2 clock strip
+CLK_RAIL_Y = 2.25 # requested array clock rail height (above every DFF)
+D_SHIFT = 0.45    # D pin published this far right of the foundry pin
 
 
 class ics55_dff(design):
 
     def __init__(self, name="dff"):
         super().__init__(name)
+        # dff_array/dff_buf_array put their M3 clock rail here: high in the
+        # slot, away from the D/Q pins that parents land via stacks on.
+        self.clk_rail_y = CLK_RAIL_Y
         self.create_netlist()
         self.create_layout()
 
@@ -115,9 +123,17 @@ class ics55_dff(design):
                       width=ntap.mod.second_layer_width,
                       height=SLOT_H - ntap_y)
 
-        # --- signal pins on M2 (bare via1 on the foundry M1 pin)
-        for name in ("D", "Q", "clk"):
-            self._m2_pin(name)
+        # --- signal pins on M2 (bare via1 on the foundry M1 pin).  CK and D
+        # vias go to opposite ends of their pins (the 7T pins are only
+        # 0.215 um apart), whichever order separates them more.
+        ck = max(self.dff_inst.get_pins("clk"), key=lambda p: p.area())
+        dp = max(self.dff_inst.get_pins("D"), key=lambda p: p.area())
+        lo_hi = abs(self._end_y(ck, "bottom") - self._end_y(dp, "top"))
+        hi_lo = abs(self._end_y(ck, "top") - self._end_y(dp, "bottom"))
+        ck_end, d_end = ("bottom", "top") if lo_hi >= hi_lo else ("top", "bottom")
+        self._m2_pin("clk", ck_end)
+        self._m2_pin("D", d_end)
+        self._m2_pin("Q", "bottom")
 
         self.add_boundary()
 
@@ -139,21 +155,25 @@ class ics55_dff(design):
             # 9T default
             return 0.84 if stdcell_variant["height"] > 1.6 else 0.615
 
-    def _m2_pin(self, name):
+    def _end_y(self, pin, end):
+        """Via1 centre y at one end of a foundry pin (M1 enclosure 0.045)."""
+        g = drc["grid"]
+        v = drc["minwidth_via1"]
+        y = pin.by() + 0.045 + 0.5 * v if end == "bottom" else pin.uy() - 0.045 - 0.5 * v
+        return round(y / g) * g
+
+    def _m2_pin(self, name, end):
         """Bring a foundry M1 pin to M2 with a bare via1 (no extra M1)."""
         pin = max(self.dff_inst.get_pins(name), key=lambda p: p.area())
         g = drc["grid"]
         snap = lambda v: round(v / g) * g
         v = drc["minwidth_via1"]
-        ey = 0.045   # M1 enclosure of via1 along the pin (VIAn_EN_2b 0.04)
         x = snap(pin.cx())
+        y = self._end_y(pin, end)
+        self.add_rect_center(layer="via1", offset=vector(x, y), width=v, height=v)
         if name == "clk":
-            # Via at the top of the pin, joined to a full-height M2 clock
-            # strip at x=CLK_X (dff_array overlays its own strip and M3 via on
-            # the published pin).  The strip clears the supply via stacks
-            # parents drop on the rail ends at x=0 and the D pad.
-            y = snap(pin.uy() - ey - 0.5 * v)
-            self.add_rect_center(layer="via1", offset=vector(x, y), width=v, height=v)
+            # Jog on M2 to a full-height clock strip at x=CLK_X (the array
+            # overlays its own strip and M3 rail via on the published pin).
             left = min(CLK_X, x - 0.5 * v - 0.005)
             right = max(CLK_X + 0.10, x + 0.5 * v + 0.005)
             self.add_rect(layer="m2",
@@ -163,18 +183,24 @@ class ics55_dff(design):
             self.add_layout_pin(text=name, layer="m2",
                                 offset=vector(CLK_X, 0),
                                 width=0.10, height=SLOT_H)
+        elif name == "D":
+            # Via pad, then an M2 stub to the right; the pin is published at
+            # the stub end so a parent's landing pad stays clear of the clock.
+            xp = snap(x + D_SHIFT)
+            self.add_rect(layer="m2", offset=vector(x - 0.5 * v - 0.005, y - 0.5 * v - 0.04),
+                          width=v + 0.01, height=v + 0.08)
+            self.add_rect(layer="m2", offset=vector(x - 0.05, y - 0.05),
+                          width=xp - x + 0.10, height=0.10)
+            self.add_layout_pin_rect_center(text=name, layer="m2", offset=vector(xp, y),
+                                            width=0.10, height=v + 0.08)
         else:
-            # Via at the bottom of the pin; the pad grows downward to meet
-            # M2 minimum area, away from the clock jog above it.
-            y = snap(pin.by() + ey + 0.5 * v)
-            self.add_rect_center(layer="via1", offset=vector(x, y), width=v, height=v)
             # Publish only the via pad as the pin (parents size wires from the
-            # pin height); the extra M2 for minimum area is plain geometry.
-            top = y + 0.5 * v + 0.04
-            h = 0.56
+            # pin height); extra M2 for minimum area is plain geometry that
+            # grows *into* the slot (mirrored array rows abut at y=0).
+            bot = y - 0.5 * v - 0.04
             self.add_rect(layer="m2",
-                          offset=vector(x - 0.5 * v - 0.005, top - h),
-                          width=v + 0.01, height=h)
+                          offset=vector(x - 0.5 * v - 0.005, bot),
+                          width=v + 0.01, height=0.56)
             self.add_layout_pin(text=name, layer="m2",
                                 offset=vector(x - 0.5 * v - 0.005, y - 0.5 * v - 0.04),
                                 width=v + 0.01, height=v + 0.08)

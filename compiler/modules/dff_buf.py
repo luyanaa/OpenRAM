@@ -58,6 +58,8 @@ class dff_buf(design):
 
     def add_modules(self):
         self.dff = factory.create(module_type="dff")
+        # Forward an optional clock-rail height request of the DFF
+        self.clk_rail_y = getattr(self.dff, "clk_rail_y", None)
 
         self.inv1 = factory.create(module_type="pinv",
                                    size=self.inv1_size,
@@ -134,6 +136,10 @@ class dff_buf(design):
         self.mid_qb_pos = vector(0.5 * (z1_pin.cx() + a2_pin.cx()), z1_pin.cy())
         self.add_zjog(z1_pin.layer, z1_pin.center(), a2_pin.center())
 
+    def pin_offset(self, pin):
+        """Vertical offset of an output pin from the inverter output pin."""
+        return self.m2_nonpref_pitch
+
     def add_layout_pins(self):
 
         # Continous vdd rail along with label.
@@ -166,13 +172,16 @@ class dff_buf(design):
                             width=din_pin.width(),
                             height=din_pin.height())
 
+        # Drop the Q via on inv2's output strap (already the Q net) so its
+        # landing pad cannot touch the inverter's other metal.
         dout_pin = self.inv2_inst.get_pin("Z")
-        mid_pos = dout_pin.center() + vector(self.m2_nonpref_pitch, 0)
-        q_pos = mid_pos - vector(0, 2 * self.m2_nonpref_pitch)
+        # Q below the strap centre, Qb above it: parents route the two pins
+        # horizontally, so they must not share a height.
+        q_pos = dout_pin.center() - vector(0, self.pin_offset(dout_pin))
+        self.add_path(dout_pin.layer, [dout_pin.center(), q_pos])
         self.add_layout_pin_rect_center(text="Q",
                                         layer="m2",
                                         offset=q_pos)
-        self.add_path(self.route_layer, [dout_pin.center(), mid_pos, q_pos])
         self.add_via_stack_center(from_layer=dout_pin.layer,
                                   to_layer="m2",
                                   offset=q_pos)
@@ -180,7 +189,8 @@ class dff_buf(design):
         # Drop the Qb via on inv1's output strap (already the Qb net) so its
         # landing pad cannot touch unrelated metal of the second inverter.
         z1_pin = self.inv1_inst.get_pin("Z")
-        qb_pos = z1_pin.center()
+        qb_pos = z1_pin.center() + vector(0, self.pin_offset(z1_pin))
+        self.add_path(z1_pin.layer, [z1_pin.center(), qb_pos])
         self.add_layout_pin_rect_center(text="Qb",
                                         layer="m2",
                                         offset=qb_pos)

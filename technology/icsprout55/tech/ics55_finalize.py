@@ -38,6 +38,9 @@ IMP_ENC_ACT = 0.125     # NP_EN_2/PP_EN_2 implant enclosure of active
 GRID = 5                # dbu (5 nm)
 HOLE_MAX = 0.20         # fill metal holes smaller than this (MET*_A_2 0.18)
 # (layer, min area um2 with margin, spacing um)
+# metal -> (via below, metal below), for same-net detection
+LOWER = {(82, 1): ((91, 1), (81, 1)), (83, 1): ((92, 1), (82, 1)),
+         (84, 1): ((93, 1), (83, 1)), (85, 1): ((94, 1), (84, 1))}
 METAL_AREA = [((81, 1), 0.046, 0.12), ((82, 1), 0.056, 0.12),
               ((83, 1), 0.056, 0.12), ((84, 1), 0.056, 0.12),
               ((85, 1), 0.056, 0.12)]
@@ -201,6 +204,31 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             n_holes += 1
         top_cell.shapes(li).insert(fill)
 
+    # Same-net notches (MET1_S_1/METn_S_1 inside one polygon, e.g. a rail-end
+    # via pad next to a source strap): close each polygon by half the spacing
+    # and keep the fill where it stays one spacing away from other polygons.
+    n_notch = 0
+    for (lp, _a, space) in METAL_AREA:
+        li = layout.find_layer(lp[0], lp[1])
+        if li is None:
+            continue
+        metal = kdb.Region(top_cell.begin_shapes_rec(li))
+        metal.merge()
+        h = um(space / 2) + 1
+        fill = kdb.Region()
+        for poly in metal.each():
+            pr = kdb.Region(poly)
+            closed = pr.sized(h).sized(-h)
+            add = closed - pr
+            if add.is_empty():
+                continue
+            others = metal - pr
+            for piece in add.each():
+                if kdb.Region(piece).sized(um(space)).interacting(others).is_empty():
+                    fill.insert(piece)
+                    n_notch += 1
+        top_cell.shapes(li).insert(fill)
+
     # Metal minimum area (MET1_A_1, METn_A_1): OpenRAM leaves small landing
     # pads in via stacks and on pins.  Grow each under-area polygon in a
     # direction with room, keeping the layer spacing to all other metal.
@@ -251,6 +279,36 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
                     break
                 if ok:
                     break
+            if not ok and lp in LOWER:
+                # Bridge to a nearby polygon of the same net (both reach one
+                # polygon of the layer below through vias).
+                via_lp, low_lp = LOWER[lp]
+                vli = layout.find_layer(*via_lp)
+                lli = layout.find_layer(*low_lp)
+                if vli is not None and lli is not None:
+                    vias = kdb.Region(top_cell.begin_shapes_rec(vli))
+                    low = kdb.Region(top_cell.begin_shapes_rec(lli))
+                    low.merge()
+                    mine = low.interacting(vias & kdb.Region(poly))
+                    near = (metal - kdb.Region(poly)).interacting(kdb.Region(poly).sized(um(space)))
+                    for q in near.each():
+                        theirs = low.interacting(vias & kdb.Region(q))
+                        if (mine & theirs).is_empty():
+                            continue
+                        bb = box + q.bbox()
+                        if box.width() > box.height():
+                            bridge = kdb.Box(min(box.left, q.bbox().left), max(box.bottom, q.bbox().bottom),
+                                             max(box.right, q.bbox().right), min(box.top, q.bbox().top))
+                        else:
+                            bridge = kdb.Box(max(box.left, q.bbox().left), min(box.bottom, q.bbox().bottom),
+                                             min(box.right, q.bbox().right), max(box.top, q.bbox().top))
+                        if bridge.width() <= 0 or bridge.height() <= 0:
+                            continue
+                        rest = (metal - kdb.Region(poly)) - kdb.Region(q)
+                        if kdb.Region(bridge).sized(um(space)).interacting(rest).is_empty():
+                            added_m.insert(bridge)
+                            ok = True
+                            break
             if ok:
                 n_area_fixed += 1
             else:
@@ -263,7 +321,7 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     return dict(nact=nact.count(), pact=pact.count(), ntap=ntap.count(),
                 ptap=ptap.count(), nw_added=added.count(),
                 area_fixed=n_area_fixed, area_left=n_area_left,
-                holes_filled=n_holes)
+                holes_filled=n_holes, notches_filled=n_notch)
 
 
 if __name__ == "__main__":

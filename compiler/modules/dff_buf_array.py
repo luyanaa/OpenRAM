@@ -202,7 +202,8 @@ class dff_buf_array(design):
 
         # Create vertical spines to a single horizontal rail
         clk_pin = self.dff_insts[0, 0].get_pin("clk")
-        clk_ypos = 2 * self.m3_pitch + self.m3_width
+        # A DFF module may ask for the clock rail at a specific height
+        clk_ypos = getattr(self.dff, "clk_rail_y", None) or (2 * self.m3_pitch + self.m3_width)
         debug.check(clk_pin.layer=="m2", "DFF clk pin not on metal2")
         if self.columns==1:
             self.add_layout_pin(text="clk",

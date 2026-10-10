@@ -1,0 +1,12 @@
+word_size = 4
+num_words = 16
+tech_name = "icsprout55"
+stdcell_library = "SC9T"
+bitcell = "pbitcell"
+num_rw_ports = 1
+num_r_ports = 0
+num_w_ports = 0
+analytical_delay = True
+nominal_corner_only = True
+check_lvsdrc = False
+use_nix = False

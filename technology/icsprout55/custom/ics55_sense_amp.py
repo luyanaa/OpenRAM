@@ -109,8 +109,14 @@ class ics55_sense_amp(g.ics55_gen):
         for name, x in (("bl", self.bl_x), ("br", self.br_x)):
             self.add_layout_pin(text=name, layer="m2",
                                 offset=vector(x - 0.05, 0), width=0.10, height=self.height)
-        self.add_layout_pin(text="dout", layer="m2",
-                            offset=vector(xr - 0.05, 0), width=0.10, height=0.40)
+        # dout on M3 over the NMOS strip (no M3 there), clear of the M3
+        # supply rails the array runs at the rail heights; parents land on it
+        # with a single via3.
+        y_dout = self.snap(nA0 + 0.5 * wN)
+        self.add_rect_center(layer="via2", offset=vector(xr, y_dout), width=g.CT, height=g.CT)
+        self.add_rect_center(layer="m2", offset=vector(xr, y_dout), width=g.M2W, height=g.CT + 0.08)
+        self.add_layout_pin_rect_center(text="dout", layer="m3",
+                                        offset=vector(xr, y_dout), width=0.17, height=0.34)
         self.add_boundary()
 
     # ---- sense_amp interface (shared with the library-cell class)
@@ -121,10 +127,12 @@ class ics55_sense_amp(g.ics55_gen):
     get_cin = sense_amp_base.get_cin
     get_stage_effort = sense_amp_base.get_stage_effort
     analytical_power = sense_amp_base.analytical_power
-    get_enable_name = sense_amp_base.get_enable_name
     build_graph = sense_amp_base.build_graph
     is_non_inverting = sense_amp_base.is_non_inverting
     get_on_resistance = sense_amp_base.get_on_resistance
     get_input_capacitance = sense_amp_base.get_input_capacitance
     get_intrinsic_capacitance = sense_amp_base.get_intrinsic_capacitance
     cacti_rc_delay = sense_amp_base.cacti_rc_delay
+
+    def get_enable_name(self):
+        return self.en_name

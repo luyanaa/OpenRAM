@@ -342,6 +342,26 @@ parameter["bitcell_drain_cap"] = 0.1
 
 
 ###################################################
+# GDS finalization (called by sram.save after writing the GDS)
+###################################################
+
+def finalize_gds(gds_file, top_name):
+    """Derive legal NP/PP implants, fill N-well notches and fix metal
+    area/holes in the final macro GDS (see ics55_finalize.py)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ics55_finalize", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "ics55_finalize.py"))
+    fin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fin)
+    from openram import debug
+    info = fin.finalize_gds(gds_file, gds_file, top_name, lib_cell_names(),
+                            report=lambda s: debug.warning(s))
+    debug.info(1, "ics55_finalize: {}".format(info))
+    return info
+
+
+###################################################
 # Tool preferences
 ###################################################
 
