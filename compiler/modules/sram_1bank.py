@@ -251,6 +251,11 @@ class sram_1bank(design, verilog, lef):
             for inst in self.insts:
                 self.copy_power_pins(inst, pin_name, self.ext_supply[pin_name])
 
+        if OPTS.route_supplies == "pins":
+            # Only expose every supply pin at the top level (the integrator
+            # or an extraction with same-name virtual connect joins them).
+            return
+
         from openram.router import supply_router as router
         rtr = router(layers=self.supply_stack,
                      design=self,

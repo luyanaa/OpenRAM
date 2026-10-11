@@ -136,8 +136,10 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     # opposite-type active or poly.
     field_po = po - aa
     for _ in range(2):
-        po_in_pp = field_po.inside(pp)
-        po_in_np = field_po.inside(np_)
+        # "inside" against the macro-sized implant polygons is very slow;
+        # a piece is inside PP exactly when nothing of it is left outside.
+        po_in_pp = field_po.not_interacting(field_po - pp)
+        po_in_np = field_po.not_interacting(field_po - np_)
         grow_pp = po_in_pp.sized(um(POLY_ENC)) - pp
         grow_pp -= nact.sized(um(IMP_ENC_ACT)) + po_in_np.sized(um(POLY_ENC))
         grow_np = po_in_np.sized(um(POLY_ENC)) - np_
@@ -288,7 +290,11 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
 
     top_cell.shapes(layout.layer(NP[0], NP[1])).insert(np_)
     top_cell.shapes(layout.layer(PP[0], PP[1])).insert(pp)
-    layout.write(out_gds)
+    # GDSII allows at most 8191 points per boundary; the flat implant regions
+    # of a large macro exceed that, so let the writer split polygons.
+    opt = kdb.SaveLayoutOptions()
+    opt.gds2_max_vertex_count = 4000
+    layout.write(out_gds, opt)
     return dict(nact=nact.count(), pact=pact.count(), ntap=ntap.count(),
                 ptap=ptap.count(), nw_added=added.count(),
                 area_fixed=n_area_fixed, area_left=n_area_left,

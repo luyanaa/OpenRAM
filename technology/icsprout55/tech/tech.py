@@ -342,6 +342,14 @@ parameter["sa_en_nmos_size"] = 0.27
 parameter["sa_inv_pmos_size"] = 0.54
 parameter["sa_inv_nmos_size"] = 0.27
 parameter["bitcell_drain_cap"] = 0.1
+# pand2/3/4 with a large size use a multi-stage driver: the single-stage
+# w_en driver of a 128-bit word produced only a runt pulse in Spectre.
+parameter["multistage_and_drivers"] = True
+# PO_L_1: narrow poly at most 25 um from a contact.  pinv joins its fingers
+# with one strap contacted at the left end; at the 2.7 um control-logic
+# height size 120 is ~44 fingers (~20 um).  (The clock buffer of a 128-bit
+# word asked for 225.)
+parameter["pdriver_max_size"] = 120
 
 
 ###################################################

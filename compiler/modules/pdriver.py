@@ -62,6 +62,14 @@ class pdriver(pgate):
             # reverse the sizes to be from input to output
             self.size_list.reverse()
 
+            # A technology can bound the inverter size (e.g. a long
+            # single-contact gate strap); the last stages then drive a
+            # higher fanout than the stage effort.
+            from openram.tech import parameter
+            max_size = parameter.get("pdriver_max_size", None)
+            if max_size:
+                self.size_list = [min(x, max_size) for x in self.size_list]
+
     def create_netlist(self):
         self.compute_sizes()
         self.add_comment("sizes: {}".format(str(self.size_list)))

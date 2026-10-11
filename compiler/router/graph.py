@@ -223,18 +223,27 @@ class graph:
         debug.info(4, "Number of nodes in the routing graph: {}".format(len(self.nodes)))
 
 
+    def _spatial_candidates(self, attr, region):
+        """ Shapes of router.<attr> near the region (indexed if possible). """
+        items = getattr(self.router, attr)
+        if hasattr(items, "query"):
+            return items.query(region.rect)
+        return items
+
     def find_graph_blockages(self, region):
         """ Find blockages that overlap the routing region. """
 
-        for blockage in self.router.blockages:
+        included = {id(b) for b in self.graph_blockages}
+        for blockage in self._spatial_candidates("blockages", region):
             # Skip if already included
-            if blockage in self.graph_blockages:
+            if id(blockage) in included:
                 continue
             # Set the region's lpp to current blockage's lpp so that the
             # overlaps method works
             region.lpp = blockage.lpp
             if region.overlaps(blockage):
                 self.graph_blockages.append(blockage)
+                included.add(id(blockage))
         # Make sure that the source or target fake pins are included as blockage
         for shape in [self.source, self.target]:
             for blockage in self.graph_blockages:
@@ -248,15 +257,17 @@ class graph:
     def find_graph_vias(self, region):
         """ Find vias that overlap the routing region. """
 
-        for via in self.router.vias:
+        included = {id(v) for v in self.graph_vias}
+        for via in self._spatial_candidates("vias", region):
             # Skip if already included
-            if via in self.graph_vias:
+            if id(via) in included:
                 continue
             # Set the regions's lpp to current via's lpp so that the
             # overlaps method works
             region.lpp = via.lpp
             if region.overlaps(via):
                 self.graph_vias.append(via)
+                included.add(id(via))
 
 
     def build_bbox_trees(self):

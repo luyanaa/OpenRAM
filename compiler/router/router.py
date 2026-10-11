@@ -15,6 +15,67 @@ from .graph_utils import snap
 from .router_tech import router_tech
 
 
+class indexed_shapes(list):
+    """
+    A list of routing shapes with a bucket index on their bounding boxes.
+
+    The router keeps every blockage and via of the design in such lists and
+    asks for the shapes near a rectangle many times (once per new shape and
+    once per routing graph).  Scanning the whole list each time made routing
+    quadratic in the number of shapes, which is impractical for wide macros.
+    Shapes are only added through append/insert/extend and removed through
+    remove; a shape's rectangle must not change after it was added.
+    """
+    BUCKET = 5.0
+
+    def __init__(self, *args):
+        super().__init__()
+        self._grid = {}
+        self._seq = {}
+        self._next = 0
+        for x in args:
+            self.extend(x)
+
+    def _keys(self, rect, pad=0.0):
+        ll, ur = rect
+        b = self.BUCKET
+        for gx in range(int((ll.x - pad) // b), int((ur.x + pad) // b) + 1):
+            for gy in range(int((ll.y - pad) // b), int((ur.y + pad) // b) + 1):
+                yield (gx, gy)
+
+    def _add(self, obj):
+        self._seq[id(obj)] = self._next
+        self._next += 1
+        for k in self._keys(obj.rect):
+            self._grid.setdefault(k, []).append(obj)
+
+    def append(self, obj):
+        super().append(obj)
+        self._add(obj)
+
+    def insert(self, i, obj):
+        super().insert(i, obj)
+        self._add(obj)
+
+    def extend(self, objs):
+        for o in objs:
+            self.append(o)
+
+    def remove(self, obj):
+        super().remove(obj)
+        self._seq.pop(id(obj), None)
+
+    def query(self, rect, pad=0.01):
+        """ Live shapes whose bounding box may touch rect, in list order. """
+        found = {}
+        for k in self._keys(rect, pad):
+            for o in self._grid.get(k, ()):
+                s = self._seq.get(id(o))
+                if s is not None:
+                    found[id(o)] = (s, o)
+        return [o for _, o in sorted(found.values(), key=lambda x: x[0])]
+
+
 class router(router_tech):
     """
     This is the base class for routers that use the Hanan grid graph method.
@@ -45,9 +106,9 @@ class router(router_tech):
         self.all_pins = set()
         # This is all the blockages including the pins. The graph class handles
         # pins as blockages while considering their routability
-        self.blockages = []
+        self.blockages = indexed_shapes()
         # This is all the vias between routing layers
-        self.vias = []
+        self.vias = indexed_shapes()
         # Fake pins are imaginary pins on the side supply pins to route other
         # pins to them
         self.fake_pins = []
@@ -74,7 +135,8 @@ class router(router_tech):
         """
 
         merger_core = merger.get_core()
-        for shape in list(shape_list):
+        candidates = shape_list.query(merger.rect) if isinstance(shape_list, indexed_shapes) else list(shape_list)
+        for shape in candidates:
             shape_core = shape.get_core()
             # If merger contains the shape, remove it from the list
             if merger_core.contains(shape_core):
@@ -137,7 +199,7 @@ class router(router_tech):
                 # Skip this blockage if it's contained by a pin or an existing
                 # blockage
                 if new_shape.core_contained_by_any(self.all_pins) or \
-                   new_shape.core_contained_by_any(self.blockages):
+                   new_shape.core_contained_by_any(self.blockages.query(new_shape.rect)):
                     continue
                 # Merge previous blockages into this one if possible
                 self.merge_shapes(new_shape, self.blockages)
@@ -169,7 +231,7 @@ class router(router_tech):
             rect = [ll, ur]
             new_shape = graph_shape("via", rect, valid_lpp)
             # Skip this via if it's contained by an existing via blockage
-            if new_shape.contained_by_any(self.vias):
+            if new_shape.contained_by_any(self.vias.query(new_shape.rect)):
                 continue
             self.vias.append(self.inflate_shape(new_shape))
 

@@ -38,10 +38,21 @@ class pand3(pgate):
 
         # Add the well tap to the inverter because when stacked
         # vertically it is sometimes narrower
-        self.inv = factory.create(module_type="pdriver",
-                                  size_list=[self.size],
-                                  height=self.height,
-                                  add_wells=self.add_wells)
+        from openram.tech import parameter
+        if parameter.get("multistage_and_drivers", False) and self.size > 16:
+            # A single inverter of this size cannot be driven by a minimum
+            # NAND within short enable pulses (e.g. w_en for wide words);
+            # use an inverting multi-stage driver sized by logical effort.
+            self.inv = factory.create(module_type="pdriver",
+                                      fanout=self.size,
+                                      inverting=True,
+                                      height=self.height,
+                                      add_wells=self.add_wells)
+        else:
+            self.inv = factory.create(module_type="pdriver",
+                                      size_list=[self.size],
+                                      height=self.height,
+                                      add_wells=self.add_wells)
 
     def create_layout(self):
         if self.vertical:
