@@ -36,6 +36,8 @@ Both decks gave identical results on every layout tried so far.
 | ics55_1w1r_32x8 (SC9T, separate R/W clocks) | | 0 | 0 | CORRECT | CORRECT |
 | ics55_2rw_32x8 (SC9T) | | 0 | 0 | CORRECT | CORRECT |
 | ics55_1rw_16x4_h7cr (7T DFF) | | 138 | 138 | CORRECT | CORRECT |
+| ics55_1rw_32x32 (SC9T, static precharge) | 213.4 x 124.6 | 0 | 0 | CORRECT | CORRECT |
+| ics55_1rw_64x32 (SC9T, static precharge) | 214.3 x 208.6 | 0 | 0 | CORRECT | CORRECT |
 | ics55_1w1r_32x128 (SC9T, `route_supplies="pins"`) | 868.7 x 146.3 | 0 | 0 | CORRECT | CORRECT |
 | 1W+1R 64x128 (same, num_words = 64) | 867.6 x 238.3 | 0 | 0 | CORRECT | CORRECT |
 
@@ -172,16 +174,23 @@ layout around them is clean.
   - router: spatially indexed blockage/via lists; finalizer: faster PO
     implant test, GDS polygons split at 4000 vertices (8191 is the GDSII
     limit; the flat implants of a 128-bit macro exceeded it).
-* Found, not fixed (SIM_RESULTS.md "Problems found"): replica-bitline
-  leakage limits the clock-high time at hot corners; column-mux macros fail
+* Found, not fixed (SIM_RESULTS.md "Problems found"): column-mux macros fail
   reads at SS -40 C (sense amp PMOS isolation behind the NMOS mux); 2RW
   writes fail at SNFP 1.08 V 125 C (pull-down-only write driver).
 
+### 2026-10-11 (later) — static precharge, 1RW 32x32
+* `static_precharge` (tech parameter, on for ICS55): precharge for the whole
+  clock-high phase plus two extra `wl_en` stages; removes the replica-bitline
+  leakage limit (5 MHz passes at FF/FNSP 125 C post-layout).
+* `configs/ics55_1rw_32x32.py` / `ics55_1rw_64x32.py`: 0.027 / 0.045 mm²,
+  DRC 0 / LVS CORRECT on both decks; 32x32 post-layout pass on all corners
+  at 10-20 ns.  16x4, 1W+1R 32x8 and 2RW 32x8 rebuilt clean with the change.
+
 ## Open items
-* Before tapeout, fix the three simulation findings in SIM_RESULTS.md
-  (precharge/replica-bitline keeper, sense-amp isolation for column-mux
-  macros, full-swing write driver for 2RW), or restrict to 1W+1R with
-  `words_per_row = 1` and a 4-8 ns clock.
+* Before using column-mux or 2RW macros, fix the remaining simulation
+  findings in SIM_RESULTS.md (sense-amp isolation behind the column mux,
+  full-swing write driver for 2RW); 1RW / 1W+1R with `words_per_row = 1`
+  are fine.
 * The `.lib` is still OpenRAM's analytical model; use SIM_RESULTS.md for
   timing until a characterized .lib exists.
 * Read/write margins (SNM, Monte Carlo) were not simulated, only corners.

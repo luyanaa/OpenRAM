@@ -47,6 +47,7 @@ def main():
     ap.add_argument("--sp", help="netlist to simulate (default <mdir>/<macro>.sp)")
     ap.add_argument("--postlayout", action="store_true", help="--sp is an extracted netlist")
     ap.add_argument("--diag", action="store_true", help="save control nets for timing analysis")
+    ap.add_argument("--save", default="", help="extra nets to save, comma separated")
     a = ap.parse_args()
     mdir = os.path.abspath(a.mdir) if a.mdir else os.path.join(WORK, "runs", "out_" + a.macro)
     tag = a.tag or a.macro
@@ -72,7 +73,7 @@ def main():
                 os.path.abspath(a.sp) if a.sp else os.path.join(mdir, a.macro + ".sp"),
                 trace, scs, "--name", a.macro, "--period", str(T), "--corner", proc,
                 "--vdd", str(vdd), "--temp", str(temp), "--skew1", str(a.skew1)]
-               + (["--postlayout"] if a.postlayout else []) + (["--diag"] if a.diag else []))
+               + (["--postlayout"] if a.postlayout else []) + (["--diag"] if a.diag else []) + (["--save", a.save] if a.save else []))
             # liberal error preset (checked against moderate: < 2 ps difference)
             txt = open(scs).read()
             import re

@@ -1,0 +1,15 @@
+tech_name = "icsprout55"
+bitcell = "pbitcell"
+analytical_delay = True
+nominal_corner_only = True
+check_lvsdrc = False
+use_nix = False
+word_size = 32
+num_words = 32
+stdcell_library = "SC9T"
+num_rw_ports = 1
+num_r_ports = 0
+num_w_ports = 0
+# One word per row (no column mux): OpenRAM picks this for these sizes, and
+# column-mux macros fail reads at SS -40 C (SIM_RESULTS.md, problem 2).
+words_per_row = 1

@@ -350,6 +350,11 @@ parameter["multistage_and_drivers"] = True
 # height size 120 is ~44 fingers (~20 um).  (The clock buffer of a 128-bit
 # word asked for 225.)
 parameter["pdriver_max_size"] = 120
+# Precharge for the whole enabled clock-high phase instead of OpenRAM's
+# self-terminated pulse (control_logic): the floating replica bitline leaked
+# below VDD/2 within 5-10 ns at hot corners (writes lost, early s_en), which
+# set a minimum clock frequency and forbade stopping the clock high.
+parameter["static_precharge"] = True
 
 
 ###################################################

@@ -28,13 +28,12 @@ SNFP / FNSP (slow-N fast-P / fast-N slow-P) 1.08 V 125 C and 1.32 V -40 C.
   bits**): the width stays, each extra 128-bit word adds 2.875 um of
   height (~19.4 um² per bit); the periphery is ~0.048 mm².
 * Three design limits were found (details in "Problems found"):
-  1. **Maximum clock-high time** (minimum frequency): the replica bitline is
-     precharged only by a self-timed pulse, then floats; at hot/fast corners
-     it can leak to about VDD/2 within 5-10 ns (schematic; less post-layout).  The 1RW/2RW macros fail with a
-     10 ns period at FF 125 C (pass at 8 ns); 1W+1R passes 16 ns (32x8) and
-     20 ns (32x128).  **Do not stop the clock high, and keep the period
-     ≤ 8 ns (1RW/2RW) / ≤ 16 ns (1W+1R) at 50 % duty**; the clock may stop
-     low (or chip select may be deasserted).
+  1. **Maximum clock-high time — fixed** (`static_precharge`, see
+     "1RW 32x32" below): OpenRAM's self-terminated precharge left the
+     replica bitline floating for the rest of the clock-high phase; at hot
+     corners it leaked to about VDD/2 within 5-10 ns, so 1RW/2RW macros
+     failed at 10 ns periods.  The results tables below this summary were
+     taken before the fix (except the 32x32 section).
   2. **Column-mux macros fail at SS -40 C** (reads return all ones): the
      NMOS-only column mux passes the high bitline at VDD-Vt and the sense
      amp's PMOS isolation devices cannot pass the low one.  Use
@@ -43,8 +42,11 @@ SNFP / FNSP (slow-N fast-P / fast-N slow-P) 1.08 V 125 C and 1.32 V -40 C.
      driver only pulls down; the floating "high" bitline is discharged by the
      written cell itself, and the weak access NMOS cannot overpower the
      PMOS.  1RW and 1W+1R are fine on the same corner.
-* Recommended for the SoC: **1W+1R, `words_per_row = 1`, 50 % duty clock,
-  8 ns period** (TT-only parts down to ~4 ns), or the foundry compiler where
+* **1RW 32x32 (tapeout candidate)**: 213 x 125 um = 0.027 mm², DRC/LVS
+  clean, post-layout pass on all 9 corners at 10 and 20 ns and at 200 ns
+  (5 MHz) at the hot corners; minimum period ~7 ns (SS -40 C).
+* Recommended for the SoC: **1W+1R or 1RW, `words_per_row = 1`, 50 % duty
+  clock, 8 ns or slower** (TT-only parts down to ~4 ns), or the foundry compiler where
   a 1RW macro suffices (it is 7-10x denser and 2-3x faster, see the last
   section).
 
@@ -130,6 +132,36 @@ does not change the timing: schematic access 1.825 vs 1.834 ns at TT 2.5 ns,
 3.258 vs 3.276 ns at SS -40 C 4 ns (new vs old netlist).  The extracted
 netlist above is of the macro before that change.
 
+## 1RW 32x32 with static precharge (tapeout candidate)
+
+`configs/ics55_1rw_32x32.py`: 213.4 x 124.6 um = **0.0266 mm²**
+(64x32: 214.3 x 208.6 um = 0.0447 mm²), supplies routed, DRC 0 / LVS
+CORRECT on both decks.  Sizes before the fix were identical.
+
+| check | result |
+|---|---|
+| schematic, all 9 corners, 20 ns | pass |
+| schematic, TT and SS -40 C, 3 and 4 ns | pass (same slack as without the fix on 128x32) |
+| schematic, FF 125 C / FNSP 125 C / TT 125 C, 200 ns (5 MHz) | pass |
+| post-layout (xRC C), all 9 corners, 10 and 20 ns | pass |
+| post-layout, FF 125 C and FNSP 125 C, 200 ns | pass |
+| wordline rise after precharge release, post-layout FF/FNSP/TT | 75-133 ps (schematic 24-98 ps; 2 ps before the extra `wl_en` stages) |
+| dout hold after the next rising edge, post-layout | ≥ 0.47 ns |
+
+Post-layout self-timing at 10 ns (ns after the clock fall):
+
+| corner | dout | s_en | w_en end | read-limited period 2(dout+0.15) |
+|---|---|---|---|---|
+| tt 1.2 V 25 C | 1.16 | 1.69 | 1.74 | 2.6 |
+| ss 1.08 V 125 C | 2.54 | 3.33 | 3.47 | 5.4 |
+| ss 1.08 V -40 C | 3.16 | 2.95 | 3.06 | 6.6 |
+| fnsp 1.08 V 125 C | 2.26 | 2.20 | 2.23 | 4.8 |
+| snfp 1.08 V 125 C | 1.34 | 2.39 | 2.50 | 3.0 |
+| ff 1.32 V 125 / -40 C | 0.70 / 0.65 | 1.23 / 1.07 | 1.25 / 1.08 | 1.7 / 1.6 |
+
+So 50-100 MHz has ≥ 1.8 ns of read slack at SS -40 C, and there is no
+lower frequency limit; the clock may also stop in either phase.
+
 ## Other configurations (schematic, all corners)
 
 Passing period over the tested set {1.6/1.8, 2, 2.5, 4, 10} ns;
@@ -195,9 +227,15 @@ non-50 % duty clock), and **the clock must not be stopped high**.
 Stopping it low (or deasserting chip select) is safe.  For 1RW/2RW this
 leaves a narrow window once post-layout delays are added (the post-layout
 1W+1R 32x8 needs 6 ns at SS -40 C); post-layout 1RW/2RW were not simulated.
-Fix options (not implemented): precharge for the whole high phase
-(`p_en_bar` from `gated_clk_buf` only, with the precharge release ordered
-before `wl_en`), or a weak keeper on the replica bitline.
+**Fixed** with `parameter["static_precharge"] = True` (tech.py, now the
+ICS55 default): `p_en_bar = NAND(gated_clk_buf, gated_clk_buf)`, i.e.
+precharge for the whole enabled high phase, and two extra stages in front
+of the `wl_en` driver so the wordline rises after the precharge is
+released.  This is how OpenRAM worked before 2019 (`d36f14b4` introduced
+the self-terminated pulse, which removes the precharge/wordline race at
+the falling edge at the cost of floating bitlines; harmless in low-leakage
+processes and fast clocks, which is what the other OpenRAM technologies
+are used with).  Verification in the "1RW 32x32" section.
 
 ### 2. Column mux + sense amp at slow-N / cold
 

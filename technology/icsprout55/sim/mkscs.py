@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--tr", type=float, default=0.03)         # ns edge time
     ap.add_argument("--postlayout", action="store_true", help="extracted netlist (no pre_layout)")
     ap.add_argument("--diag", action="store_true", help="also save the control nets (s_en, w_en, ...)")
+    ap.add_argument("--save", default="", help="extra nets to save, comma separated")
     a = ap.parse_args()
     T, tr, V = a.period, a.tr, a.vdd
     pins = subckt_pins(a.sp, a.name)
@@ -113,6 +114,8 @@ def main():
         ctrl = ["s_en{}", "w_en{}", "wl_en{}", "rbl_bl{}", "p_en_bar{}", "clk_buf{}"]
         nports = len(clocks)
         saves += " " + " ".join("XSRAM." + c.format(i) for c in ctrl for i in range(nports))
+    if a.save:
+        saves += " " + " ".join(a.save.split(","))
     L.append("save {} VDD:p".format(saves))
     L.append("simOpts options temp={} tnom=25 reltol=1e-3 vabstol=1e-6 iabstol=1e-12 "
              "rawfmt=psfascii".format(a.temp))

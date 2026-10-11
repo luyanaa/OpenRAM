@@ -80,8 +80,9 @@ is unmodified.
 (Verilog-generated access sequences, post-layout via Calibre xRC).  Results,
 the recommended clocking and the known problems are in
 [SIM_RESULTS.md](SIM_RESULTS.md).  In short: use 1W+1R (or 1RW) with
-`words_per_row = 1`, a 50 % duty clock of 4-8 ns, and do not stop the clock
-high.
+`words_per_row = 1` and a 50 % duty clock of 8 ns or slower (no lower
+limit: precharge is static, `static_precharge` in tech.py).  A small 1RW
+32x32 is `configs/ics55_1rw_32x32.py` (0.027 mm²).
 
 Large macros: `route_supplies = "pins"` skips OpenRAM's supply router (hours
 for 128-bit words) and exports every supply pin; the SoC power grid joins
