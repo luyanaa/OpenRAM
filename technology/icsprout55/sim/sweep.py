@@ -15,6 +15,8 @@ CORNERS = {
     "tt_1p2_25":     ("tt", 1.20, 25),
     "tt_1p2_85":     ("tt", 1.20, 85),
     "tt_1p2_125":    ("tt", 1.20, 125),
+    "ss_1p08_0":     ("ss", 1.08, 0),
+    "ff_1p32_0":     ("ff", 1.32, 0),
     "ss_1p08_125":   ("ss", 1.08, 125),
     "ss_1p08_m40":   ("ss", 1.08, -40),
     "ff_1p32_m40":   ("ff", 1.32, -40),
@@ -48,6 +50,7 @@ def main():
     ap.add_argument("--postlayout", action="store_true", help="--sp is an extracted netlist")
     ap.add_argument("--diag", action="store_true", help="save control nets for timing analysis")
     ap.add_argument("--save", default="", help="extra nets to save, comma separated")
+    ap.add_argument("--cload", type=float, default=None, help="fF on every dout (mkscs default 5)")
     a = ap.parse_args()
     mdir = os.path.abspath(a.mdir) if a.mdir else os.path.join(WORK, "runs", "out_" + a.macro)
     tag = a.tag or a.macro
@@ -59,7 +62,7 @@ def main():
             tdir, "--cycles", str(a.cycles)], stdout=subprocess.DEVNULL)
         sh(SSH + ["sh {} {} {}".format(VM(os.path.join(HERE, "vmrun.sh")), VM(tdir),
                                         VM(os.path.join(mdir, a.macro + ".v")))])
-    corners = [c for c in CORNERS if c not in ("tt_1p2_85", "tt_1p2_125")] if a.corners == "all" else a.corners.split(",")
+    corners = [c for c in CORNERS if c not in ("tt_1p2_85", "tt_1p2_125", "ss_1p08_0", "ff_1p32_0")] if a.corners == "all" else a.corners.split(",")
     periods = [float(x) for x in a.periods.split(",")]
     jobs = []
     for c in corners:
@@ -73,7 +76,8 @@ def main():
                 os.path.abspath(a.sp) if a.sp else os.path.join(mdir, a.macro + ".sp"),
                 trace, scs, "--name", a.macro, "--period", str(T), "--corner", proc,
                 "--vdd", str(vdd), "--temp", str(temp), "--skew1", str(a.skew1)]
-               + (["--postlayout"] if a.postlayout else []) + (["--diag"] if a.diag else []) + (["--save", a.save] if a.save else []))
+               + (["--postlayout"] if a.postlayout else []) + (["--diag"] if a.diag else []) + (["--save", a.save] if a.save else [])
+               + (["--cload", str(a.cload)] if a.cload is not None else []))
             # liberal error preset (checked against moderate: < 2 ps difference)
             txt = open(scs).read()
             import re

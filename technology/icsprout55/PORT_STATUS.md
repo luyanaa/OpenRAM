@@ -36,6 +36,7 @@ Both decks gave identical results on every layout tried so far.
 | ics55_1w1r_32x8 (SC9T, separate R/W clocks) | | 0 | 0 | CORRECT | CORRECT |
 | ics55_2rw_32x8 (SC9T) | | 0 | 0 | CORRECT | CORRECT |
 | ics55_1rw_16x4_h7cr (7T DFF) | | 138 | 138 | CORRECT | CORRECT |
+| ics55_1rw_16x32 (SC9T, static precharge) | 212.95 x 83.06 | 0 | 0 | CORRECT | CORRECT |
 | ics55_1rw_32x32 (SC9T, static precharge) | 213.4 x 124.6 | 0 | 0 | CORRECT | CORRECT |
 | ics55_1rw_64x32 (SC9T, static precharge) | 214.3 x 208.6 | 0 | 0 | CORRECT | CORRECT |
 | ics55_1w1r_32x128 (SC9T, `route_supplies="pins"`) | 868.7 x 146.3 | 0 | 0 | CORRECT | CORRECT |
@@ -185,6 +186,17 @@ layout around them is clean.
 * `configs/ics55_1rw_32x32.py` / `ics55_1rw_64x32.py`: 0.027 / 0.045 mm²,
   DRC 0 / LVS CORRECT on both decks; 32x32 post-layout pass on all corners
   at 10-20 ns.  16x4, 1W+1R 32x8 and 2RW 32x8 rebuilt clean with the change.
+
+### 2026-10-11 (night) — 1RW 16x32 delivery
+* Static precharge now also covers idle cycles (`p_en_bar = gated_clk_bar`).
+* `configs/ics55_1rw_16x32.py`: 212.95 x 83.06 um (33 % smaller than 32x32).
+  Post-layout pass on all corners at 8-200 ns.
+* `scripts/package_macro.py` builds a flow-ready directory: VDD/VSS pin
+  names, LEF 5.8 / DATABASE 1000 / full MET1-4 OBS / antenna data, CDL that
+  references the foundry DFFQX1_9TSVT in its port order, Liberty for 8
+  corners from `sim/charz.py` measurements (`sim/mklib.py`), Verilog model +
+  stub.  Checked: Calibre DRC/LVS (both decks) on the packaged GDS/CDL,
+  Genus (libs + synthesis), Innovus (place, power, route, verify).
 
 ## Open items
 * Before using column-mux or 2RW macros, fix the remaining simulation

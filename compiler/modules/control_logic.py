@@ -94,6 +94,7 @@ class control_logic(control_logic_base):
         # prepended 3 inverter stages to guarantee it is slower and odd polarity
         self.p_en_bar_driver = factory.create(module_type="pdriver",
                                               fanout=self.num_cols,
+                                              inverting=bool(parameter.get("static_precharge", False)),
                                               height=dff_height)
 
         self.nand2 = factory.create(module_type="pnand2",
@@ -242,19 +243,24 @@ class control_logic(control_logic_base):
                                               mod=self.nand2)
         # We use the rbl_bl_delay here to ensure that the p_en is only asserted when the
         # bitlines have already been discharged. Otherwise, it is a combination loop.
-        # With the technology's static_precharge, precharge instead stays on for the
-        # whole (enabled) high phase: the self-terminated pulse leaves the bitlines and
-        # the replica bitline floating until the clock falls, which limits the
+        # With the technology's static_precharge, precharge is instead on whenever
+        # no access is in its low phase (high phase and idle cycles): the
+        # self-terminated pulse leaves the bitlines and the replica bitline floating
+        # until the clock falls (and through idle cycles), which limits the
         # clock-high time in leaky processes.
-        self.connect_inst(["gated_clk_buf", self.pen_second_input(), "p_en_bar_unbuf", "vdd", "gnd"])
+        self.connect_inst(self.pen_inputs() + ["p_en_bar_unbuf", "vdd", "gnd"])
 
         self.p_en_bar_driver_inst=self.add_inst(name="buf_p_en_bar",
                                                 mod=self.p_en_bar_driver)
         self.connect_inst(["p_en_bar_unbuf", "p_en_bar", "vdd", "gnd"])
 
-    def pen_second_input(self):
+    def pen_inputs(self):
         from openram.tech import parameter
-        return "gated_clk_buf" if parameter.get("static_precharge", False) else "rbl_bl_delay"
+        if parameter.get("static_precharge", False):
+            # p_en_bar = gated_clk_bar (through an inverting driver): precharge
+            # whenever no access is in its low phase, including idle cycles.
+            return ["gated_clk_bar", "gated_clk_bar"]
+        return ["gated_clk_buf", "rbl_bl_delay"]
 
     def place_pen_row(self, row):
         x_offset = self.control_x_offset
@@ -265,7 +271,7 @@ class control_logic(control_logic_base):
         self.row_end_inst.append(self.p_en_bar_driver_inst)
 
     def route_pen(self):
-        in_map = zip(["A", "B"], ["gated_clk_buf", self.pen_second_input()])
+        in_map = zip(["A", "B"], self.pen_inputs())
         self.connect_vertical_bus(in_map, self.p_en_bar_nand_inst, self.input_bus)
 
         out_pin = self.p_en_bar_nand_inst.get_pin("Z")

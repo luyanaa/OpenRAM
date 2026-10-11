@@ -42,9 +42,11 @@ SNFP / FNSP (slow-N fast-P / fast-N slow-P) 1.08 V 125 C and 1.32 V -40 C.
      driver only pulls down; the floating "high" bitline is discharged by the
      written cell itself, and the weak access NMOS cannot overpower the
      PMOS.  1RW and 1W+1R are fine on the same corner.
-* **1RW 32x32 (tapeout candidate)**: 213 x 125 um = 0.027 mm², DRC/LVS
-  clean, post-layout pass on all 9 corners at 10 and 20 ns and at 200 ns
-  (5 MHz) at the hot corners; minimum period ~7 ns (SS -40 C).
+* **1RW 16x32 (delivered macro)**: 213 x 83 um = 0.0177 mm², DRC/LVS
+  clean, post-layout pass on all corners at 8 (SS), 10, 20 and 200 ns;
+  Liberty for 8 corners from post-layout Spectre measurements
+  (`scripts/package_macro.py`, `sim/charz.py`, `sim/mklib.py`).  32x32 is
+  0.027 mm².
 * Recommended for the SoC: **1W+1R or 1RW, `words_per_row = 1`, 50 % duty
   clock, 8 ns or slower** (TT-only parts down to ~4 ns), or the foundry compiler where
   a 1RW macro suffices (it is 7-10x denser and 2-3x faster, see the last
@@ -228,10 +230,16 @@ Stopping it low (or deasserting chip select) is safe.  For 1RW/2RW this
 leaves a narrow window once post-layout delays are added (the post-layout
 1W+1R 32x8 needs 6 ns at SS -40 C); post-layout 1RW/2RW were not simulated.
 **Fixed** with `parameter["static_precharge"] = True` (tech.py, now the
-ICS55 default): `p_en_bar = NAND(gated_clk_buf, gated_clk_buf)`, i.e.
-precharge for the whole enabled high phase, and two extra stages in front
-of the `wl_en` driver so the wordline rises after the precharge is
-released.  This is how OpenRAM worked before 2019 (`d36f14b4` introduced
+ICS55 default): `p_en_bar = gated_clk_bar` (NAND of it with itself plus an
+inverting driver), i.e. precharge whenever no access is in its clock-low
+phase, which includes the high phase and idle (`csb` high) cycles; and two
+extra stages in front of the `wl_en` driver so the wordline rises after the
+precharge is released (post-layout 71-247 ps on all corners).  A first
+version (precharge only in the enabled high phase) left the bitlines
+floating in idle cycles and at power-up; the 32x32 numbers below were
+taken with it.  At the rising edge the precharge turns on 0.1-0.36 ns
+before the wordline is off, i.e. the selected cell briefly sees precharged
+bitlines, which is the normal read condition.  This is how OpenRAM worked before 2019 (`d36f14b4` introduced
 the self-terminated pulse, which removes the precharge/wordline race at
 the falling edge at the cost of floating bitlines; harmless in low-leakage
 processes and fast clocks, which is what the other OpenRAM technologies
