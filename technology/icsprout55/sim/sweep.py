@@ -13,6 +13,8 @@ from simenv import WORK, SSH, VM
 
 CORNERS = {
     "tt_1p2_25":     ("tt", 1.20, 25),
+    "tt_1p2_85":     ("tt", 1.20, 85),
+    "tt_1p2_125":    ("tt", 1.20, 125),
     "ss_1p08_125":   ("ss", 1.08, 125),
     "ss_1p08_m40":   ("ss", 1.08, -40),
     "ff_1p32_m40":   ("ff", 1.32, -40),
@@ -56,7 +58,7 @@ def main():
             tdir, "--cycles", str(a.cycles)], stdout=subprocess.DEVNULL)
         sh(SSH + ["sh {} {} {}".format(VM(os.path.join(HERE, "vmrun.sh")), VM(tdir),
                                         VM(os.path.join(mdir, a.macro + ".v")))])
-    corners = list(CORNERS) if a.corners == "all" else a.corners.split(",")
+    corners = [c for c in CORNERS if c not in ("tt_1p2_85", "tt_1p2_125")] if a.corners == "all" else a.corners.split(",")
     periods = [float(x) for x in a.periods.split(",")]
     jobs = []
     for c in corners:
