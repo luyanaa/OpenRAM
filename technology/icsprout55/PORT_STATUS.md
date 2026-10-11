@@ -36,6 +36,8 @@ Both decks gave identical results on every layout tried so far.
 | ics55_1w1r_32x8 (SC9T, separate R/W clocks) | | 0 | 0 | CORRECT | CORRECT |
 | ics55_2rw_32x8 (SC9T) | | 0 | 0 | CORRECT | CORRECT |
 | ics55_1rw_16x4_h7cr (7T DFF) | | 138 | 138 | CORRECT | CORRECT |
+| ics55_1w1r_32x128 (SC9T, `route_supplies="pins"`) | 868.7 x 146.3 | 0 | 0 | CORRECT | CORRECT |
+| 1W+1R 64x128 (same, num_words = 64) | 867.6 x 238.3 | 0 | 0 | CORRECT | CORRECT |
 
 All 138 results of the 7T macro are inside the 17 vendor `DFFQX1H7R`
 instances (the vendor cell alone has the same categories); the generated
@@ -151,11 +153,36 @@ layout around them is clean.
 * Finalizer metal clean-up rewritten with spatially indexed queries (the
   256x8 macro took >9 min before, ~1 min now).
 
+### 2026-10-11 — Spectre simulation (see SIM_RESULTS.md)
+* `sim/`: Verilog-driven Spectre harness (VCS trace of OpenRAM's model,
+  9 corners, pass/fail per read, self-timing and leakage analysis), Calibre
+  xRC extraction (`vmpex.sh`; `verify/mkdecks.sh` now also derives
+  `tape_pex.svrf`).
+* **1W+1R 32x128 (SC9T) works on all corners**, schematic and post-layout;
+  3.0 ns at TT, 7.5 ns at SS -40 C post-layout (8 ns recommended).
+  64x128 is 1.63x the area of 32x128.
+* Fixed on the way:
+  - w_en of a 128-bit word was a runt pulse (single-stage pand3 output
+    inverter of size >100 behind a minimum NAND): pand2/3/4 use a
+    multi-stage `pdriver` when `multistage_and_drivers` is set and size > 16;
+  - PO_L_1 (narrow poly > 25 um from a contact) in the 82-finger clock
+    buffer of a 128-bit word: `pdriver_max_size = 120` caps pdriver stages;
+  - `route_supplies = "pins"`: export the supply pins without running the
+    supply router (3.1 h for 32x128 with the full router, 72 s without);
+  - router: spatially indexed blockage/via lists; finalizer: faster PO
+    implant test, GDS polygons split at 4000 vertices (8191 is the GDSII
+    limit; the flat implants of a 128-bit macro exceeded it).
+* Found, not fixed (SIM_RESULTS.md "Problems found"): replica-bitline
+  leakage limits the clock-high time at hot corners; column-mux macros fail
+  reads at SS -40 C (sense amp PMOS isolation behind the NMOS mux); 2RW
+  writes fail at SNFP 1.08 V 125 C (pull-down-only write driver).
+
 ## Open items
-* Functional/timing simulation: not done.  The `.lib` is OpenRAM's
-  analytical model.  The foundry models are encrypted HSPICE; a Spectre or
-  HSPICE run on the EDA VM (read/write, disturb, corners) is the next step
-  before relying on the logic-rule bitcell in silicon.
+* Before tapeout, fix the three simulation findings in SIM_RESULTS.md
+  (precharge/replica-bitline keeper, sense-amp isolation for column-mux
+  macros, full-swing write driver for 2RW), or restrict to 1W+1R with
+  `words_per_row = 1` and a 4-8 ns clock.
+* The `.lib` is still OpenRAM's analytical model; use SIM_RESULTS.md for
+  timing until a characterized .lib exists.
+* Read/write margins (SNM, Monte Carlo) were not simulated, only corners.
 * Antenna rules are part of the decks run and pass; density is chip-level.
-* Larger macros (e.g. 1-2 KB) were not run yet; compile time grows with the
-  OpenRAM router (256x8: ~2 min).

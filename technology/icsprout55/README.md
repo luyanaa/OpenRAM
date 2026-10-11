@@ -74,10 +74,25 @@ edge are chip-level checks done after the SoC fill.  The tapeout LVS
 runset's chip-specific `lvs_box.list` include is disabled.  Everything else
 is unmodified.
 
+## Simulation
+
+`sim/` runs the macros in Spectre with the foundry models on all corners
+(Verilog-generated access sequences, post-layout via Calibre xRC).  Results,
+the recommended clocking and the known problems are in
+[SIM_RESULTS.md](SIM_RESULTS.md).  In short: use 1W+1R (or 1RW) with
+`words_per_row = 1`, a 50 % duty clock of 4-8 ns, and do not stop the clock
+high.
+
+Large macros: `route_supplies = "pins"` skips OpenRAM's supply router (hours
+for 128-bit words) and exports every supply pin; the SoC power grid joins
+them (an extraction of the stand-alone macro then needs
+`VIRTUAL CONNECT NAME vdd gnd`, see `sim/vmpex.sh`).
+
 ## Limitations
 
-* Timing in the `.lib` is analytical; no SPICE characterization with the
-  foundry models has been done.
+* Timing in the `.lib` is analytical; the Spectre results in
+  SIM_RESULTS.md are the reference until a characterized `.lib` exists.
 * The macro uses M1–M4 internally (M4 only for short connectors and the
   supply grid); M5 and above are free for the SoC.
-* Read/write margins of the logic-rule bitcell are not simulated.
+* Read/write margins of the logic-rule bitcell (SNM, Monte Carlo) are not
+  simulated, only process corners.
