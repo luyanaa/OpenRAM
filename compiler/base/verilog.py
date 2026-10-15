@@ -245,35 +245,64 @@ class verilog:
 
     def add_write_write_checks(self):
         """Emit an opt-in guard for overlapping writes to the same physical row."""
-        pairs = [(port0, port1)
-                 for i, port0 in enumerate(self.write_ports)
-                 for port1 in self.write_ports[i + 1:]]
-        if not pairs:
+        if len(self.write_ports) < 2:
             return
 
+        row_shift = self.col_addr_size
         self.vf.write("\n`ifdef OPENRAM_ASSERTIONS\n")
-        for port0, port1 in pairs:
-            conditions = ["(csb{0} === 1'b0)".format(port0),
-                          "(csb{0} === 1'b0)".format(port1)]
-            if port0 in self.readwrite_ports:
-                conditions.append("(web{0} === 1'b0)".format(port0))
-            if port1 in self.readwrite_ports:
-                conditions.append("(web{0} === 1'b0)".format(port1))
-            condition = " && ".join(conditions)
-            row_shift = self.col_addr_size
-            row_conflict = "({0} && ((addr{1} >> {2}) === (addr{3} >> {2})))".format(
-                condition, port0, row_shift, port1)
-            message = ("OpenRAM overlapping writes to the same physical row "
-                       "on ports {0} and {1} are undefined").format(port0, port1)
-            self.vf.write("  always @* begin\n")
-            self.vf.write("    if {0}\n".format(row_conflict))
-            self.vf.write("      $fatal(1, \"{0}\");\n".format(message))
-            self.vf.write("  end\n\n")
+        for port in self.write_ports:
+            self.vf.write("  reg port{0}_write_pending;\n".format(port))
+            self.vf.write("  reg [ADDR_WIDTH-1:0] port{0}_write_pending_addr;\n".format(port))
+            self.vf.write("  reg port{0}_write_completed_valid;\n".format(port))
+            self.vf.write("  reg [ADDR_WIDTH-1:0] port{0}_write_completed_addr;\n".format(port))
+            self.vf.write("  realtime port{0}_write_completed_time;\n".format(port))
             self.vf.write("  initial begin\n")
-            self.vf.write("    #0;\n")
-            self.vf.write("    if {0}\n".format(row_conflict))
-            self.vf.write("      $fatal(1, \"{0}\");\n".format(message))
-            self.vf.write("  end\n\n")
+            self.vf.write("    port{0}_write_pending = 1'b0;\n".format(port))
+            self.vf.write("    port{0}_write_pending_addr = 0;\n".format(port))
+            self.vf.write("    port{0}_write_completed_valid = 1'b0;\n".format(port))
+            self.vf.write("    port{0}_write_completed_addr = 0;\n".format(port))
+            self.vf.write("    port{0}_write_completed_time = 0.0;\n".format(port))
+            self.vf.write("  end\n")
+
+        for port in self.write_ports:
+            if port in self.readwrite_ports:
+                write_enabled = "(csb{0} === 1'b0) && (web{0} === 1'b0)".format(port)
+            else:
+                write_enabled = "(csb{0} === 1'b0)".format(port)
+            self.vf.write("\n  always @(posedge clk{0}) begin\n".format(port))
+            self.vf.write("    if ({0}) begin\n".format(write_enabled))
+            self.vf.write("      port{0}_write_pending_addr = addr{0};\n".format(port))
+            self.vf.write("      port{0}_write_pending = 1'b1;\n".format(port))
+            self.vf.write("      #0;\n")
+            for other in self.write_ports:
+                if other == port:
+                    continue
+                row_match = "((port{0}_write_pending_addr >> {1}) === " \
+                            "(port{2}_write_pending_addr >> {1}))".format(
+                                other, row_shift, port)
+                pending_conflict = "((port{0}_write_pending === 1'b1) && {1})".format(
+                    other, row_match)
+                completed_row_match = "((port{0}_write_completed_addr >> {1}) === " \
+                                      "(port{2}_write_pending_addr >> {1}))".format(
+                                          other, row_shift, port)
+                boundary_conflict = "((port{0}_write_completed_valid === 1'b1) && " \
+                                    "(port{0}_write_completed_time == $realtime) && {1})".format(
+                                        other, completed_row_match)
+                message = ("OpenRAM overlapping writes to the same physical row "
+                           "on ports {0} and {1} are undefined").format(port, other)
+                self.vf.write("      if ({0} || {1})\n".format(pending_conflict, boundary_conflict))
+                self.vf.write("        $fatal(1, \"{0}\");\n".format(message))
+            self.vf.write("    end\n")
+            self.vf.write("  end\n")
+
+            self.vf.write("  always @(negedge clk{0}) begin\n".format(port))
+            self.vf.write("    if (port{0}_write_pending === 1'b1) begin\n".format(port))
+            self.vf.write("      port{0}_write_completed_addr = port{0}_write_pending_addr;\n".format(port))
+            self.vf.write("      port{0}_write_completed_time = $realtime;\n".format(port))
+            self.vf.write("      port{0}_write_completed_valid = 1'b1;\n".format(port))
+            self.vf.write("      #0 port{0}_write_pending = 1'b0;\n".format(port))
+            self.vf.write("    end\n")
+            self.vf.write("  end\n")
         self.vf.write("`endif\n")
 
     def add_read_block(self, port):

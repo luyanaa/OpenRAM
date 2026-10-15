@@ -60,36 +60,52 @@ netlists are in drawn microns.
 
 ## Measured multi-port Liberty
 
+`tbgen.py` reads the `// Port N: RW|R|W` comments on the generated behavioral
+model. Its `C` trace records include both `roleN=RW|R|W` and `opN=I|R|W`.
+`charz.py` uses those fields to classify operations; pure read and write ports
+need no `webN` pin. Re-generate traces with `tbgen.py` before characterizing a
+pure R or W port.
+
 `charz.py` records per-port timing and energy from a `--diag` run. `--diag`
 also saves each `XSRAM.XcontrolN.rbl_bl_delay` replica net. Use separate sweep
 tags for the two output loads; each run otherwise reuses the same trace and
-corner:
+corner. Supply the selected standard-cell library so the measurement carries
+the DFF-library provenance used for setup/hold:
 
 ```sh
 S=technology/icsprout55/sim
+STDCELL_LIBRARY=SC9T     # use the same value selected by the macro config
 python3 $S/sweep.py ics55_2rw_32x8 --periods 8 --corners ss_1p08_m40 \
     --cycles 24 --tag char_m5 --cload 5 --tr 0.03 --diag
 python3 $S/sweep.py ics55_2rw_32x8 --periods 8 --corners ss_1p08_m40 \
     --cycles 24 --tag char_m50 --cload 50 --tr 0.03 --diag
 python3 $S/charz.py $ICS55_WORK/sim/char_m5/ss_1p08_m40_T8p0.raw \
     $ICS55_WORK/sim/char_m5/trace.txt --period 8 --vdd 1.08 --temp -40 \
-    --corner ss --ports 0,1 --load-ff 5 --input-slew-ns 0.03 > m5.json
+    --corner ss --stdcell-library "$STDCELL_LIBRARY" --ports 0,1 \
+    --load-ff 5 --input-slew-ns 0.03 > m5.json
 python3 $S/charz.py $ICS55_WORK/sim/char_m50/ss_1p08_m40_T8p0.raw \
     $ICS55_WORK/sim/char_m50/trace.txt --period 8 --vdd 1.08 --temp -40 \
-    --corner ss --ports 0,1 --load-ff 50 --input-slew-ns 0.03 > m50.json
+    --corner ss --stdcell-library "$STDCELL_LIBRARY" --ports 0,1 \
+    --load-ff 50 --input-slew-ns 0.03 > m50.json
 ```
 
 Assemble those samples under `m5` and `m50` in the `mklib.py` input schema,
-with `dff_setup` and `dff_hold` in ns and the corner's `vdd`/`temp`. The
-samples carry their own load/slew/corner metadata; the generator rejects
-mismatched axes. For example, a 2RW input sample has
-`"ports": {"0": {...}, "1": {...}}`. Then generate all RW-port interfaces:
+with per-port `dff_setup` and `dff_hold` in ns and the corner's `vdd`/`temp`.
+Keep each `charz.py` sample's root `stdcell_library` field and each port's
+`role`; `mklib.py` rejects missing or mismatched library/role metadata. For a
+2RW macro the port roles are `0:RW,1:RW`; a 1W+1R macro uses `0:W,1:R` when
+those are the behavioral-model port indices.
 
 ```sh
 python3 $S/mklib.py measurements.json ics55_2rw_32x8 out/lib \
-    --words 32 --bits 8 --area "$AREA_UM2" --ports 0,1 --power-pins VDD,VSS
+    --words 32 --bits 8 --area "$AREA_UM2" --stdcell-library "$STDCELL_LIBRARY" \
+    --port-roles 0:RW,1:RW --ports 0,1 --power-pins VDD,VSS
 ```
 
+The Liberty pins and memory descriptions follow those port roles: RW exposes
+read and write pins, R exposes only read pins/arcs, and W exposes only write
+pins/arcs. Per-port setup/hold, read delay, write-enable, and energy metrics
+remain separate; unavailable operations do not receive fallback RW arcs.
 The Liberty tables contain only the two measured loads and one measured input
 slew; no interpolation or extrapolation is generated. `max_capacitance` is
 the largest measured load. Use the library only inside the recorded slew/load
@@ -103,7 +119,13 @@ Concurrent writes to the same physical row have undefined data and no
 priority, even when column-muxed logical addresses differ. The reference
 `ics55_2rw_32x8` config sets `words_per_row = 1`, so distinct addresses occupy
 distinct rows; only overlapping writes to the same address remain undefined.
-Single-bank and multi-bank behavioral Verilog terminate with `$fatal` on
-same-row write conflicts when compiled with `OPENRAM_ASSERTIONS`; packaged
-black-box stubs document the same physical-row contract. The guard does not
-arbitrate or repair the access.
+The behavioral guard samples each port's raw CSB/WEB and full address at its
+positive clock edge; that write window remains pending through the port's
+following negative edge. It compares physical rows after removing column-mux
+select bits while retaining bank bits, and catches same-time start/completion
+boundaries. Compile with `OPENRAM_ASSERTIONS` to make single-bank and multibank
+models terminate with `$fatal` on a conflict. The regression in
+`compiler/tests/25_verilog_write_window_test.py` covers distinct logical words
+in one physical row, read-only overlap, different rows/banks, post-sample input
+changes, different clock periods/phases, stopped-high/stopped-low clocks, and
+both boundary scheduler orders. The guard does not arbitrate or repair writes.

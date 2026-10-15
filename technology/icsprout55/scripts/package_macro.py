@@ -1,26 +1,85 @@
 #!/usr/bin/env python3
 """Package an OpenRAM ICsprout55 macro for a Cadence/Calibre ASIC flow.
 
-  package_macro.py OUTDIR MACRO DEST --stdcell-cdl CDL --meas MEAS.json
-                   --words N --bits B [--ports 0,1] [--stdcell-lef LEF]
+  package_macro.py OUTDIR MACRO DEST --stdcell-library LIB --stdcell-cdl CDL
+                   --meas MEAS.json --words N --bits B [--ports 0,1]
 
 OUTDIR is the OpenRAM output directory of MACRO.  Writes into DEST:
   gds/MACRO.gds        supply labels renamed vdd->VDD, gnd->VSS (top cell)
-  lef/MACRO.lef        DATABASE MICRONS 1000, FOREIGN/ORIGIN, VDD/VSS,
-                       antenna gate/diffusion areas on the signal pins
-  cdl/MACRO.cdl        LVS netlist; top supply ports VDD/VSS; the foundry
-                       DFFQX1_9TSVT is *referenced* in the foundry port order
-                       (include the 9T SVT library CDL, as for any std cell)
+  lef/MACRO.lef        flow-ready LEF
+  cdl/MACRO.cdl        LVS netlist using the selected foundry DFF
   spice/MACRO.sp       self-contained simulation netlist (VDD/VSS ports)
-  lib/MACRO_<corner>.lib   from Spectre measurements (sim/mklib.py)
-  verilog/MACRO.v      behavioural model (OpenRAM), VDD/VSS under USE_POWER_PINS
-  verilog/MACRO_stub.v black box for synthesis / P&R netlists
+  lib/MACRO_<corner>.lib   role-aware Liberty from Spectre measurements
+  verilog/MACRO.v      behavioural model (OpenRAM)
+  verilog/MACRO_stub.v black box with behavioral-model port roles
 """
-import argparse, os, re, shutil, subprocess, sys
+import argparse, os, re, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DFF = "DFFQX1_9TSVT"
+SIM = os.path.abspath(os.path.join(HERE, "..", "sim"))
+sys.path.insert(0, SIM)
+from tbgen import parse_ports
+
+# Kept in sync with technology/icsprout55/tech/tech.py.
+STDCELL_DFF = {
+    "SC9T": "DFFQX1_9TSVT",
+    "SC9TL": "DFFQX1_9TLVT",
+    "SC9TH": "DFFQX1_9THVT",
+    "H7CR": "DFFQX1H7R",
+    "H7CL": "DFFQX1H7L",
+    "H7CH": "DFFQX1H7H",
+}
+STDCELL_ALIASES = {"9T": "SC9T", "SC9TSVT": "SC9T", "7T": "H7CR"}
+FOUNDRY_DFF_PORTS = ("CK", "D", "Q", "VDD", "VSS")
 RENAME = {"vdd": "VDD", "gnd": "VSS"}
+
+
+def normalize_stdcell_library(value):
+    library = value.upper()
+    library = STDCELL_ALIASES.get(library, library)
+    if library not in STDCELL_DFF:
+        raise ValueError("unsupported ICsprout55 stdcell library '{}'; choose one of {}".format(
+            value, ", ".join(STDCELL_DFF)))
+    return library
+
+
+def parse_ports_argument(value):
+    try:
+        ports = [int(item) for item in value.split(",")]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "ports must be a comma-separated list of indices") from error
+    if not ports or min(ports) < 0 or len(set(ports)) != len(ports):
+        raise argparse.ArgumentTypeError("ports must be distinct non-negative indices")
+    return ports
+
+
+def behavioral_ports(path, macro=None):
+    name, address_width, data_width, ports, _ = parse_ports(path)
+    if macro and name != macro:
+        raise ValueError("behavioral model declares module {}; expected {}".format(name, macro))
+    if not ports:
+        raise ValueError("behavioral model has no // Port N: RW|R|W metadata")
+    indices = [port["idx"] for port in ports]
+    if len(indices) != len(set(indices)):
+        raise ValueError("behavioral model contains duplicate port-role metadata")
+    for port in ports:
+        index, role = port["idx"], port["kind"]
+        expected = {"clk{}".format(index), "csb{}".format(index), "addr{}".format(index)}
+        if role in ("RW", "W"):
+            expected.add("din{}".format(index))
+        if role == "RW":
+            expected.add("web{}".format(index))
+        if role in ("RW", "R"):
+            expected.add("dout{}".format(index))
+        if set(port["sigs"]) != expected:
+            raise ValueError("behavioral model port {} ({}) has signals {}, expected {}".format(
+                index, role, ",".join(port["sigs"]), ",".join(sorted(expected))))
+    return name, address_width, data_width, ports
+
+
+def port_roles_argument(ports):
+    return ",".join("{}:{}".format(port["idx"], port["kind"]) for port in ports)
 
 
 def gds(src, dst, top):
@@ -37,45 +96,86 @@ def gds(src, dst, top):
     return n
 
 
-def foundry_ports(cdl):
-    t = open(cdl).read().replace("\n+", " ")
-    m = re.search(r"^\.SUBCKT\s+%s\s+([^\n]*)" % DFF, t, re.M | re.I)
-    return m.group(1).split()
+def foundry_ports(cdl, dff):
+    text = open(cdl).read()
+    text = re.sub(r"\r?\n\+\s*", " ", text)
+    matches = re.findall(
+        r"^\.SUBCKT\s+{}\s+([^\n]*)".format(re.escape(dff)),
+        text, re.M | re.I)
+    if not matches:
+        raise ValueError("standard-cell CDL lacks expected subcircuit {}".format(dff))
+    if len(matches) != 1:
+        raise ValueError("standard-cell CDL defines {} more than once".format(dff))
+    ports = tuple(token.upper() for token in matches[0].split())
+    if ports != FOUNDRY_DFF_PORTS:
+        raise ValueError(
+            "standard-cell CDL {} terminal order is {}; expected {}".format(
+                dff, " ".join(ports), " ".join(FOUNDRY_DFF_PORTS)))
+    return FOUNDRY_DFF_PORTS
 
 
-def netlist(src, dst, top, dff_ports=None):
-    """Rename the top-level supplies; with dff_ports, drop the embedded DFF
-    definition and reorder its instances to dff_ports."""
-    t = open(src).read().replace("\n+", " ")
-    out, ours = [], None
-    blocks = re.split(r"(?=^\.SUBCKT )", t, flags=re.M | re.I)
-    for b in blocks:
-        m = re.match(r"\.SUBCKT\s+(\S+)\s*([^\n]*)", b, re.I)
-        if m and m.group(1) == DFF:
-            ours = m.group(2).split()
-            if dff_ports:
-                continue
-        if m and m.group(1) == top:
-            b = re.sub(r"(?<![\w\[\]/.])(vdd|gnd)(?![\w\[\]/.])", lambda x: RENAME[x.group(1)], b)
-        out.append(b)
-    text = "".join(out)
-    if dff_ports:
-        def fix(mm):
-            nets = mm.group(2).split()
-            byname = dict(zip(ours, nets))
-            return mm.group(1) + " " + " ".join(byname[p] for p in dff_ports) + " " + DFF
-        text = re.sub(r"^(X\S+)\s+([^\n]*?)\s+%s\s*$" % DFF, fix, text, flags=re.M)
-        text = ("* %s requires the foundry %s subcircuit (ICsprout55 9T SVT CDL)\n"
-                "* .INCLUDE <ICsprout55_9TSVT_basic.cdl>\n" % (top, DFF)) + text
-    # wrap long lines again
+def netlist(src, dst, top, dff=None, dff_ports=None, stdcell_library=None):
+    """Rename supplies and replace the embedded DFF with the selected cell."""
+    text = open(src).read().replace("\r\n", "\n").replace("\n+", " ")
+    out, source_ports = [], None
+    blocks = re.split(r"(?=^\.SUBCKT\s)", text, flags=re.M | re.I)
+    for block in blocks:
+        match = re.match(r"\.SUBCKT\s+(\S+)\s*([^\n]*)", block, re.I)
+        if match and dff and match.group(1).upper() == dff.upper():
+            source_ports = match.group(2).split()
+            continue
+        if match and match.group(1).upper() == top.upper():
+            block = re.sub(
+                r"(?<![\w\[\]/.])(vdd|gnd)(?![\w\[\]/.])",
+                lambda item: RENAME[item.group(1).lower()], block, flags=re.I)
+        out.append(block)
+    result = "".join(out)
+
+    if dff_ports is not None:
+        if not dff or not source_ports:
+            raise ValueError("source LVS netlist lacks embedded DFF subcircuit {}".format(dff))
+        aliases = {"CLK": "CK", "GND": "VSS"}
+        source_names = [aliases.get(pin.upper(), pin.upper()) for pin in source_ports]
+        if len(source_names) != len(set(source_names)):
+            raise ValueError("embedded DFF {} has ambiguous terminal names".format(dff))
+        missing = [pin for pin in dff_ports if pin not in source_names]
+        if missing:
+            raise ValueError("embedded DFF {} lacks terminals {}".format(
+                dff, ", ".join(missing)))
+        replacements = 0
+
+        def reorder(instance):
+            nonlocal replacements
+            nets = instance.group(2).split()
+            if len(nets) != len(source_ports):
+                raise ValueError("embedded DFF {} instance has {} nets; expected {}".format(
+                    dff, len(nets), len(source_ports)))
+            byname = dict(zip(source_names, nets))
+            replacements += 1
+            return "{} {} {}".format(
+                instance.group(1),
+                " ".join(byname[pin] for pin in dff_ports),
+                dff)
+
+        result = re.sub(
+            r"^(X\S+)\s+([^\n]*?)\s+{}\s*$".format(re.escape(dff)),
+            reorder, result, flags=re.M | re.I)
+        if not replacements:
+            raise ValueError("source LVS netlist has no instances of {}".format(dff))
+        library_note = normalize_stdcell_library(stdcell_library or "")
+        result = ("* {} uses {} from ICsprout55 {} CDL\n"
+                  "* .INCLUDE <selected ICsprout55 standard-cell CDL>\n".format(
+                      top, dff, library_note)) + result
+
     lines = []
-    for l in text.split("\n"):
-        while len(l) > 78 and not l.startswith("*"):
-            cut = l.rfind(" ", 0, 78)
+    for line in result.split("\n"):
+        while len(line) > 78 and not line.startswith("*"):
+            cut = line.rfind(" ", 0, 78)
             if cut <= 0:
                 break
-            lines.append(l[:cut]); l = "+ " + l[cut + 1:]
-        lines.append(l)
+            lines.append(line[:cut])
+            line = "+ " + line[cut + 1:]
+        lines.append(line)
     open(dst, "w").write("\n".join(lines))
 
 
@@ -119,17 +219,20 @@ def verilog(src, dst, stub, top, words, bits, ports):
     address_width = (words - 1).bit_length()
     declarations = []
     for port in ports:
-        declarations.extend((
-            "input clk{}".format(port),
-            "input csb{}".format(port),
-            "input web{}".format(port),
-            "input [{}:0] addr{}".format(address_width - 1, port),
-            "input [{}:0] din{}".format(bits - 1, port),
-            "output [{}:0] dout{}".format(bits - 1, port),
-        ))
+        index = port["idx"]
+        for signal in port["sigs"]:
+            if signal in ("addr{}".format(index),):
+                declarations.append("input [{}:0] {}".format(address_width - 1, signal))
+            elif signal in ("din{}".format(index), "dout{}".format(index)):
+                direction = "output" if signal.startswith("dout") else "input"
+                declarations.append("{} [{}:0] {}".format(direction, bits - 1, signal))
+            else:
+                direction = "output" if signal.startswith("dout") else "input"
+                declarations.append("{} {}".format(direction, signal))
+    roles = ", ".join("{}:{}".format(port["idx"], port["kind"]) for port in ports)
     stub_lines = [
-        "// Black box of {} ({} words x {} bits, {} read/write port(s)).".format(
-            top, words, bits, len(ports)),
+        "// Black box of {} ({} words x {} bits, roles {}).".format(
+            top, words, bits, roles),
         "// Inputs register at rising edges; reads launch on falling edges.",
         "// Concurrent writes to the same physical row across ports are undefined.",
         "(* blackbox *)",
@@ -150,44 +253,64 @@ def main():
     ap.add_argument("outdir")
     ap.add_argument("macro")
     ap.add_argument("dest")
+    ap.add_argument("--stdcell-library", required=True,
+                    help="ICsprout55 library key from tech.py (for example SC9T or H7CR)")
     ap.add_argument("--stdcell-cdl", required=True)
     ap.add_argument("--meas", required=True)
     ap.add_argument("--words", type=int, required=True)
     ap.add_argument("--bits", type=int, required=True)
-    ap.add_argument("--ports", default="0", help="comma-separated read/write port indices")
+    ap.add_argument("--ports", type=parse_ports_argument,
+                    help="optional assertion of behavioral-model port indices")
     ap.add_argument("--gate-in", type=float, default=0.0318, help="um2, DFF D input")
     ap.add_argument("--gate-clk", type=float, default=0.027, help="um2, clock buffer input")
     ap.add_argument("--diff-out", type=float, default=0.2, help="um2, sense-amp output driver")
     a = ap.parse_args()
     try:
-        ports = [int(value) for value in a.ports.split(",")]
-    except ValueError:
-        ap.error("--ports must be a comma-separated list of indices")
-    if not ports or min(ports) < 0 or len(set(ports)) != len(ports):
-        ap.error("--ports must contain distinct non-negative indices")
-    m, src, d = a.macro, a.outdir, a.dest
+        library = normalize_stdcell_library(a.stdcell_library)
+        _, model_address_width, model_data_width, ports = behavioral_ports(
+            os.path.join(a.outdir, a.macro + ".v"), a.macro)
+        if a.words <= 0 or a.bits <= 0:
+            raise ValueError("--words and --bits must be positive")
+        if model_address_width != (a.words - 1).bit_length() or model_data_width != a.bits:
+            raise ValueError(
+                "package dimensions {}x{} do not match behavioral model widths {}x{}".format(
+                    a.words, a.bits, model_address_width, model_data_width))
+        dff = STDCELL_DFF[library]
+        dff_ports = foundry_ports(a.stdcell_cdl, dff)
+    except ValueError as error:
+        ap.error(str(error))
+    port_indices = [port["idx"] for port in ports]
+    if a.ports is not None and set(a.ports) != set(port_indices):
+        ap.error("--ports {} does not match behavioral model ports {}".format(
+            ",".join(map(str, a.ports)), ",".join(map(str, port_indices))))
+    m, src, dest = a.macro, a.outdir, a.dest
     for sub in ("gds", "lef", "cdl", "spice", "lib", "verilog"):
-        os.makedirs(os.path.join(d, sub), exist_ok=True)
-    n = gds(os.path.join(src, m + ".gds"), os.path.join(d, "gds", m + ".gds"), m)
+        os.makedirs(os.path.join(dest, sub), exist_ok=True)
+    n = gds(os.path.join(src, m + ".gds"), os.path.join(dest, "gds", m + ".gds"), m)
     print("gds: %d supply labels renamed" % n)
-    lef(os.path.join(src, m + ".lef"), os.path.join(d, "lef", m + ".lef"), m, a.gate_in, a.gate_clk, a.diff_out)
-    netlist(os.path.join(src, m + ".lvs.sp"), os.path.join(d, "cdl", m + ".cdl"), m, foundry_ports(a.stdcell_cdl))
-    netlist(os.path.join(src, m + ".sp"), os.path.join(d, "spice", m + ".sp"), m)
-    verilog(os.path.join(src, m + ".v"), os.path.join(d, "verilog", m + ".v"),
-            os.path.join(d, "verilog", m + "_stub.v"), m, a.words, a.bits, ports)
+    lef(os.path.join(src, m + ".lef"), os.path.join(dest, "lef", m + ".lef"), m,
+        a.gate_in, a.gate_clk, a.diff_out)
+    netlist(os.path.join(src, m + ".lvs.sp"), os.path.join(dest, "cdl", m + ".cdl"),
+            m, dff=dff, dff_ports=dff_ports, stdcell_library=library)
+    netlist(os.path.join(src, m + ".sp"), os.path.join(dest, "spice", m + ".sp"), m)
+    verilog(os.path.join(src, m + ".v"), os.path.join(dest, "verilog", m + ".v"),
+            os.path.join(dest, "verilog", m + "_stub.v"), m, a.words, a.bits, ports)
     import klayout.db as kdb
     ly = kdb.Layout()
     ly.read(os.path.join(src, m + ".gds"))
     bbox = ly.top_cell().dbbox()
     subprocess.run([
         sys.executable, os.path.join(HERE, "..", "sim", "mklib.py"),
-        a.meas, m, os.path.join(d, "lib"),
+        a.meas, m, os.path.join(dest, "lib"),
         "--words", str(a.words), "--bits", str(a.bits),
         "--area", "{:.3f}".format(bbox.width() * bbox.height()),
-        "--ports", ",".join(map(str, ports)),
+        "--ports", ",".join(map(str, port_indices)),
+        "--port-roles", port_roles_argument(ports),
+        "--stdcell-library", library,
         "--power-pins", "VDD,VSS",
     ], check=True)
 
 
 if __name__ == "__main__":
     main()
+

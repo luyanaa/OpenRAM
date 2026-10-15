@@ -255,10 +255,11 @@ variants still have separate mismatches and are not accepted as clean.
 * `configs/ics55_1rw_16x32.py`: 212.95 x 83.06 um (33 % smaller than 32x32).
   Post-layout pass on all corners at 8-200 ns.
 * `scripts/package_macro.py` builds a flow-ready directory: VDD/VSS pin
-  names, LEF 5.8 / DATABASE 1000 / full MET1-4 OBS / antenna data, CDL that
-  references the foundry DFFQX1_9TSVT in its port order, Liberty for 8
-  corners from `sim/charz.py` measurements (`sim/mklib.py`), Verilog model +
-  stub.  Checked: Calibre DRC/LVS (both decks) on the packaged GDS/CDL,
+  names, LEF 5.8 / DATABASE 1000 / full MET1-4 OBS / antenna data, CDL with
+  the selected `stdcell_library` DFF (validated against its explicit CDL and
+  `CK D Q VDD VSS` terminal order), role-correct Liberty from
+  `sim/charz.py`/`sim/mklib.py`, Verilog model + role-correct stub.  Checked:
+  Calibre DRC/LVS (both decks) on the packaged GDS/CDL,
   Genus (libs + synthesis), Innovus (place, power, route, verify).
 
 ## Open items
@@ -270,3 +271,14 @@ variants still have separate mismatches and are not accepted as clean.
   timing until a characterized .lib exists.
 * Read/write margins (SNM, Monte Carlo) were not simulated, only corners.
 * Antenna rules are part of the decks run and pass; density is chip-level.
+
+## Current port-aware generator validation
+
+The package and characterization flow now requires an explicit standard-cell
+library and CDL, validates the selected DFF subcircuit, and derives Verilog
+stubs and Liberty pins/arcs from per-port RW/R/W roles. Supported DFF mappings
+cover the SC9T/SC9TL/SC9TH and H7CR/H7CL/H7CH families. The deterministic
+contract test `technology/icsprout55/sim/test_p1_interfaces.py` passed 4 tests
+for SC9T and H7CR across 1RW, 1W1R, and 2RW interfaces, plus mapping and
+fail-closed cases. These tests use fixture measurement data; no current
+Spectre-characterized package or measured Liberty artifact was produced.

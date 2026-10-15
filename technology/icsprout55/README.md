@@ -50,6 +50,15 @@ with its own well taps, so the macro floorplan is identical for every option.
 A macro is self-contained, so a 7T-based SoC can use an `SC9T` macro; the
 7T option exists for flows that cannot use the 9T library views.
 
+Flow packaging keeps that selection explicit: `scripts/package_macro.py`
+requires `--stdcell-library LIB --stdcell-cdl CDL`, selects the mapped DFF
+from the table above (aliases `9T`, `SC9TSVT`, and `7T` are accepted), and
+rejects a missing subcircuit or a CDL terminal order other than
+`CK D Q VDD VSS`. The behavioral model's `// Port N: RW|R|W` comments define
+the package stub and Liberty roles; `--ports`, when supplied, only asserts the
+port indices found there. See [sim/README.md](sim/README.md#measured-multi-port-liberty)
+for the `charz.py`/`mklib.py` measurement metadata and CLI contract.
+
 `scripts/import_stdcells.py` regenerates `gds_lib/` and `sp_lib/` from the
 vendor libraries (see its docstring for the source paths).
 

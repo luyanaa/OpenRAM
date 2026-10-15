@@ -91,7 +91,7 @@ def build_deck(netlist, trace, name, model, destination, period, voltage,
     lines.extend((".control", "set wr_singlescale", "set wr_vecnames",
                   "set numdgt=15", "save " + " ".join(vectors),
                   "tran {:.9g}n {:.9g}n 0 {:.9g}n".format(period / 100, stop, rise / 2),
-                  'wrdata "{}" {}'.format(wavefile, " ".join(vectors)),
+                  "wrdata waves.dat " + " ".join(vectors),
                   "quit", ".endc", ".end"))
     deck = destination / "transient.sp"
     deck.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -195,7 +195,7 @@ def main(argv=None):
             wavefile.unlink()
         command = [executable, "-n", "-D", "ngbehavior=hsa", "-b", str(deck)]
         start = time.monotonic()
-        result = subprocess.run(command, cwd=model.parent, text=True,
+        result = subprocess.run(command, cwd=destination, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 timeout=args.timeout, check=False)
         (destination / "ngspice.log").write_text(result.stdout, encoding="utf-8", errors="replace")

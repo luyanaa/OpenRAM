@@ -759,86 +759,181 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
     limitations = list(process.get("limitations", [])) if isinstance(process.get("limitations"), Sequence) else []
     if mode == "rcc":
         cells, by_net, mesh_resistors = _mesh(net_records, process)
-        node_names = {cell["id"]: "__PEX_N%06d" % cell["id"] for cell in cells}
-        # Map every named anchor, including all device terminals.  Boundary
-        # points are accepted deterministically; a point outside metal is a
-        # hard error instead of an inferred nearest conductor.
-        anchor_nodes: dict[str, str] = {}
+        # Resolve anchors to mesh cells. Multiple contacts on one physical
+        # FEOL component are an ideal short; distinct FEOL components remain
+        # separate nodes connected only by their extracted BEOL paths.
+        anchor_cells: dict[str, list[int]] = defaultdict(list)
+        anchor_layers: dict[str, str] = {}
         for net, record in net_records.items():
             for index, raw in enumerate(record["anchors"]):
                 anchor = _json_mapping(raw, "%s.anchors[%d]" % (net, index))
                 name = _anchor_name(anchor, "%s.anchors[%d]" % (net, index))
-                if name in anchor_nodes:
-                    raise ValueError("duplicate anchor name %s" % name)
-                layer = str(anchor["layer"]).strip(); x = _number(anchor["x"], name + ".x"); y = _number(anchor["y"], name + ".y")
-                hits = [cid for cid in by_net.get(net, []) if cells[cid]["layer"].casefold() == layer.casefold() and _contains(cells[cid]["rect"], x, y)]
+                layer = str(anchor["layer"]).strip()
+                x = _number(anchor["x"], name + ".x")
+                y = _number(anchor["y"], name + ".y")
+                hits = [cid for cid in by_net.get(net, [])
+                        if cells[cid]["layer"].casefold() == layer.casefold()
+                        and _contains(cells[cid]["rect"], x, y)]
                 if not hits:
                     raise ValueError("anchor %s is not on a physical metal rectangle" % name)
-                anchor_nodes[name] = node_names[min(hits)]
+                is_feol = name.casefold().startswith("feol:")
+                is_port = name in ports
+                if name in anchor_cells and not (is_feol or is_port):
+                    raise ValueError("duplicate anchor name %s" % name)
+                previous_layer = anchor_layers.get(name)
+                if previous_layer and previous_layer.casefold() != layer.casefold() and not is_port:
+                    raise ValueError("anchor %s spans multiple routing layers" % name)
+                anchor_layers.setdefault(name, layer)
+                anchor_cells[name].append(min(hits))
+
+        # Connect contacts belonging to the same ideal FEOL component by
+        # assigning their M1 mesh cells the same electrical node.
+        ideal_parent = {cell["id"]: cell["id"] for cell in cells}
+
+        def ideal_find(cell_id: int) -> int:
+            while ideal_parent[cell_id] != cell_id:
+                ideal_parent[cell_id] = ideal_parent[ideal_parent[cell_id]]
+                cell_id = ideal_parent[cell_id]
+            return cell_id
+
+        def ideal_union(left: int, right: int) -> None:
+            left, right = ideal_find(left), ideal_find(right)
+            if left != right:
+                ideal_parent[max(left, right)] = min(left, right)
+
+        for name, ids in anchor_cells.items():
+            if name.casefold().startswith("feol:"):
+                unique_ids = sorted(set(ids))
+                for cell_id in unique_ids[1:]:
+                    ideal_union(unique_ids[0], cell_id)
+        port_roots: dict[int, str] = {}
+        for port in ports:
+            ids = sorted(set(anchor_cells.get(port, [])))
+            if not ids:
+                raise ValueError("port %s has no physical anchor" % port)
+            for cell_id in ids:
+                root = ideal_find(cell_id)
+                previous = port_roots.get(root)
+                if previous and previous != port:
+                    raise ValueError("ports %s and %s share an electrical node" % (previous, port))
+                port_roots[root] = port
+
+
+        node_names = {}
+        for cell in cells:
+            root = ideal_find(cell["id"])
+            node_names[cell["id"]] = port_roots.get(root, "__PEX_N%06d" % root)
+        anchor_nodes = {
+            name: node_names[ideal_find(min(ids))]
+            for name, ids in anchor_cells.items() if ids
+        }
         representatives = {
             net: (node_names[ids[0]] if ids else net)
             for net, ids in by_net.items()
         }
         for net in net_records:
             representatives.setdefault(net, net)
+        unanchored_feol_nodes: dict[str, str] = {}
+        component_nets: dict[str, str] = {}
         for device in geometry.get("devices", []):
             if not isinstance(device, Mapping):
                 raise ValueError("device record is not an object")
             dname = str(device.get("name", "")).strip()
             terms = device.get("terminals")
+            components = device.get("terminal_components")
             if not isinstance(terms, Mapping):
                 raise ValueError("device %s has no terminals" % dname)
+            if not isinstance(components, Mapping):
+                raise ValueError("device %s has no terminal_components" % dname)
             for terminal in ("D", "G", "S", "B"):
                 if terminal not in terms:
                     raise ValueError("device %s missing terminal %s" % (dname, terminal))
-                key = "%s:%s" % (dname, terminal); net = str(terms[terminal])
+                key = "%s:%s" % (dname, terminal)
+                net = str(terms[terminal])
                 if net not in net_records:
                     raise ValueError("device %s terminal %s references unknown net %s" % (dname, terminal, net))
-                terminal_nodes[key] = anchor_nodes.get(key, representatives[net])
+                component = str(components.get(terminal, "")).strip()
+                if not component:
+                    raise ValueError("device %s terminal %s has no physical component" % (dname, terminal))
+                previous_net = component_nets.get(component)
+                if previous_net is not None and previous_net != net:
+                    raise ValueError("device terminal component %s belongs to different nets" % component)
+                component_nets[component] = net
+                if component in anchor_nodes:
+                    if anchor_net.get(component) != net:
+                        raise ValueError("device %s terminal %s anchor %s does not belong to net %s" % (
+                            dname, terminal, component, net))
+                    terminal_nodes[key] = anchor_nodes[component]
+                elif component.casefold().startswith("feol:") and not anchor_cells.get(component):
+                    if component not in unanchored_feol_nodes:
+                        unanchored_feol_nodes[component] = "__PEX_FEOL_%06d" % len(unanchored_feol_nodes)
+                    terminal_nodes[key] = unanchored_feol_nodes[component]
+                else:
+                    raise ValueError("device %s terminal %s has no physical anchor %s" % (dname, terminal, component))
+        if unanchored_feol_nodes:
+            limitations.append("Uncontacted FEOL-only components use ideal terminal nodes without BEOL parasitics.")
         for port in ports:
-            # Port text anchors are required by the geometry contract.
-            hits = [name for name in anchor_nodes if name == port]
-            if not hits:
+            if port not in anchor_nodes:
                 raise ValueError("port %s has no physical anchor" % port)
             port_nodes[port] = anchor_nodes[port]
         for aid, bid, value in mesh_resistors:
-            if value <= 0.0: continue
-            resistors.append({"name": "RPEX%05d" % len(resistors), "node1": node_names[aid], "node2": node_names[bid], "value_ohm": value})
+            if value <= 0.0:
+                continue
+            node1, node2 = node_names[aid], node_names[bid]
+            if node1 != node2:
+                resistors.append({"name": "RPEX%05d" % len(resistors), "node1": node1, "node2": node2, "value_ohm": value})
         via_pairs: list[tuple[int, int]] = []
         for net, record in net_records.items():
             for index, raw in enumerate(record["vias"]):
                 via = _json_mapping(raw, "%s.vias[%d]" % (net, index))
-                layer = str(via.get("layer", "")).strip(); info = _via_info(process, layer)
-                x = _number(via.get("x"), "%s.vias[%d].x" % (net, index)); y = _number(via.get("y"), "%s.vias[%d].y" % (net, index))
+                layer = str(via.get("layer", "")).strip()
+                info = _via_info(process, layer)
+                x = _number(via.get("x"), "%s.vias[%d].x" % (net, index))
+                y = _number(via.get("y"), "%s.vias[%d].y" % (net, index))
                 low = str(via.get("lower_layer", info.get("lower_layer", "")))
                 high = str(via.get("upper_layer", info.get("upper_layer", "")))
-                low_hits = [cid for cid in by_net.get(net, []) if cells[cid]["layer"].casefold() == low.casefold() and _contains(cells[cid]["rect"], x, y)]
-                high_hits = [cid for cid in by_net.get(net, []) if cells[cid]["layer"].casefold() == high.casefold() and _contains(cells[cid]["rect"], x, y)]
+                low_hits = [cid for cid in by_net.get(net, [])
+                            if cells[cid]["layer"].casefold() == low.casefold()
+                            and _contains(cells[cid]["rect"], x, y)]
+                high_hits = [cid for cid in by_net.get(net, [])
+                             if cells[cid]["layer"].casefold() == high.casefold()
+                             and _contains(cells[cid]["rect"], x, y)]
                 if not low_hits or not high_hits:
                     raise ValueError("via %s at %.9g,%.9g is not connected to both metal layers" % (layer, x, y))
                 low_cell, high_cell = min(low_hits), min(high_hits)
                 via_pairs.append((low_cell, high_cell))
-                value = _number(via.get("resistance_ohm", info.get("resistance_ohm")), "%s resistance" % layer, True)
-                resistors.append({"name": "RPEX%05d" % len(resistors), "node1": node_names[low_cell], "node2": node_names[high_cell], "value_ohm": value})
+                node1, node2 = node_names[low_cell], node_names[high_cell]
+                if node1 != node2:
+                    value = _number(via.get("resistance_ohm", info.get("resistance_ohm")), "%s resistance" % layer, True)
+                    resistors.append({"name": "RPEX%05d" % len(resistors), "node1": node1, "node2": node2, "value_ohm": value})
         parent = {cell["id"]: cell["id"] for cell in cells}
+
         def find(cell_id: int) -> int:
             while parent[cell_id] != cell_id:
                 parent[cell_id] = parent[parent[cell_id]]
                 cell_id = parent[cell_id]
             return cell_id
+
         def union(left: int, right: int) -> None:
             left, right = find(left), find(right)
             if left != right:
                 parent[right] = left
+
         for left, right, _value in mesh_resistors:
             union(left, right)
         for left, right in via_pairs:
             union(left, right)
+        for name, ids in anchor_cells.items():
+            if name.casefold().startswith("feol:"):
+                unique_ids = sorted(set(ids))
+                for cell_id in unique_ids[1:]:
+                    union(unique_ids[0], cell_id)
         components: dict[str, set[int]] = defaultdict(set)
-        node_to_cell = {node_names[cell["id"]]: cell["id"] for cell in cells}
         for name, net in anchor_net.items():
-            if name in anchor_nodes:
-                components[net].add(find(node_to_cell[anchor_nodes[name]]))
+            ids = anchor_cells.get(name, [])
+            if not ids:
+                raise ValueError("anchor %s has no physical mesh cell" % name)
+            components[net].update(find(cell_id) for cell_id in ids)
         for net, roots in components.items():
             if len(roots) > 1:
                 raise ValueError("net %s has disconnected physical anchor components" % net)

@@ -207,3 +207,70 @@ adapter must provide it. LEF-seeded RCX omits coupling and reports
 `seed_only`; this SPEF is an estimate, not signoff parasitics or a transistor
 extraction netlist. `--pex-require-coupling` fails unless explicit coupling
 models are supplied via the PDK RCX process JSON.
+
+### GDS-derived transistor-level PEX
+
+`gds-pex` extracts core MOS devices, BEOL rectangles/vias, named ports, and an RCC parasitic network directly from the selected GDS top cell:
+
+```sh
+python technology/icsprout55/verify/opensource.py gds-pex macro.gds \
+  --top macro_top --pdk-root /path/to/icsprout55-pdk \
+  --out-dir runs/gds_pex --source pdk-estimate --corner typ --mode rcc
+python technology/icsprout55/sim/ngspice_pex.py \
+  runs/gds_pex/macro_top_typ.pex.sp trace.txt \
+  --pex-summary runs/gds_pex/pex_summary.json \
+  --pdk-root /path/to/icsprout55-pdk --out-dir runs/gds_pex/ngspice \
+  --period 2.5 --corner ss --vdd 1.08 --temp -40
+```
+
+Select the PEX netlist whose corner matches the summary and keep the summary
+with it; the simulator verifies both the netlist hash and input GDS hash.
+Repeat the ngspice command with the desired device-model corner and temperature
+(for example, `--corner snfp --vdd 1.08 --temp 125`).
+
+This source-free extraction is distinct from routed-geometry JSON RCX. It is
+limited to supported core MOS and BEOL geometry. FEOL diffusion/poly/contact
+resistance and capacitance are idealized; uncontacted FEOL-only terminals are
+represented as ideal nodes, and repeated shapes of one top-level port connect
+to its named SPICE node. The `pdk-estimate` source uses generator coefficients,
+not calibrated coupling data: output is `status=estimated`,
+`accepted=false`, `signoff=false`. Artifact production can therefore complete
+while the command returns nonzero; this is not foundry signoff or a Calibre
+substitute.
+
+### Fresh final-configuration evidence
+
+These reports are from two isolated builds of the current source configurations.
+The copied config inputs preserve SRAM geometry and functional parameters and set
+`check_lvsdrc=False`, `use_nix=False`; the build invocations supply unique
+output names/paths so verification can be run separately on each resulting GDS.
+
+| Candidate | Source config SHA-256 | GDS SHA-256 | Pinned KLayout 0.30.7 full-hierarchy result |
+|---|---|---|---|
+| 2RW `fresh_final_2rw_baseline` | `208e7b9d21846c998044e6b64b1b7e6bbb53242092676e4cc8c8f7628bbf0875` | `f3b92dbb37273630e61fbfbc2670dbfc9e5e7d7fe326f6958170fd836484622e` | DRC 0 raw / 0 waived / 0 unwaived; LVS mismatch |
+| 1RW/TG `fresh_latest_1rw_tgate_baseline` | `1cf47811c4f17ef1512ae635fba667bd190b2db4d1bda7ecde0fd8164860772d` | `3288e7d2bd0aa6ce8fc5060b539101a2bb828a8f0d567d1ca937159465887829` | DRC 133 raw / 0 waived / 133 unwaived; LVS mismatch |
+
+Source configurations: `technology/icsprout55/configs/ics55_2rw_32x8.py`
+and `technology/icsprout55/configs/ics55_1rw_256x8_mux4_tgate.py`.
+Input wrapper configs and SHA-256 values:
+`ics55_work/runs/fresh_final_2rw_baseline.py`
+(`7e7508af4989b9e831fedad5647631208671add7b86c88a178970748f543cf6d`, 2RW) and
+`ics55_work/runs/fresh_latest_1rw_tgate_baseline.py`
+(`5150504aac217929ea74b8c9c01c151751bc1f7f4f222ef23887fb6bd94831ed`, 1RW/TG).
+
+OpenRAM's emitted config snapshots are
+`ics55_work/runs/out_fresh_final_2rw_baseline/fresh_final_2rw_baseline_cfg.py`
+(SHA-256 `c9b1e69f05c17eb1d832d811b5839a63c98e6fa99fa30a860c00afe39350a469`) and
+`ics55_work/runs/out_fresh_latest_1rw_tgate_baseline/fresh_latest_1rw_tgate_baseline_cfg.py`
+(SHA-256 `4b98133947f734e76bef15934f4eccdb0d33b74930e04491e541cf7730aa66b8`).
+
+The exact GDS files and reports are under
+`ics55_work/runs/out_fresh_final_2rw_baseline/` and
+`ics55_work/runs/out_fresh_latest_1rw_tgate_baseline/`; each DRC/LVS report is
+under `signoff/pinned_klayout_0.30.7/`. The 1RW/TG markers are M1 spacing 33,
+M2 spacing 66, M3 spacing 33, and V2 upper cover 1. Both LVS logs report a
+netlist mismatch without a localized cause. No historical report is substituted.
+
+Calibre was skipped as optional for this pass; this local environment has no
+Calibre executable, local decks, or configured license. No Calibre DRC/LVS
+result is claimed for either candidate.

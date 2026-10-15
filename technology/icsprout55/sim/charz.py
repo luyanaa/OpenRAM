@@ -3,7 +3,8 @@
 
 All times are ns relative to the trace clock; energy is pJ and leakage is mW.
 Input slew and output load are recorded as the validity domain for each run.
-Usage: charz.py RAWDIR TRACE --period NS --vdd V [--ports 0,1]
+Usage: charz.py RAWDIR TRACE --period NS --vdd V --stdcell-library LIB
+       [--ports 0,1]
 """
 import argparse
 import glob
@@ -14,6 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check import crossings, read_psf
+from mklib import normalize_stdcell_library, ports_argument
 from tanalyze import _dir
 
 
@@ -24,6 +26,54 @@ def trace_cycles(path):
         if fields and fields[0] == "C":
             cycles[int(fields[1])] = dict(item.split("=", 1) for item in fields[2:])
     return cycles
+
+
+def port_access_cycles(cycles, port):
+    csb_pin = "csb{}".format(port)
+    web_pin = "web{}".format(port)
+    role_pin = "role{}".format(port)
+    operation_pin = "op{}".format(port)
+    role_values = {values[role_pin].upper() for values in cycles.values()
+                   if role_pin in values}
+    if len(role_values) > 1:
+        raise ValueError("trace changes role for port {}".format(port))
+    role = next(iter(role_values), None)
+    if role not in (None, "RW", "R", "W"):
+        raise ValueError("trace has invalid role for port {}".format(port))
+    if role is None and any(web_pin in values for values in cycles.values()):
+        role = "RW"
+    if role is None:
+        raise ValueError(
+            "trace lacks role{} metadata; regenerate it with tbgen.py".format(port))
+
+    reads, writes = [], []
+    for cycle, values in cycles.items():
+        if csb_pin not in values:
+            raise ValueError("trace lacks {} on cycle {}".format(csb_pin, cycle))
+        selected = values[csb_pin] == "0"
+        operation = values.get(operation_pin)
+        if operation is None:
+            if not selected:
+                operation = "I"
+            elif role == "RW" and web_pin in values:
+                operation = "W" if values[web_pin] == "0" else "R"
+            else:
+                operation = role if role in ("R", "W") else None
+        if operation not in ("I", "R", "W"):
+            raise ValueError("trace lacks an unambiguous op{} on cycle {}".format(
+                port, cycle))
+        if (operation == "I") == selected:
+            raise ValueError("trace op{} and {} disagree on cycle {}".format(
+                port, csb_pin, cycle))
+        if operation == "R":
+            if role not in ("RW", "R"):
+                raise ValueError("trace reads from write-only port {}".format(port))
+            reads.append(cycle)
+        elif operation == "W":
+            if role not in ("RW", "W"):
+                raise ValueError("trace writes through read-only port {}".format(port))
+            writes.append(cycle)
+    return role, sorted(reads), sorted(writes)
 
 
 def matching_signals(data, suffix):
@@ -63,12 +113,7 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
     threshold = voltage / 2
     ports = sorted({int(name[3:]) for values in cycles.values() for name in values
                     if name.startswith("csb") and name[3:].isdigit()})
-    read_cycles = sorted(k for k, values in cycles.items()
-                         if values.get("csb{}".format(port)) == "0" and
-                         values.get("web{}".format(port)) == "1")
-    write_cycles = sorted(k for k, values in cycles.items()
-                          if values.get("csb{}".format(port)) == "0" and
-                          values.get("web{}".format(port)) == "0")
+    role, read_cycles, write_cycles = port_access_cycles(cycles, port)
     rise = lambda k: (k + 1) * period_s
     fall = lambda k: rise(k) + period_s / 2
 
@@ -85,7 +130,7 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
     output_prefix = "dout{}".format(port)
     outputs = sorted(name for name in data
                      if re.match(r"^{}(?:_|\[|\.|$)".format(output_prefix), name))
-    if not outputs and port == 0:
+    if not outputs and port == 0 and role in ("RW", "R"):
         outputs = sorted(name for name in data if name.startswith("dout"))
     if read_cycles and not outputs:
         raise ValueError("missing dout{} waveforms".format(port))
@@ -112,11 +157,15 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
             if after:
                 hold_after_rise.append(min(after) - read_end)
 
-    enable_nets = matching_signals(data, "w_en{}".format(port))
-    enable_falls = transitions(times, data, enable_nets, threshold, direction=-1)
-    enable_end = maximum(min(edge for edge in enable_falls if edge > fall(cycle)) - fall(cycle)
-                         for cycle in write_cycles
-                         if any(edge > fall(cycle) for edge in enable_falls))
+    enable_end = None
+    if role in ("RW", "W"):
+        enable_nets = matching_signals(data, "w_en{}".format(port))
+        enable_falls = transitions(times, data, enable_nets, threshold, direction=-1)
+        enable_end = maximum(
+            min(edge for edge in enable_falls if edge > fall(cycle)) - fall(cycle)
+            for cycle in write_cycles
+            if any(edge > fall(cycle) for edge in enable_falls))
+
 
     delay_nets = port_control_signals(data, "rbl_bl_delay", port, replica_net)
     delay_falls = transitions(times, data, delay_nets, threshold, direction=-1)
@@ -160,6 +209,7 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
     write_energy = [energy(rise(k), rise(k) + period_s)
                     for k in write_cycles if other_ports_idle(k)]
     result = {
+        "role": role,
         "ins_rise": None if insertion is None else insertion * 1e9,
         "dout_fall": None if not access else max(access) * 1e9,
         "dout_tran": None if not transitions_10_90 else max(transitions_10_90) * 1e9,
@@ -186,20 +236,29 @@ def main():
     parser.add_argument("--vdd", type=float, required=True)
     parser.add_argument("--temp", type=float, default=25)
     parser.add_argument("--corner", default="tt")
-    parser.add_argument("--ports", default="0", help="comma-separated read/write port indices")
+    parser.add_argument("--stdcell-library", required=True)
+    parser.add_argument("--ports", type=ports_argument,
+                        help="comma-separated port indices; defaults to ports in the trace")
     parser.add_argument("--load-ff", type=float, default=5.0)
     parser.add_argument("--input-slew-ns", type=float, default=0.03)
     parser.add_argument("--power-current", default="VDD:p")
     parser.add_argument("--replica-net", help="explicit rbl_bl_delay waveform for a single-port run")
     args = parser.parse_args()
-    ports = [int(value) for value in args.ports.split(",")]
-    if not ports or len(set(ports)) != len(ports) or min(ports) < 0:
-        parser.error("--ports must contain distinct non-negative indices")
+    try:
+        stdcell_library = normalize_stdcell_library(args.stdcell_library)
+    except ValueError as error:
+        parser.error(str(error))
     files = sorted(glob.glob(os.path.join(args.raw, "*.tran*"))) if os.path.isdir(args.raw) else [args.raw]
     if len(files) != 1:
         parser.error("expected exactly one transient waveform, found {}".format(len(files)))
     times, data = read_psf(files[0])
     cycles = trace_cycles(args.trace)
+    ports = args.ports
+    if ports is None:
+        ports = sorted({int(name[3:]) for values in cycles.values() for name in values
+                        if name.startswith("csb") and name[3:].isdigit()})
+    if not ports:
+        parser.error("trace contains no port control cycles")
     try:
         per_port = {
             str(port): measure_port(times, data, cycles, port, args.period, args.vdd,
@@ -218,9 +277,10 @@ def main():
     }
     if len(ports) == 1:
         result = per_port[str(ports[0])]
-        result.update({"schema_version": 2, "port": ports[0], "domain": domain})
+        result.update({"schema_version": 3, "port": ports[0], "domain": domain})
     else:
-        result = {"schema_version": 2, "ports": per_port, "domain": domain}
+        result = {"schema_version": 3, "ports": per_port, "domain": domain}
+    result["stdcell_library"] = stdcell_library
     print(json.dumps(result, sort_keys=True))
 
 

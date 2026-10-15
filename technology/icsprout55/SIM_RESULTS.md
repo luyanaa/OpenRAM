@@ -323,11 +323,63 @@ row, and the behavioral assertion flags simultaneous writes to any shared
 physical row. This increases LEF area from 0.02690 mm² (185.97 x 144.67 um)
 to 0.02881 mm² (155.01 x 185.86 um), about 7.1%.
 
-The `OPENRAM_ASSERTIONS` guard was also exercised with Icarus 13 on generated
-single-bank and multi-bank models: same-row writes terminate with `$fatal`,
-while distinct rows and cross-bank writes continue.
+The `OPENRAM_ASSERTIONS` guard was exercised with Icarus Verilog 13.0 on the
+generated 2RW bank model and multi-bank top. The regression covers sampled
+per-port enables and addresses, overlapping same-physical-row writes (including
+distinct logical column addresses), coincident start/completion boundaries in
+both scheduler orders, asynchronous clocks with different periods/phases,
+stopped-high and stopped-low clocks, read/write overlap, distinct rows, and
+cross-bank writes. Same-row write cases terminate with `$fatal`; legal cases
+continue. Both generated models also compile and run without the guard enabled.
 
 These local ngspice results do not supersede the older Spectre measurements in
 this file: they use different model decks and omit extracted parasitics. In
 particular, the 64x8 NMOS-mux pass is a schematic-model smoke, not proof that
 the prior cold-corner failure is fixed in the foundry flow.
+
+## Fresh current 2RW full-swing schematic and GDS-derived PEX
+
+The current 2RW trace is `ics55_work/runs/full_swing_2rw_sscold_snfp_write.trace`
+(SHA-256 `76d76708f450a1321b9c3eafdbcc5759aefd3c7cecc580165460feb6b9c3f26d`);
+the fresh schematic netlist SHA-256 is
+`9d8b2abf0c1e4580f119e2ccd99fba56493a73d7159d02d3e2ca6548a4fa2c9c`. Both
+corners used ngspice-47, 1.08 V, 2.5 ns, and 5 fF.
+
+| Model/corner | Temperature | Result | `tacc` |
+|---|---:|---|---:|
+| Schematic SS | −40 °C | 6 reads / 48 bits, no failures | 2.221572209 ns |
+| Schematic SNFP | +125 °C | 6 reads / 48 bits, no failures | 1.728684519 ns |
+
+These schematic-model runs are not post-layout signoff. Their records are under
+`ics55_work/runs/ngspice_schematic_fresh_2rw_verified/{ss,snfp}/`.
+
+The extracted RCC netlist is derived from the exact fresh 2RW GDS
+`ics55_work/runs/out_fresh_final_2rw_baseline/fresh_final_2rw_baseline.gds`
+(SHA-256 `f3b92dbb37273630e61fbfbc2670dbfc9e5e7d7fe326f6958170fd836484622e`).
+The netlist is at
+`ics55_work/runs/out_fresh_final_2rw_baseline/pex_pdk_estimate_rcc_feol_only_fix/`
+with SHA-256 `99c2442eccd36dd97ec00e99b81d8c5662a4b44db425b99640ca2b73454f04d0`.
+This `pdk-estimate` extraction completed but has `accepted=false` and
+`signoff=false`; its parasitics are estimated, not calibrated.
+The ngspice-47 SS/−40 °C PEX transient (817.041 s) completed on this exact
+netlist and failed 24/48 bit reads: all expected-zero bits at 7.49, 12.49, and
+14.99 ns remained at 1.0775–1.0784 V; no output crossing followed the read
+edge (`tacc=0`). Expected-one bits passed; this estimated PEX result is not
+accepted or signoff evidence. SS run record:
+`ics55_work/runs/ngspice_pex_2rw_sscold/`.
+
+The ngspice-47 SNFP/+125 °C PEX transient (798.443 s) also completed and
+failed 24/48 bit reads. All expected-zero samples at 7.49, 12.49, and 14.99 ns
+were 0.9712–1.0817 V; expected-one bits passed; `tacc=0.9646 ns`. Run record:
+`ics55_work/runs/ngspice_pex_2rw_snfp/`. Both PEX runs reached
+`ngspice-47 done` with 1112 data rows; the searched diagnostics contained no
+“timestep too small,” singular-matrix, or convergence-failure message. The SS
+log includes model warnings for negative `Dvt0` and temperature-clamped
+`Cjsws/Cjswd`.
+
+The four-rank XyceNF 7.10 attempt timed out at 1800 s without a waveform. Its
+log says `.TEMP -40.0` (line 4) is an unrecognized dot line and will be ignored,
+so it did not exercise the cold corner and is not counted. [Xyce 7.10 Reference
+Guide §2.1.25.1](https://xyce.sandia.gov/download/2068/) specifies
+`.OPTIONS DEVICE TEMP=...` (default 27 °C); a standalone `-syntax` check
+accepted that directive. No full Xyce corner result is claimed.

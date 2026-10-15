@@ -23,13 +23,22 @@ import re
 
 def parse_ports(vfile):
     txt = open(vfile).read()
-    name = re.search(r"module\s+(\w+)", txt).group(1)
-    aw = int(re.search(r"ADDR_WIDTH\s*=\s*(\d+)", txt).group(1))
-    dw = int(re.search(r"DATA_WIDTH\s*=\s*(\d+)", txt).group(1))
+    name_match = re.search(r"module\s+(\w+)", txt)
+    aw_match = re.search(r"ADDR_WIDTH\s*=\s*(\d+)", txt)
+    dw_match = re.search(r"DATA_WIDTH\s*=\s*(\d+)", txt)
+    if not name_match or not aw_match or not dw_match:
+        raise ValueError("behavioral model lacks module, ADDR_WIDTH, or DATA_WIDTH metadata")
+    name, aw, dw = name_match.group(1), int(aw_match.group(1)), int(dw_match.group(1))
     ports = []
     for m in re.finditer(r"// Port (\d+): (RW|R|W)\s*\n\s*([^\n]+)", txt):
         idx, kind, sig = int(m.group(1)), m.group(2), m.group(3)
-        ports.append(dict(idx=idx, kind=kind, sigs=[s.strip() for s in sig.strip().rstrip(")").split(",") if s.strip()]))
+        ports.append(dict(idx=idx, kind=kind,
+                          sigs=[s.strip() for s in sig.strip().rstrip(")").split(",") if s.strip()]))
+    if not ports:
+        raise ValueError("behavioral model has no // Port N: RW|R|W role metadata")
+    indices = [port["idx"] for port in ports]
+    if len(indices) != len(set(indices)):
+        raise ValueError("behavioral model has duplicate port-role metadata")
     wmask = "wmask" in txt
     return name, aw, dw, ports, wmask
 
@@ -170,7 +179,8 @@ def gen(vfile, outdir, ncyc, seed, clk_delay1=0.0):
             op = cyc.get(i)
             csb = 0 if op else 1
             addr = op[1] if op else 0
-            assigns.append("csb{0}={1}; addr{0}={2};".format(i, csb, addr))
+            fields.append("role{}={}".format(i, p["kind"]))
+            fields.append("op{}={}".format(i, op[0] if op else "I"))
             fields.append("csb{0}={1}".format(i, csb))
             fields.append("addr{0}={1:0{2}b}".format(i, addr, aw))
             if p["kind"] == "RW":
