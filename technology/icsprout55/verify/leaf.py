@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generate OpenRAM leaf modules for ICsprout55 and check them with Calibre.
+"""Generate ICsprout55 OpenRAM leaf modules and run selected verification decks.
 
 Usage:
-  venv/bin/python bin/leaf.py [--lib H7CR|SC9T] [--decks tape,os] [--no-lvs]
+  venv/bin/python bin/leaf.py [--lib H7CR|SC9T] [--decks tape,os,klayout] [--no-lvs]
                               [--quiet] 'ptx(width=0.3,tx_type="nmos")' 'pinv(size=1)' ...
 
 Each spec is module_type(kwargs).  Outputs go to runs/leaf_<name>/.
@@ -25,6 +25,7 @@ os.environ.setdefault("OPENRAM_HOME", os.path.join(REPO, "compiler"))
 os.environ.setdefault("OPENRAM_TECH", os.path.join(REPO, "technology"))
 
 import cal  # noqa: E402
+import opensource  # noqa: E402
 
 
 def main():
@@ -32,6 +33,10 @@ def main():
     ap.add_argument("specs", nargs="+")
     ap.add_argument("--lib", default="SC9T")
     ap.add_argument("--decks", default="tape,os")
+    ap.add_argument("--pdk-root")
+    ap.add_argument("--librelane-root")
+    ap.add_argument("--drc-waivers", default=str(opensource.DEFAULT_DRC_WAIVERS))
+    ap.add_argument("--drc-profile", choices=("macro", "diagnostic"), default="macro")
     ap.add_argument("--no-lvs", action="store_true")
     ap.add_argument("--no-check", action="store_true")
     ap.add_argument("--quiet", action="store_true")
@@ -39,6 +44,12 @@ def main():
                     help="implant margin around a standalone leaf (context stand-in)")
     ap.add_argument("--extra", default="", help="extra config lines, ';' separated")
     a = ap.parse_args()
+    decks = [deck.strip() for deck in a.decks.split(",") if deck.strip()]
+    unknown = set(decks) - {"tape", "os", "klayout"}
+    if unknown:
+        ap.error("unknown deck(s): {}".format(", ".join(sorted(unknown))))
+    if not decks and not a.no_check:
+        ap.error("select at least one verification deck")
 
     cfgdir = os.path.join(HERE, "runs", "leafcfg")
     os.makedirs(cfgdir, exist_ok=True)
@@ -64,6 +75,7 @@ def main():
     from openram import tech
 
     items = []
+    generation_failed = False
     for spec in a.specs:
         m = re.match(r"(\w+)\((.*)\)$", spec.strip())
         mtype, kw = (m.group(1), m.group(2)) if m else (spec.strip(), "")
@@ -74,6 +86,7 @@ def main():
             import traceback
             traceback.print_exc()
             print("GENERATION FAILED:", spec, repr(e))
+            generation_failed = True
             continue
         safe = re.sub(r"[^A-Za-z0-9_]+", "_", spec)[:60].strip("_")
         d = os.path.join(HERE, "runs", "gen_" + safe)
@@ -89,11 +102,21 @@ def main():
         items.append(dict(gds=gds, top=mod.name, cdl=sp, tag="leaf_" + safe))
     openram.end_openram()
     if a.no_check:
-        return
-    st = cal.run_many(items, decks=a.decks.split(","), lvs=not a.no_lvs,
-                      quiet=a.quiet, vconnect=True)
-    print("ALL CLEAN" if all(st.values()) else "NOT CLEAN")
+        return 1 if generation_failed else 0
+    checks = []
+    commercial = [deck for deck in decks if deck in ("tape", "os")]
+    if commercial:
+        checks.extend(cal.run_many(items, decks=commercial, lvs=not a.no_lvs,
+                                  quiet=a.quiet, vconnect=True).values())
+    if "klayout" in decks:
+        checks.extend(opensource.run_many(
+            items, pdk_root=a.pdk_root, librelane_root=a.librelane_root,
+            out_dir=HERE, run_lvs=not a.no_lvs, quiet=a.quiet,
+            drc_waivers=a.drc_waivers, drc_profile=a.drc_profile).values())
+    ok = not generation_failed and bool(items) and all(checks)
+    print("ALL CHECKS PASS" if ok else "CHECKS FAILED")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

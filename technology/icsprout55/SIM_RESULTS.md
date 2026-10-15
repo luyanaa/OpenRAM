@@ -34,14 +34,15 @@ SNFP / FNSP (slow-N fast-P / fast-N slow-P) 1.08 V 125 C and 1.32 V -40 C.
      corners it leaked to about VDD/2 within 5-10 ns, so 1RW/2RW macros
      failed at 10 ns periods.  The results tables below this summary were
      taken before the fix (except the 32x32 section).
-  2. **Column-mux macros fail at SS -40 C** (reads return all ones): the
-     NMOS-only column mux passes the high bitline at VDD-Vt and the sense
-     amp's PMOS isolation devices cannot pass the low one.  Use
-     `words_per_row = 1` until the sense amp is reworked.
-  3. **2RW writes fail at SNFP 1.08 V 125 C** (slow N, fast P): the write
-     driver only pulls down; the floating "high" bitline is discharged by the
-     written cell itself, and the weak access NMOS cannot overpower the
-     PMOS.  1RW and 1W+1R are fine on the same corner.
+  2. **Historical NMOS-only column-mux failure at SS -40 C** (prior Spectre
+     runs returned all ones): the mux's reduced high level did not satisfy the
+     PMOS-isolated sense amp.  `words_per_row = 1` avoids that mux; a
+     transmission-gate mux is now selectable and the 256x8 TG config passes a
+     limited local ngspice smoke.  See the addendum; it does not supersede the
+     earlier Spectre results.
+  3. **Historical 2RW write failure at SNFP 1.08 V 125 C** used the former
+     pull-down-only write driver.  The current driver is full-swing, but a
+     cross-corner Spectre re-characterization remains open.
 * **1RW 16x32 (delivered macro)**: 213 x 83 um = 0.0177 mm², DRC/LVS
   clean, post-layout pass on all corners at 8 (SS), 10, 20 and 200 ns;
   Liberty for 8 corners from post-layout Spectre measurements
@@ -282,9 +283,10 @@ OpenRAM supply router instead of `"pins"`, 32x128 was 6 um wider still.)
   the height grows 92 um = 32 rows x 2.875 um.  Linear fit for 128-bit
   words: area ≈ 0.048 mm² + 0.0025 mm² per word (128x128 would be
   ~0.37 mm²).
-* The periphery (control logic, decoder, DFFs, sense amps, write drivers) is
-  ~0.048 mm²; each extra bit costs ~19.4 um² (the pbitcell with 1.2 V logic
-  rules plus its share of the wordline driver).
+* The two-point fit has a ~0.0475 mm² intercept; it is an effective fixed
+  overhead estimate, not a measured sum of all peripheral cells. Its slope is
+  ~19.4 um² per added bit and includes decoder/wordline-driver growth and the
+  macro's reserved width. It is not the bitcell area.
 * `route_supplies = "pins"` builds 32x128 in 26 min (24 of them in the GDS
   finalizer); the full OpenRAM supply router took 3.1 h for 32x128 and did
   not finish 64x128 in 4 h.
@@ -295,3 +297,37 @@ ICACHE_DATA_32X128 = 567.6 x 30.5 um = 0.0173 mm², 64X128 = 0.0196 mm²
 The OpenRAM 1W+1R macro is 7.3x (32x128) to 10.5x (64x128) larger and
 2.2-2.6x slower (TT 3.0 vs 1.37 ns, worst corner 7.5 vs ~2.9 ns), but it is
 a true two-port memory built only from logic devices.
+
+Current GDS hierarchy measurements and the port/process-matched interpretation
+of SRAM22 and commercial comparisons are in [AREA_ANALYSIS.md](AREA_ANALYSIS.md).
+
+
+## Additional local ngspice SS -40 C smoke (not signoff)
+
+Generated schematic netlists were exercised with the PDK `ss_mos` ngspice
+models at 1.08 V, -40 C, 5 fF output loads, and 30 ps input/clock edges.
+The temporary smoke adapter maps the 24 flattened DFF MOS cards to the
+equivalent PDK transistor-wrapper subcircuits. No interconnect parasitics,
+PEX, mismatch, or foundry Spectre models are included.
+
+| macro / configuration | period | initialized accesses | readback |
+|---|---:|---|---|
+| 1RW 64x8, default NMOS mux 2:1 | 20 ns | addresses 0–2 prewritten to `FF`, then `A5`, `3C`, `5A` | 3 reads, all bits match |
+| 1RW 256x8, TG mux 4:1 | 5 ns | addresses 0–3 prewritten to `FF`, then `A5`, `3C`, `5A`, `C3` | 4 reads, all bits match |
+| 2RW 32x8, `words_per_row = 1` | 20 ns | addresses 0–3 prewritten to `FF`; simultaneous writes to distinct addresses, followed by cross-port reads | 4 reads, all bits match |
+
+The first 2RW mux-2 experiment exposed a physical-row collision: concurrent
+writes of `A5` and `3C` to logical addresses 0 and 1 (same physical row)
+returned `BD` from both words. The reference 2RW config now uses one word per
+row, and the behavioral assertion flags simultaneous writes to any shared
+physical row. This increases LEF area from 0.02690 mm² (185.97 x 144.67 um)
+to 0.02881 mm² (155.01 x 185.86 um), about 7.1%.
+
+The `OPENRAM_ASSERTIONS` guard was also exercised with Icarus 13 on generated
+single-bank and multi-bank models: same-row writes terminate with `$fatal`,
+while distinct rows and cross-bank writes continue.
+
+These local ngspice results do not supersede the older Spectre measurements in
+this file: they use different model decks and omit extracted parasitics. In
+particular, the 64x8 NMOS-mux pass is a schematic-model smoke, not proof that
+the prior cold-corner failure is fixed in the foundry flow.

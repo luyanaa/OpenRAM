@@ -152,15 +152,19 @@ class ptx(design):
 
         self.channel_length = drc("minlength_channel")
         if cell_props.ptx.model_is_subckt:
-            # sky130
-            main_str = "X{{0}} {{1}} {0} m={1} w={2} l={3} ".format(self.model_name,
-                                                                    self.mults,
-                                                                    self.tx_width,
-                                                                    self.channel_length)
-            # Perimeters are in microns
-            # Area is in u since it is microns square
-            area_str = "pd={0:.2f} ps={0:.2f} as={1:.2f}u ad={1:.2f}u".format(perimeter_sd,
-                                                                              area_sd)
+            if spice.get("subckt_model_si_units", False):
+                main_str = "X{{0}} {{1}} {0} mr={1} w={2}u l={3}u nf=1 mismod=0 ".format(
+                    self.model_name, self.mults, self.tx_width, self.channel_length)
+                area_str = "pd={0:.2f}u ps={0:.2f}u as={1:.2f}p ad={1:.2f}p".format(
+                    perimeter_sd, area_sd)
+            else:
+                main_str = "X{{0}} {{1}} {0} m={1} w={2} l={3} ".format(self.model_name,
+                                                                        self.mults,
+                                                                        self.tx_width,
+                                                                        self.channel_length)
+                # Perimeters are in microns; area is in square microns.
+                area_str = "pd={0:.2f} ps={0:.2f} as={1:.2f}u ad={1:.2f}u".format(
+                    perimeter_sd, area_sd)
         else:
             main_str = "M{{0}} {{1}} {0} m={1} w={2}u l={3}u ".format(self.model_name,
                                                                       self.mults,
@@ -183,11 +187,12 @@ class ptx(design):
                                                                                  self.mults,
                                                                                  self.tx_width,
                                                                                  self.channel_length)
+        elif cell_props.ptx.model_is_subckt and spice.get("lvs_uses_mos_cards", False):
+            self.lvs_device = "M{{0}} {{1}} {0} m={1} w={2}u l={3}u".format(
+                self.model_name, self.mults, self.tx_width, self.channel_length)
         elif cell_props.ptx.model_is_subckt:
-            self.lvs_device = "X{{0}} {{1}} {0} m={1} w={2}u l={3}u".format(self.model_name,
-                                                                            self.mults,
-                                                                            self.tx_width,
-                                                                            self.channel_length)
+            self.lvs_device = "X{{0}} {{1}} {0} m={1} w={2}u l={3}u".format(
+                self.model_name, self.mults, self.tx_width, self.channel_length)
         else:
             self.lvs_device = "M{{0}} {{1}} {0} m={1} w={2}u l={3}u ".format(self.model_name,
                                                                              self.mults,

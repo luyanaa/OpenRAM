@@ -24,8 +24,8 @@ Standard cells: OpenRAM only takes the D flip-flop from a foundry library.
 
 The DFF is wrapped by ``ics55_dff`` into one fixed 9-track-sized slot with its
 own well taps, so the macro floorplan does not depend on the library choice.
-Timing/current values marked analytical are only used by OpenRAM's analytical
-estimators; the foundry analog models are not used by this port.
+OpenRAM's delay estimates remain analytical by default.  Transistor simulation
+uses the vendor model libraries supplied separately by icsprout55-pdk.
 """
 
 import os
@@ -42,9 +42,16 @@ tech_modules = d.module_type()
 tech_modules["dff"] = "ics55_dff"
 tech_modules["sense_amp"] = "ics55_sense_amp"
 tech_modules["write_driver"] = "ics55_write_driver"
+tech_modules["column_mux"] = "ics55_column_mux_nmos"
+ics55_column_mux_style = str(getattr(OPTS, "ics55_column_mux_style", "nmos")).lower()
+if ics55_column_mux_style not in ("nmos", "tgate"):
+    raise ValueError("ics55_column_mux_style must be 'nmos' or 'tgate'")
+if ics55_column_mux_style == "tgate":
+    tech_modules["column_mux"] = "ics55_column_mux_tgate"
+    tech_modules["column_mux_array"] = "ics55_column_mux_array_tgate"
 
 cell_properties = d.cell_properties()
-cell_properties.ptx.model_is_subckt = False
+cell_properties.ptx.model_is_subckt = True
 cell_properties.ptx.bin_spice_models = False
 
 layer_properties = d.layer_properties()
@@ -134,7 +141,8 @@ preferred_directions = {
     "m5": "H",
 }
 
-# Macro-level supply grid on M3/M4; M5 and above are left for the SoC.
+# Supply grid uses M3/M4; data-DFF horizontal trunks reserve M5 in the macro.
+# The exported M5 obstruction keeps SoC signal routing out of that region.
 power_grid = m3_stack
 
 
@@ -271,8 +279,26 @@ spice = {}
 spice["stdcell_library"] = stdcell_library
 spice["nmos"] = stdcell_variant["nmos"]
 spice["pmos"] = stdcell_variant["pmos"]
+SPICE_MODEL_DIR = os.environ.get("SPICE_MODEL_DIR")
+if not SPICE_MODEL_DIR:
+    pdk_root = os.environ.get(
+        "ICSPROUT55_PDK_ROOT",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..",
+                                    "icsprout55-pdk")))
+    SPICE_MODEL_DIR = os.path.join(pdk_root, "libs.tech", "spice", "foundry", "SIMULATOR")
+_model_library = os.path.join(
+    SPICE_MODEL_DIR, "ICsprout_55LLULP1225_V1p1_hsp.lib")
+spice["fet_libraries"] = {
+    "TT": [[_model_library, "tt_mos"]],
+    "SS": [[_model_library, "ss_mos"]],
+    "FF": [[_model_library, "ff_mos"]],
+    "SF": [[_model_library, "snfp_mos"]],
+    "FS": [[_model_library, "fnsp_mos"]],
+}
 spice["fet_models"] = {}
-spice["analytical_only"] = True
+spice["analytical_only"] = False
+spice["subckt_model_si_units"] = True
+spice["lvs_uses_mos_cards"] = True
 spice["power"] = "vdd"
 spice["ground"] = "gnd"
 
@@ -282,7 +308,8 @@ spice["supply_voltages"] = [1.08, 1.20, 1.32]
 spice["nom_supply_voltage"] = 1.20
 spice["rise_time"] = 0.005
 spice["fall_time"] = 0.005
-spice["temperatures"] = [0, 25, 85]
+spice["temperatures"] = [0, 25, 85, -40, 125]
+# Nominal corner used when OpenRAM emits its default characterization Liberty.
 spice["nom_temperature"] = 25
 
 # Analytical defaults only (not fitted to the foundry models).

@@ -604,6 +604,7 @@ class hierarchical_decoder(design):
 
 
 
+
     def route_predecode_bus_outputs(self, rail_name, pin, row):
         """
         Connect the routing rail to the given metal1 pin

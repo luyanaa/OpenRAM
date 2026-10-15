@@ -514,11 +514,13 @@ def set_default_corner():
 
     from openram import tech
     # Set some default options now based on the technology...
-    if (OPTS.process_corners == ""):
+    if OPTS.process_corners == "":
         if OPTS.nominal_corner_only:
             OPTS.process_corners = ["TT"]
         else:
-            OPTS.process_corners = list(tech.spice["fet_models"].keys())
+            model_corners = list(tech.spice.get("fet_models", {}).keys())
+            library_corners = list(tech.spice.get("fet_libraries", {}).keys())
+            OPTS.process_corners = list(dict.fromkeys(model_corners + library_corners))
 
     if (OPTS.supply_voltages == ""):
         if OPTS.nominal_corner_only:

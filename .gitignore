@@ -1,3 +1,5 @@
+ics55_work/
+*.log
 .DS_Store
 .coverage*
 *~
@@ -30,3 +32,6 @@ skywater-pdk/
 sky130_fd_bd_sram/
 docker/openram-ubuntu.log
 ciel/
+# Deepwork session state
+.slim/deepwork/
+ics55_work/lvs_alignment/layout_experiment/

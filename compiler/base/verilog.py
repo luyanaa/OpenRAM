@@ -99,6 +99,7 @@ class verilog:
 
         # This is the memory array itself
         self.vf.write("  reg [DATA_WIDTH-1:0]    mem [0:RAM_DEPTH-1];\n\n")
+        self.add_write_write_checks()
 
         for port in self.all_ports:
             self.register_inputs(port)
@@ -207,13 +208,13 @@ class verilog:
             self.vf.write("  output [DATA_WIDTH-1:0] dout{0};\n".format(port))
 
     def add_write_block(self, port):
-        """
-        Add a write port block. Multiple simultaneous writes to the same address
-        have arbitrary priority and are not allowed.
+        """Add a write port block.
+
+        Overlapping writes to the same physical row are undefined; no priority
+        is specified between write ports.
         """
         self.vf.write("\n")
-        self.vf.write("  // Memory Write Block Port {0}\n".format(port))
-        self.vf.write("  // Write Operation : When web{0} = 0, csb{0} = 0\n".format(port))
+        self.vf.write("  // Write when chip select and write mode are active.\n")
         self.vf.write("  always @ (negedge clk{0})\n".format(port))
         self.vf.write("  begin : MEM_WRITE{0}\n".format(port))
         if port in self.readwrite_ports:
@@ -241,6 +242,39 @@ class verilog:
 
         self.vf.write("    end\n")
         self.vf.write("  end\n")
+
+    def add_write_write_checks(self):
+        """Emit an opt-in guard for overlapping writes to the same physical row."""
+        pairs = [(port0, port1)
+                 for i, port0 in enumerate(self.write_ports)
+                 for port1 in self.write_ports[i + 1:]]
+        if not pairs:
+            return
+
+        self.vf.write("\n`ifdef OPENRAM_ASSERTIONS\n")
+        for port0, port1 in pairs:
+            conditions = ["(csb{0} === 1'b0)".format(port0),
+                          "(csb{0} === 1'b0)".format(port1)]
+            if port0 in self.readwrite_ports:
+                conditions.append("(web{0} === 1'b0)".format(port0))
+            if port1 in self.readwrite_ports:
+                conditions.append("(web{0} === 1'b0)".format(port1))
+            condition = " && ".join(conditions)
+            row_shift = self.col_addr_size
+            row_conflict = "({0} && ((addr{1} >> {2}) === (addr{3} >> {2})))".format(
+                condition, port0, row_shift, port1)
+            message = ("OpenRAM overlapping writes to the same physical row "
+                       "on ports {0} and {1} are undefined").format(port0, port1)
+            self.vf.write("  always @* begin\n")
+            self.vf.write("    if {0}\n".format(row_conflict))
+            self.vf.write("      $fatal(1, \"{0}\");\n".format(message))
+            self.vf.write("  end\n\n")
+            self.vf.write("  initial begin\n")
+            self.vf.write("    #0;\n")
+            self.vf.write("    if {0}\n".format(row_conflict))
+            self.vf.write("      $fatal(1, \"{0}\");\n".format(message))
+            self.vf.write("  end\n\n")
+        self.vf.write("`endif\n")
 
     def add_read_block(self, port):
         """

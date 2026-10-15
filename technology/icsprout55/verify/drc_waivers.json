@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "waivers": [
+    {
+      "cell": "DFFQX1_9TSVT",
+      "category": "active.act.width",
+      "values": ["edge-pair: (0.805,0.43;0.805,0.533)|(0.885,0.52;0.885,0.417)"],
+      "reason": "Known vendor DFF internal geometry accepted by the user; exact marker from the retained full-hierarchy KLayout report. Does not cover the OpenRAM wrapper or new markers."
+    },
+    {
+      "cell": "DFFQX1H7R",
+      "category": "metal.m1.area",
+      "values": ["polygon: (0.25,0.57;0.25,0.84;0.35,0.84;0.35,0.57)"],
+      "reason": "Known vendor 7T DFF internal geometry accepted by the user; exact marker from the standalone imported-cell baseline. Does not waive new geometry or wrapper/boundary findings."
+    },
+    {
+      "cell": "DFFQX1H7R",
+      "category": "metal.m1.area",
+      "values": ["polygon: (0.455,0.425;0.455,0.65;0.575,0.65;0.575,0.425)"],
+      "reason": "Known vendor 7T DFF internal geometry accepted by the user; exact marker from the standalone imported-cell baseline."
+    }
+  ]
+}

@@ -340,6 +340,8 @@ class port_data(design):
             temp.append("br_out_{0}".format(bit))
 
         temp.append("gnd")
+        if getattr(self.column_mux_array, "uses_vdd", False):
+            temp.append("vdd")
         self.connect_inst(temp)
 
     def place_column_mux_array(self, offset):

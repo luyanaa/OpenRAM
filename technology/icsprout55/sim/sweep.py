@@ -51,6 +51,7 @@ def main():
     ap.add_argument("--diag", action="store_true", help="save control nets for timing analysis")
     ap.add_argument("--save", default="", help="extra nets to save, comma separated")
     ap.add_argument("--cload", type=float, default=None, help="fF on every dout (mkscs default 5)")
+    ap.add_argument("--tr", type=float, default=0.03, help="input edge time in ns (mkscs default 0.03)")
     a = ap.parse_args()
     mdir = os.path.abspath(a.mdir) if a.mdir else os.path.join(WORK, "runs", "out_" + a.macro)
     tag = a.tag or a.macro
@@ -75,7 +76,8 @@ def main():
             sh([sys.executable, os.path.join(HERE, "mkscs.py"),
                 os.path.abspath(a.sp) if a.sp else os.path.join(mdir, a.macro + ".sp"),
                 trace, scs, "--name", a.macro, "--period", str(T), "--corner", proc,
-                "--vdd", str(vdd), "--temp", str(temp), "--skew1", str(a.skew1)]
+                "--vdd", str(vdd), "--temp", str(temp), "--skew1", str(a.skew1),
+                "--tr", str(a.tr)]
                + (["--postlayout"] if a.postlayout else []) + (["--diag"] if a.diag else []) + (["--save", a.save] if a.save else [])
                + (["--cload", str(a.cload)] if a.cload is not None else []))
             # liberal error preset (checked against moderate: < 2 ps difference)

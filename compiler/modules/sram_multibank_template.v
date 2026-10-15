@@ -186,4 +186,9 @@ module {{ module_name }}  (
     endcase
   end
 {% endfor %}
+{% if write_conflict_checks %}
+`ifdef OPENRAM_ASSERTIONS
+{{ write_conflict_checks }}
+`endif
+{% endif %}
 endmodule

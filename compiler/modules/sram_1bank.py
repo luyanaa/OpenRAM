@@ -25,7 +25,10 @@ class sram_1bank(design, verilog, lef):
     """
     def __init__(self, name, sram_config):
         design.__init__(self, name)
-        lef.__init__(self, ["m1", "m2", "m3", "m4"])
+        lef_layers = ["m1", "m2", "m3", "m4"]
+        if OPTS.tech_name == "icsprout55":
+            lef_layers.append("m5")
+        lef.__init__(self, lef_layers)
         verilog.__init__(self)
         self.sram_config = sram_config
         sram_config.set_local_config(self)
@@ -812,12 +815,12 @@ class sram_1bank(design, verilog, lef):
         self.spare_wen_pos = [None] * len(self.all_ports)
         self.data_pos = [None] * len(self.all_ports)
 
-        # These positions utilize the channel route sizes.
-        # FIXME: Auto-compute these rather than manual computation.
-        # If a horizontal channel, they rely on the vertical channel non-preferred (contacted) pitch.
-        # If a vertical channel, they rely on the horizontal channel non-preferred (contacted) pitch.
-        # So, m3 non-pref pitch means that this is routed on the m2 layer.
-        self.data_bus_gap = self.m4_nonpref_pitch * 2
+        # Keep one M3 track between ICS55's data-DFF channel and DFF row.
+        # Other technologies retain the legacy two-track M4 margin.
+        if OPTS.tech_name == "icsprout55":
+            self.data_bus_gap = self.m3_nonpref_pitch
+        else:
+            self.data_bus_gap = self.m4_nonpref_pitch * 2
 
         # Spare wen are on a separate layer so not included
         # Start with 1 track minimum
@@ -1177,7 +1180,9 @@ class sram_1bank(design, verilog, lef):
         if len(route_map) > 0:
 
             # This layer stack must be different than the column addr dff layer stack
-            layer_stack = self.m3_stack
+            layer_stack = self.m4_stack if OPTS.tech_name == "icsprout55" else self.m3_stack
+            # Keep ICS55 data-DFF trunks off the M3 supply mesh.
+            route_directions = ("V", "H") if OPTS.tech_name == "icsprout55" else None
             if port == 0:
                 # This is relative to the bank at 0,0 or the s_en which is routed on M3 also
                 if "s_en" in self.control_logic_insts[port].mod.pin_map:
@@ -1191,6 +1196,7 @@ class sram_1bank(design, verilog, lef):
                 cr = channel_route(netlist=route_map,
                                    offset=offset,
                                    layer_stack=layer_stack,
+                                   directions=route_directions,
                                    parent=self)
                 if add_routes:
                     # This causes problem in magic since it sometimes cannot extract connectivity of instances
@@ -1211,6 +1217,7 @@ class sram_1bank(design, verilog, lef):
                 cr = channel_route(netlist=route_map,
                                    offset=offset,
                                    layer_stack=layer_stack,
+                                   directions=route_directions,
                                    parent=self)
                 if add_routes:
                     # This causes problem in magic since it sometimes cannot extract connectivity of instances

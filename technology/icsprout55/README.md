@@ -1,9 +1,9 @@
 # OpenRAM for ICsprout 55LLULP (`icsprout55`)
 
-Generates SRAM macros (1RW, 1W+1R, 2RW, 1RW+1R) whose GDS passes the foundry
-Calibre DRC and LVS decks — both the SoC tapeout runset and the open
-`55LLULP1233_REV1_0_OS` deck.  See [PORT_STATUS.md](PORT_STATUS.md) for the
-verification record and the design decisions.
+Generates SRAM macros (1RW, 1W+1R, 2RW, 1RW+1R) with optional foundry
+Calibre sign-off checks and provisional open-source KLayout DRC/LVS screening.
+The open-source decks are not sign-off decks and report violations on a
+sample macro; see [verify/README.md](verify/README.md) for scope and caveats.
 
 ## Quick start
 
@@ -66,6 +66,53 @@ vendor libraries (see its docstring for the source paths).
   N-well notches, metal holes and same-net notches and fixes metal minimum
   area.
 
+Measured array/periphery footprint budgets and comparable SRAM22/commercial
+area evidence are in [AREA_ANALYSIS.md](AREA_ANALYSIS.md).
+
+## Electrical experiments and port contract
+
+The default column mux remains the NMOS pass-gate implementation, with its
+size selectable through `ics55_column_mux_nmos_size`. The checked-in
+`ics55_1rw_256x8_mux4.py` explicitly uses size 8. The optional full-CMOS
+transmission-gate implementation is selected with
+`ics55_column_mux_style = "tgate"`; the
+`ics55_1rw_256x8_mux4_tgate.py` experiment uses N-size 8 and P-size 12.
+It adds a local select inverter and a VDD rail; it does not change the default.
+
+`ics55_write_driver.py` is the selected write-driver implementation. It drives
+`bl = din` and `br = !din` with complementary NMOS/PMOS paths while enabled,
+and isolates both bitlines while disabled. The current cell uses fixed 0.60 um
+output devices and has no strength-sweep API. These are circuit/layout
+intentions, not an SS -40 C timing claim; verify the generated macro with the
+vendor models and the intended load.
+Break-before-make is provided by the macro timing contract, not an independent
+dead-time circuit in the driver: the top-level data DFF captures on the rising
+edge, and `control_logic` gates `w_en` with `gated_clk_bar` and replica delay so
+the driver is disabled while data changes and active only in the low-phase
+write window. External use of the leaf driver must hold `din` stable for the
+entire `en` interval.
+
+Decoder, replica-delay and periphery sizing use the existing OpenRAM
+`control_logic` architecture: word-size-based `pand3` drive, the
+`pdriver_max_size` ceiling, replica-bitline delay, and the technology's
+`static_precharge` option. There is no standalone PPA optimizer in this
+repository; measured Liberty constraints are the available optimization
+handoff.
+
+When two write ports have overlapping write-enable windows to the same
+physical row (which can include distinct logical addresses in a column-muxed
+SRAM), stored data is undefined and neither port has priority. Behavioral
+Verilog reports this case under `OPENRAM_ASSERTIONS`; packaged black-box
+stubs document it. The guard does not arbitrate writes.
+
+Transistor simulation uses model files from the separately supplied
+`icsprout55-pdk` (override with `ICSPROUT55_PDK_ROOT` or `SPICE_MODEL_DIR`).
+The foundry model files are vendor-licensed and are not redistributed by
+OpenRAM. Default compiled Liberty remains analytical unless measured
+characterization is explicitly generated with `sim/charz.py` and
+`sim/mklib.py`; those tables are valid only at their recorded load/slew axes.
+
+
 ## Physical verification
 
 The decks used for sign-off are the foundry Calibre runsets with
@@ -73,6 +120,11 @@ The decks used for sign-off are the foundry Calibre runsets with
 edge are chip-level checks done after the SoC fill.  The tapeout LVS
 runset's chip-specific `lvs_box.list` include is disabled.  Everything else
 is unmodified.
+
+Known vendor-cell internal DRC findings are tracked as scoped waivers, not
+repaired by altering library geometry. The optional KLayout adapter preserves
+raw reports and counts waived and unwaived markers separately; LVS remains an
+independent verdict. See [verify/README.md](verify/README.md).
 
 ## Simulation
 
@@ -93,7 +145,9 @@ them (an extraction of the stand-alone macro then needs
 
 * Timing in the `.lib` is analytical; the Spectre results in
   SIM_RESULTS.md are the reference until a characterized `.lib` exists.
-* The macro uses M1–M4 internally (M4 only for short connectors and the
-  supply grid); M5 and above are free for the SoC.
+* Internal routing spans M1–M5. The supply grid uses M3/M4; data-DFF channels
+  use M4/V4/M5 with horizontal trunks on M5. The macro LEF reserves M5 with an
+  obstruction, so the SoC must not treat M5 as available across the macro;
+  route above it only if the SoC stack permits.
 * Read/write margins of the logic-rule bitcell (SNM, Monte Carlo) are not
   simulated, only process corners.

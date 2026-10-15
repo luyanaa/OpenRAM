@@ -6,9 +6,9 @@
 ICsprout55 has no SRAM periphery cells, so the sense amplifier and the write
 driver are generated here.  The style is deliberately simple and rule-driven:
 
-* transistors are drawn as horizontal *strips* of diffusion with vertical
-  gates on a 0.46 um pitch; every diffusion node that needs a connection gets
-  two contacts and an M1 strap, every gate a poly contact pad on one side;
+* transistors are drawn as horizontal *strips* of diffusion with cell-specific
+  gate pitch; every diffusion node that needs a connection gets two contacts
+  and an M1 strap, every gate a poly contact pad on one side;
 * a *channel* between an NMOS strip and a PMOS strip carries one M3 track per
   net; each pin is lifted to M2 by a bare via1 and joined to its track by a
   vertical M2 stub (``route_channel`` chooses a track order with no stub
@@ -33,8 +33,7 @@ L = 0.06            # gate length
 CT = 0.09           # contact / via size
 CT_PITCH = 0.23     # contact centre pitch (0.14 spacing)
 END = 0.275         # end diffusion: contact centre 0.23 from the gate centre (pin grid)
-LSD = 0.40          # internal source/drain length between gates
-GP = L + LSD        # gate pitch 0.46
+LSD = 0.40          # default internal source/drain spacing (0.46 um gate pitch)
 PO_EXT = 0.16       # poly end-cap past active
 PAD_OFF = 0.20      # poly-contact centre past the active edge
 PAD = 0.17          # poly pad (contact + 2 x 0.04)
@@ -53,7 +52,7 @@ _mos_cache = {}
 
 
 class ics55_mos(design):
-    """Layout-less MOS device: only contributes a SPICE M card."""
+    """Layout-less MOS device: SPICE subcircuit, geometry drawn by the generator."""
 
     def __init__(self, name, tx_type, width):
         super().__init__(name)
@@ -62,15 +61,24 @@ class ics55_mos(design):
         body = "GROUND" if tx_type == "nmos" else "POWER"
         self.add_pin_list(["D", "G", "S", "B"], ["INOUT", "INPUT", "INOUT", body])
         model = spice["nmos"] if tx_type == "nmos" else spice["pmos"]
-        self.spice_device = "M{{0}} {{1}} {0} m=1 w={1}u l={2}u".format(
+        self.spice_device = "X{{0}} {{1}} {0} w={1}u l={2}u nf=1 mismod=0".format(
+            model, width, drc("minlength_channel"))
+        self.lvs_device = "M{{0}} {{1}} {0} m=1 w={1}u l={2}u".format(
             model, width, drc("minlength_channel"))
         self.width = 0
         self.height = 0
 
     def gds_write_file(self, gds_layout):
-        # nothing to draw: the generator draws the device geometry itself
+        # The generator draws this device's geometry directly.
         return
 
+    def build_graph(self, graph, inst_name, port_nets):
+        """Model MOS gate-to-channel and source/drain connectivity for timing."""
+        self.add_graph_edges(graph, port_nets)
+
+    def is_non_inverting(self):
+        """Match OpenRAM's primitive-PTX graph polarity convention."""
+        return True
 
 def mos(tx_type, width):
     key = (tx_type, round(width, 3))
@@ -83,8 +91,10 @@ def mos(tx_type, width):
 class ics55_gen(design):
     """Base class with the strip / rail / tap / channel helpers."""
 
-    def __init__(self, name):
+    def __init__(self, name, source_drain_spacing=LSD):
         super().__init__(name)
+        self.source_drain_spacing = source_drain_spacing
+        self.gate_pitch = L + source_drain_spacing
         self.n_dev = 0
         self.net_pins = {}      # channel -> list of (x, y, side, net)
         self.lines = []         # (x, y0, y1, net)
@@ -96,7 +106,7 @@ class ics55_gen(design):
         return round(v / g) * g
 
     def strip_length(self, ngates):
-        return 2 * END + ngates * L + (ngates - 1) * LSD
+        return 2 * END + ngates * L + (ngates - 1) * self.source_drain_spacing
 
     # ---------------------------------------------------------------- strip
     def add_strip(self, x0, y0, w, nodes, gates, tx_type, pad_side, channel, nocontact=()):
@@ -122,9 +132,9 @@ class ics55_gen(design):
         # node x centres
         xs = [x0 + 0.03 + 0.5 * CT]
         for i in range(n):
-            gx = x0 + END + i * GP
+            gx = x0 + END + i * self.gate_pitch
             if i < n - 1:
-                xs.append(gx + L + 0.5 * LSD)
+                xs.append(gx + L + 0.5 * self.source_drain_spacing)
         xs.append(x0 + length - 0.03 - 0.5 * CT)
         ncont = max(1, int((w - 0.06 + 0.14) // CT_PITCH))
         cy = y0 + 0.5 * w
@@ -146,7 +156,7 @@ class ics55_gen(design):
         edge = y0 + w if pad_side == "top" else y0
         far = y0 if pad_side == "top" else y0 + w
         for i, g in enumerate(gates):
-            gx = x0 + END + i * GP
+            gx = x0 + END + i * self.gate_pitch
             gc = gx + 0.5 * L
             pad_y = edge + sgn * PAD_OFF
             ylo = min(far - sgn * PO_EXT, pad_y)

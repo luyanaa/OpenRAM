@@ -114,6 +114,8 @@ def main():
         ctrl = ["s_en{}", "w_en{}", "wl_en{}", "rbl_bl{}", "p_en_bar{}", "clk_buf{}"]
         nports = len(clocks)
         saves += " " + " ".join("XSRAM." + c.format(i) for c in ctrl for i in range(nports))
+        saves += " " + " ".join("XSRAM.Xcontrol{}.rbl_bl_delay".format(i)
+                                for i in range(nports))
     if a.save:
         saves += " " + " ".join(a.save.split(","))
     L.append("save {} VDD:p".format(saves))

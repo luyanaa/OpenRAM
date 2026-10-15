@@ -6,6 +6,7 @@ check_lvsdrc = False
 use_nix = False
 word_size = 8
 num_words = 32
+words_per_row = 1  # One word per row permits concurrent writes to distinct addresses.
 stdcell_library = "SC9T"
 num_rw_ports = 2
 num_r_ports = 0

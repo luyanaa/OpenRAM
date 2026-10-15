@@ -2,7 +2,7 @@
 """Package an OpenRAM ICsprout55 macro for a Cadence/Calibre ASIC flow.
 
   package_macro.py OUTDIR MACRO DEST --stdcell-cdl CDL --meas MEAS.json
-                   --words N --bits B [--stdcell-lef LEF]
+                   --words N --bits B [--ports 0,1] [--stdcell-lef LEF]
 
 OUTDIR is the OpenRAM output directory of MACRO.  Writes into DEST:
   gds/MACRO.gds        supply labels renamed vdd->VDD, gnd->VSS (top cell)
@@ -106,48 +106,65 @@ def lef(src, dst, top, gate_in, gate_clk, diff_out):
     # and sense nodes.  0.3 um inset keeps the edge pins reachable.
     w, h = map(float, re.search(r"SIZE ([0-9.]+) BY ([0-9.]+)", t).groups())
     obs = "   OBS\n" + "".join("   LAYER  %s ;\n      RECT  0.3 0.3 %.3f %.3f ;\n" % (l, w - 0.3, h - 0.3)
-                             for l in ("MET1", "MET2", "MET3", "MET4")) + "   END\n"
+                             for l in ("MET1", "MET2", "MET3", "MET4", "MET5")) + "   END\n"
     t = re.sub(r"   OBS\n.*?   END\n", obs, t, flags=re.S)
     open(dst, "w").write(t)
 
 
-def verilog(src, dst, stub, top, words, bits):
-    t = open(src).read()
-    t = re.sub(r"\bvdd\b", "VDD", t); t = re.sub(r"\bgnd\b", "VSS", t)
-    open(dst, "w").write("`timescale 1ns/1ps\n" + t)
-    aw = (words - 1).bit_length()
-    open(stub, "w").write("""// Black box of %(top)s (%(w)d words x %(b)d bits, single port).
-// clk0: inputs registered at the rising edge; the read happens in the clock-low
-// phase and dout0 is valid from the falling edge until after the next rising edge.
-// csb0 = 0 selects, web0 = 0 writes.
-(* blackbox *)
-module %(top)s (
-`ifdef USE_POWER_PINS
-    inout VDD,
-    inout VSS,
-`endif
-    input  clk0,
-    input  csb0,
-    input  web0,
-    input  [%(a)d:0] addr0,
-    input  [%(bm)d:0] din0,
-    output [%(bm)d:0] dout0
-);
-endmodule
-""" % dict(top=top, w=words, b=bits, a=aw - 1, bm=bits - 1))
+def verilog(src, dst, stub, top, words, bits, ports):
+    source = open(src).read()
+    source = re.sub(r"\bvdd\b", "VDD", source)
+    source = re.sub(r"\bgnd\b", "VSS", source)
+    open(dst, "w").write("`timescale 1ns/1ps\n" + source)
+    address_width = (words - 1).bit_length()
+    declarations = []
+    for port in ports:
+        declarations.extend((
+            "input clk{}".format(port),
+            "input csb{}".format(port),
+            "input web{}".format(port),
+            "input [{}:0] addr{}".format(address_width - 1, port),
+            "input [{}:0] din{}".format(bits - 1, port),
+            "output [{}:0] dout{}".format(bits - 1, port),
+        ))
+    stub_lines = [
+        "// Black box of {} ({} words x {} bits, {} read/write port(s)).".format(
+            top, words, bits, len(ports)),
+        "// Inputs register at rising edges; reads launch on falling edges.",
+        "// Concurrent writes to the same physical row across ports are undefined.",
+        "(* blackbox *)",
+        "module {} (".format(top),
+        "`ifdef USE_POWER_PINS",
+        "    inout VDD,",
+        "    inout VSS,",
+        "`endif",
+    ]
+    stub_lines.extend("    {}{}".format(declaration, "," if index + 1 < len(declarations) else "")
+                      for index, declaration in enumerate(declarations))
+    stub_lines.extend((");", "endmodule", ""))
+    open(stub, "w").write("\n".join(stub_lines))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("outdir"); ap.add_argument("macro"); ap.add_argument("dest")
+    ap.add_argument("outdir")
+    ap.add_argument("macro")
+    ap.add_argument("dest")
     ap.add_argument("--stdcell-cdl", required=True)
     ap.add_argument("--meas", required=True)
     ap.add_argument("--words", type=int, required=True)
     ap.add_argument("--bits", type=int, required=True)
+    ap.add_argument("--ports", default="0", help="comma-separated read/write port indices")
     ap.add_argument("--gate-in", type=float, default=0.0318, help="um2, DFF D input")
     ap.add_argument("--gate-clk", type=float, default=0.027, help="um2, clock buffer input")
     ap.add_argument("--diff-out", type=float, default=0.2, help="um2, sense-amp output driver")
     a = ap.parse_args()
+    try:
+        ports = [int(value) for value in a.ports.split(",")]
+    except ValueError:
+        ap.error("--ports must be a comma-separated list of indices")
+    if not ports or min(ports) < 0 or len(set(ports)) != len(ports):
+        ap.error("--ports must contain distinct non-negative indices")
     m, src, d = a.macro, a.outdir, a.dest
     for sub in ("gds", "lef", "cdl", "spice", "lib", "verilog"):
         os.makedirs(os.path.join(d, sub), exist_ok=True)
@@ -157,12 +174,19 @@ def main():
     netlist(os.path.join(src, m + ".lvs.sp"), os.path.join(d, "cdl", m + ".cdl"), m, foundry_ports(a.stdcell_cdl))
     netlist(os.path.join(src, m + ".sp"), os.path.join(d, "spice", m + ".sp"), m)
     verilog(os.path.join(src, m + ".v"), os.path.join(d, "verilog", m + ".v"),
-            os.path.join(d, "verilog", m + "_stub.v"), m, a.words, a.bits)
+            os.path.join(d, "verilog", m + "_stub.v"), m, a.words, a.bits, ports)
     import klayout.db as kdb
-    ly = kdb.Layout(); ly.read(os.path.join(src, m + ".gds")); bb = ly.top_cell().dbbox()
-    subprocess.run([sys.executable, os.path.join(HERE, "..", "sim", "mklib.py"), a.meas, m, os.path.join(d, "lib"),
-                    "--words", str(a.words), "--bits", str(a.bits), "--area", "%.3f" % (bb.width() * bb.height()),
-                    "--power-pins", "VDD,VSS"], check=True)
+    ly = kdb.Layout()
+    ly.read(os.path.join(src, m + ".gds"))
+    bbox = ly.top_cell().dbbox()
+    subprocess.run([
+        sys.executable, os.path.join(HERE, "..", "sim", "mklib.py"),
+        a.meas, m, os.path.join(d, "lib"),
+        "--words", str(a.words), "--bits", str(a.bits),
+        "--area", "{:.3f}".format(bbox.width() * bbox.height()),
+        "--ports", ",".join(map(str, ports)),
+        "--power-pins", "VDD,VSS",
+    ], check=True)
 
 
 if __name__ == "__main__":

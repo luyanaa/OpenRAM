@@ -7,7 +7,9 @@ ICsprout 55LLULP that pass **both** foundry Calibre decks:
   `lvs.runset`, as used in `Baixin_SoC_ICS55/.../full_inward_ring_staged`);
 * **OS deck** — `icsprout55-pdk/pv/{DRC,LVS}/ICsprout_Cal*_55LLULP1233_REV1_0_OS.*`.
 
-Both decks gave identical results on every layout tried so far.
+Historical Calibre runs gave matching results between both decks for the
+configs listed below. Later source/layout variants require new Calibre runs
+before the target sign-off claim applies.
 
 ## How checks are run
 
@@ -26,7 +28,7 @@ Both decks gave identical results on every layout tried so far.
   `--margin` (default 0.4 µm) lets the derived implant extend past a
   stand-alone leaf, as its neighbours would in a real array.
 
-## Current results (both decks, density/chip-edge off, see below)
+## Historical Calibre results (earlier configs)
 
 | config (`configs/`) | size (um) | DRC tapeout | DRC OS | LVS tapeout | LVS OS |
 |---|---|---|---|---|---|
@@ -45,6 +47,62 @@ Both decks gave identical results on every layout tried so far.
 All 138 results of the 7T macro are inside the 17 vendor `DFFQX1H7R`
 instances (the vendor cell alone has the same categories); the generated
 layout around them is clean.
+
+## Earlier routefix5 physical candidate
+
+The SC9T `pbitcell` 2RW32×8 (`words_per_row = 1`) routefix5 candidate measures
+155.010 × 185.280 µm, 0.58 µm shorter and 89.9058 µm² (0.3121%) smaller than
+routefix2. See `AREA_ANALYSIS.md` for the measurement basis and unchanged
+replica/cap/tap boundaries.
+
+Full-hierarchy KLayout macro-profile DRC reports 0 raw, waived, or unwaived
+markers (`ics55_work/runs/recheck_routefix5_2rw/drc/`). KLayout LVS still
+reports a mismatch (`ics55_work/runs/recheck_routefix5_2rw/lvs/`); the
+extracted SPICE has 5,854 MOS records, unchanged from routefix2, but this is
+not LVS equivalence. A separate routefix5 1RW16×4 build also has 0 KLayout
+macro-profile DRC markers and an LVS mismatch. The historical Calibre results
+above apply to their original variants, not these routefix5 builds. See
+`verify/README.md` for the KLayout/Calibre divergence and current Calibre
+runner limitation.
+
+Icarus behavioral smoke passed for both-port writes, cross-port reads, and
+concurrent writes to distinct rows. OpenRAM analytical TT timing is unchanged
+from routefix2 at loads 0.225, 0.9, and 3.6: 0.242185 ns, 0.244294 ns, and
+0.252732 ns, respectively. The model assigns the first read-port timing to all
+ports; these are not extracted or post-route timing results.
+
+## LVS extraction follow-up: M4 reroute
+
+Extraction-only comparison of the earlier `routefix5_2rw.gds` against its
+original `routefix5_2rw.lvs.sp` gives 5,854 MOS / 2,488 nets versus 5,884 MOS /
+2,522 nets, with 50 top pins on both sides. The exact MOS-graph comparison
+fails. Raw extracted MOS class/width/length histograms match the final M4
+candidate, while the earlier layout has 34 fewer flattened nets. [INFERENCE]
+This indicates a connectivity difference; the exact physical short location
+remains unisolated.
+
+The final M4 reroute candidate
+(`ics55_work/lvs_alignment/m4_stable/runs/out_routefix5_2rw_reroute/routefix5_2rw_reroute.gds`)
+passes exact MOS-graph isomorphism against the **original** routefix5 reference:
+5,884 MOS, 2,522 nets, 50 pins, 23,536 terminal edges. W/L compare exactly
+within 1e-12; G/B are fixed and S/D are interchangeable. The proof mapping is
+in `ics55_work/lvs_alignment/m4_stable_extract/original_reference_graph.json`.
+
+The final M4 reroute passes the production OpenRAM/KLayout macro LVS path
+(`ics55_work/lvs_alignment/openram_m4_verify_pdk/lvs/lvs.log`) using physical
+body taps and PORT DEPTH 0. The flattened production extraction independently
+passes exact MOS-graph isomorphism against the original SPICE reference after
+resolving KLayout's numeric net IDs through its emitted `* net` labels: 5,884
+MOS, 2,522 nets, 50 pins, 23,536 terminal edges. W/L match within 1e-12;
+G/B are fixed and S/D are interchangeable. The earlier strict-comparer
+diagnostic with branch complexity 50 exhausted its search (reported at least
+992 required); the production deck uses 1024. The final M4 candidate still has
+no valid DRC result, and no current Calibre or Assura signoff is available.
+
+`write_driver_array.route_supplies` now reads the supply layer through
+`get_pins()` so multi-shape supply pins are supported. The standard ICsprout55
+1RW array passes strict local LVS at 27 pins; spare-column and write-mask
+variants still have separate mismatches and are not accepted as clean.
 
 ## Key design decisions
 
@@ -79,8 +137,10 @@ layout around them is clean.
 * **The vendor 7T DFF (`DFFQX1H7R`) is not clean under either Calibre deck**
   even after that: 183 results (CT_EN_4 M1-over-contact enclosure, CT_S_4,
   NP/PP_EN_3, 45° M1 MET1_S_4/W_2, ...).  The 9T `DFFQX1_9TSVT` only shows the
-  expected tapless-cell latch-up/floating-well flags.  A macro using a 7T DFF
-  therefore cannot be Calibre-clean; see "7T option" below.
+  expected tapless-cell latch-up/floating-well flags. These 7T internal
+  findings are accepted vendor exceptions; the raw macro DRC count is not
+  zero. Keep generated wrapper/connection checks separate, and see
+  `verify/README.md` for the KLayout marker waiver policy.
 * Both 7T and 9T cells are tapless; standalone LVS of a library DFF fails only
   because its wells are untied.
 
@@ -108,19 +168,22 @@ layout around them is clean.
   (e.g. predecoders) uses `VIRTUAL CONNECT NAME vdd gnd` — leaf checks only.
 
 ### 2026-10-10 (later)
-* `custom/ics55_dff.py`: one 5.2 x 1.8 um slot for 7T and 9T DFFs with its
-  own N/P taps; D/Q/clk lifted to M2 by bare via1 on the foundry pins (the
-  foundry M1 is untouched); clock as a full-height M2 strip clear of the rail
-  end supply vias.  Library DFF netlists are 7-terminal (VNW/VPW) because the
-  cells are tapless and label their wells; the slot ties them to vdd/gnd.
+* `custom/ics55_dff.py`: one shared 5.2 x 2.7 um slot for 7T and 9T DFFs
+  (library rows are 1.4 and 1.8 um) with its own N/P taps; D/Q/clk are
+  lifted to M2 by bare via1 on the foundry pins, leaving foundry M1 untouched.
+  The clock uses a full-height M2 strip clear of the rail-end supply vias.
+  Library DFF netlists are 7-terminal (VNW/VPW) because the cells are tapless
+  and label their wells; the slot ties them to vdd/gnd.
 * `import_stdcells.py` adds rectangular pin shapes *inside* the existing M1
   (OpenRAM's GDS pin finder only accepts rectangles; the rails are notched).
 * `custom/ics55_gen.py` + `ics55_sense_amp.py` + `ics55_write_driver.py`:
-  generated latch sense amplifier and en-gated pull-down write driver (scn4m
-  topologies), pitch-matched to the bitcell.  Strips on a 0.23 um pin grid,
-  channel routing with lower/upper M3 track sets joined by short M4
-  connectors, M2 crossing lines.  The netlist comes from layout-less
-  `ics55_mos` devices declared by the same strip calls.
+  generated latch sense amplifier and the initial en-gated pull-down write
+  driver (scn4m topologies); the driver was later replaced by the full-CMOS
+  tri-state version described in `SIM_RESULTS.md`.
+  The default strip pitch is 0.46 µm; the full-swing driver uses 0.58 µm
+  for M1 spacing. Local nets use lower/upper M3 channel tracks joined by
+  short M4 connectors, with M2 crossing lines. Layout-less `ics55_mos`
+  instances provide the matching SPICE devices from those strip calls.
 * dff_buf: Qb pin via moved onto inv1's output strap (it shorted to the
   second inverter's PMOS/vdd metal; only the OS deck's flat LVS flagged it —
   the tapeout deck compares the 9T DFF as an HCELL).
@@ -199,10 +262,10 @@ layout around them is clean.
   Genus (libs + synthesis), Innovus (place, power, route, verify).
 
 ## Open items
-* Before using column-mux or 2RW macros, fix the remaining simulation
-  findings in SIM_RESULTS.md (sense-amp isolation behind the column mux,
-  full-swing write driver for 2RW); 1RW / 1W+1R with `words_per_row = 1`
-  are fine.
+* Column-mux transistor-level cross-corner validation and cross-corner
+  re-characterization of the full-swing 2RW write driver remain open; see
+  `SIM_RESULTS.md`.  The current `ics55_2rw_32x8` configuration uses
+  `words_per_row = 1`, so distinct addresses occupy distinct physical rows.
 * The `.lib` is still OpenRAM's analytical model; use SIM_RESULTS.md for
   timing until a characterized .lib exists.
 * Read/write margins (SNM, Monte Carlo) were not simulated, only corners.

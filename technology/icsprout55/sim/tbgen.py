@@ -58,11 +58,27 @@ def schedule(aw, dw, ports, ncyc, seed):
     addrs = addrs[:min(depth, 12)]
     sched = [dict() for _ in range(ncyc)]
     written = {}
+    # Characterization needs an isolated read and write from every eligible
+    # port; the remaining cycles retain concurrent read/write coverage.
+    required = len(wports) + (len(rports) if wports else 0)
+    if ncyc < 1 + required + 2:
+        raise ValueError("cycles must leave room for per-port isolated accesses and two idle cycles")
+    k = 1
+    for i, port in enumerate(wports):
+        address = addrs[i % len(addrs)]
+        data = pats[i % len(pats)]
+        sched[k][port["idx"]] = ("W", address, data)
+        written[address] = data
+        k += 1
+    for port in rports:
+        if written:
+            sched[k][port["idx"]] = ("R", next(iter(written)), None)
+            k += 1
     wp = wports[0]
     # dedicated read port if any, else the RW port is time-shared
     rp = [p for p in rports if p is not wp]
     rp = rp[0] if rp else wp
-    k = 1                      # cycle 0: everything idle
+    # The per-port isolated access preamble above advances k.
     if rp is wp:
         # single RW port: shorter fill, then read everything back
         addrs = addrs[:6]
