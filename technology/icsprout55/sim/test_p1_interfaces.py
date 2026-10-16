@@ -163,6 +163,8 @@ END LIBRARY
                     generated_tb = input_file.read()
                 for port, role in roles.items():
                     self.assertIn("role{}={} op{}=".format(port, role, port), generated_tb)
+                    self.assertRegex(generated_tb, r"\bcsb{}=0;".format(port))
+                    self.assertRegex(generated_tb, r"\baddr{}=4'd\d+;".format(port))
                 _, _, _, parsed_roles = package_macro.behavioral_ports(source, macro)
                 packaged_model = os.path.join(temp, "packaged.v")
                 stub = os.path.join(temp, "stub.v")

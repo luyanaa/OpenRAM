@@ -261,9 +261,9 @@ class write_driver_array(design):
                                 width=self.width)
 
     def route_supplies(self):
-        # Keep rails on the leaf supply layer. Parent power vias need an
-        # outboard landing: an enclosure centered on the array boundary can
-        # touch the edge bitline even when its center is outside that signal.
+        # Technology-specific driver modules may request an outboard landing.
+        # The generic/default behavior keeps supply endpoints at the array edge.
+        rail_extension = getattr(self.driver, "supply_rail_extension", 0)
         for name in ("vdd", "gnd"):
             layer = self.local_insts[0].get_pins(name)[0].layer
             self.route_horizontal_pins(name, layer=layer)
@@ -273,6 +273,5 @@ class write_driver_array(design):
             for rail in rails:
                 self.add_layout_pin_rect_ends(name=name,
                                              layer=rail.layer,
-                                             start=vector(-self.m2_pitch, rail.cy()),
-                                             end=vector(self.width + self.m2_pitch, rail.cy()))
-
+                                             start=vector(-rail_extension, rail.cy()),
+                                             end=vector(self.width + rail_extension, rail.cy()))

@@ -61,6 +61,14 @@ netlists are in drawn microns.
 ## Local GDS-derived ngspice diagnostics
 
 `ngspice_pex.py` runs locally; it does not invoke the SSH/Spectre wrappers
+
+`ngspice_pex.py` defaults to `--initialization uninitialized`: no `.ic`, UIC,
+shunt, or ground alias is added for floating conductors. Use
+`--initialization zero-voltage` only with a matching RCC parasitics metadata
+record; it writes `initialization_plan.json` and applies `.ic V(xsram.node)=0`
+to the inventoried floating metal nodes inside the `XSRAM` PEX instance. This
+specifies voltage only: metadata with a specified or non-unknown initial charge
+is rejected, because extraction never determines either state.
 above. Keep its input netlist with the matching `pex_summary.json`, or
 `mos_summary.json` for genuine MOS-only. For an established topology map,
 enable targeted probes:
@@ -109,18 +117,21 @@ Capacitive-only floating metal has no unique DC potential. A failed initial
 operating point is not a functional bit-check result. The frozen-input
 C-only/RCC experiments in `../SIM_RESULTS.md` preserve the default failure
 and separately record an explicit initial-voltage assumption for eight
-parasitic-only components. Those ordinary `.ic` values are released for the
-transient; no shunts, UIC, or MOS/storage/port forcing were used. Do not merge
-such an initialized diagnostic into the default result or interpret initial
-voltage as zero capacitor charge.
+parasitic-only components. The generated `.ic` targets are hierarchical
+(`xsram.<net>`), because the extracted macro is instantiated as `XSRAM` in the
+transient deck. The initialized path remains an ordinary released `.ic`
+condition: it does not add UIC, shunts, or MOS/storage/port forcing. Metadata
+with a specified or non-unknown initial charge is rejected; do not interpret
+initial voltage as zero capacitor charge.
 
 ## Measured multi-port Liberty
 
 `tbgen.py` reads the `// Port N: RW|R|W` comments on the generated behavioral
-model. Its `C` trace records include both `roleN=RW|R|W` and `opN=I|R|W`.
-`charz.py` uses those fields to classify operations; pure read and write ports
-need no `webN` pin. Re-generate traces with `tbgen.py` before characterizing a
-pure R or W port.
+model. Its `C` trace records include both `roleN=RW|R|W` and `opN=I|R|W`; the
+generated Verilog testbench drives the corresponding `csbN` and `addrN` values
+on every cycle before the clock edge. `charz.py` uses those fields to classify
+operations; pure read and write ports need no `webN` pin. Re-generate traces
+with `tbgen.py` before characterizing a pure R or W port.
 
 `charz.py` records per-port timing and energy from a `--diag` run. `--diag`
 also saves each `XSRAM.XcontrolN.rbl_bl_delay` replica net. Use separate sweep

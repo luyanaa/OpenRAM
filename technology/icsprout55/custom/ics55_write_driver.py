@@ -134,6 +134,11 @@ class ics55_write_driver(g.ics55_gen):
                             height=low_b["din"] + 0.05)
         self.add_boundary()
 
+    @property
+    def supply_rail_extension(self):
+        """Extra endpoint landing required by the ICsprout55 power grid."""
+        return self.m2_pitch
+
     # ---- write_driver interface (shared with the library-cell class)
     get_bl_names = write_driver_base.get_bl_names
     get_br_names = write_driver_base.get_br_names

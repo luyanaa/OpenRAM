@@ -24,7 +24,46 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 def build_deck(netlist, trace, name, model, destination, period, voltage,
-               temperature, corner, skew1, cload, rise, probe_profile=None):
+               temperature, corner, skew1, cload, rise, probe_profile=None,
+               initialization="uninitialized", parasitics_metadata=None):
+    if initialization not in ("uninitialized", "zero-voltage"):
+        raise ValueError("initialization must be 'uninitialized' or 'zero-voltage'")
+    metadata = parasitics_metadata if isinstance(parasitics_metadata, dict) else {}
+    floating = metadata.get("floating_conductors")
+    if initialization == "zero-voltage":
+        if not isinstance(floating, list):
+            raise ValueError("zero-voltage initialization requires floating conductor metadata")
+        nodes = []
+        for component in floating:
+            if not isinstance(component, dict) or not isinstance(component.get("nodes"), list):
+                raise ValueError("floating conductor metadata is malformed")
+            if component.get("initial_voltage_status") not in ("unknown", None):
+                raise ValueError("floating conductor voltage metadata is mismatched")
+            if component.get("initial_charge_c") is not None:
+                raise ValueError("zero-voltage initialization cannot use specified initial charge")
+            if component.get("initial_charge_status") not in ("unknown", None):
+                raise ValueError("floating conductor charge metadata is mismatched")
+            for node in component["nodes"]:
+                node = str(node).strip()
+                if not node or node.casefold() in ("0", "gnd"):
+                    raise ValueError("floating conductor metadata contains a ground node")
+                nodes.append(node)
+        nodes = sorted(set(nodes), key=lambda value: (value.casefold(), value))
+        if not nodes:
+            raise ValueError("zero-voltage initialization requires non-empty floating metadata")
+    else:
+        nodes = []
+    plan = {
+        "schema_version": 1, "policy": initialization,
+        "floating_nodes": nodes,
+        "voltage_status": "specified" if initialization == "zero-voltage" else "unknown",
+        "charge_status": "unknown",
+        "initial_voltage_v": 0.0 if initialization == "zero-voltage" else None,
+        "initial_charge_c": None,
+    }
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "initialization_plan.json").write_text(
+        json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     pins = subckt_pins(netlist, name)
     cycles, expected = read_trace(trace)
     if not cycles or sorted(cycles) != list(range(len(cycles))):
@@ -47,11 +86,14 @@ def build_deck(netlist, trace, name, model, destination, period, voltage,
         raise ValueError("netlist has no OpenRAM clock/output bus")
     stop = (len(cycles) + 1.25 + skew1) * period
     lines = ["ICsprout55 GDS PEX functional research simulation",
+             "* initialization_policy={}".format(initialization),
              '.lib "{}" {}_mos'.format(model, corner),
              '.include "{}"'.format(netlist),
              ".temp {}".format(temperature),
              ".options reltol=1e-3 abstol=1e-12 vntol=1e-6",
              "VDD vdd 0 {}".format(voltage)]
+    for node in nodes:
+        lines.append(".ic V(xsram.{})=0".format(node))
     for index, clock in enumerate(clocks):
         port = int(clock[3:])
         delay = period * (1 + (skew1 if port else 0))
@@ -237,6 +279,8 @@ def main(argv=None):
     parser.add_argument("--tr", type=float, default=0.03, help="input edge time in ns")
     parser.add_argument("--ngspice", default="ngspice")
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--initialization", choices=("uninitialized", "zero-voltage"), default="uninitialized",
+                        help="floating-conductor initialization policy")
     parser.add_argument("--probe-profile", choices=("debug-readwrite",))
     parser.add_argument("--probe-map", type=Path,
                         help="hashed semantic-to-physical correspondence from topology comparison")
@@ -318,7 +362,7 @@ def main(argv=None):
         deck, wavefile, outputs, expected, probe_profile = build_deck(
             netlist, trace, extraction["design"], model, destination,
             args.period, args.vdd, args.temp, args.corner, args.skew1, args.cload, args.tr,
-            probe_profile)
+            probe_profile, args.initialization, selected[0])
         if wavefile.exists():
             wavefile.unlink()
         command = [executable, "-n", "-D", "ngbehavior=hsa", "-b", str(deck)]
@@ -339,7 +383,9 @@ def main(argv=None):
                        extraction_summary_sha256=hashlib.sha256(summary_path.read_bytes()).hexdigest(),
                        signoff=False, model=str(model), corner=args.corner, voltage_v=args.vdd,
                        temperature_c=args.temp, period_ns=args.period, cload_ff=args.cload,
-                       seconds=round(time.monotonic() - start, 3))
+                       seconds=round(time.monotonic() - start, 3),
+                       initialization_policy=args.initialization,
+                       initialization_plan=str((destination / "initialization_plan.json").resolve()))
     except subprocess.TimeoutExpired as exc:
         text = exc.stdout or b""
         if isinstance(text, bytes):

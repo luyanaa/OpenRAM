@@ -28,15 +28,25 @@ are joined by the parent's power grid); `macro.py` never does.
 `leaf.py` uses the generic PDK LVS profile for standalone generated cells.
 `macro.py` uses `openram-macro`, which passes `no_well_ties=true` and
 `strict_topology=true`: retain declared unused ports, combine only physically
-parallel devices, compare model/W/L at 1e-9 um absolute and zero relative
+parallel devices, compare MOS model/W/L at 1e-9 um absolute and zero relative
 tolerance, and bind every same-named top pin's nets as mandatory comparison
 correspondences. This never joins nets. The extracted netlist is saved before
 comparison so a search timeout preserves the graph for diagnosis.
-The open-source runner applies `strict_topology=true` only when its explicit
-`lvs_profile` is `openram-macro`; its default `generic` profile passes no
-profile flags and therefore preserves the PDK deck defaults.
-Direct `opensource.py verify` defaults to the generic profile; request
-`--lvs-profile openram-macro` explicitly for an OpenRAM macro.
+Both `opensource.py verify` and `macro.py` default to `--lvs-mode flat`; this is
+the existing strict comparison with a flattened schematic. The generic profile
+remains the default for direct `opensource.py verify` and passes no profile
+flags. Hierarchical comparison is opt-in only for `openram-macro`.
+`--lvs-mode hierarchical` preserves the schematic hierarchy and requires an
+exact one-to-one case-insensitive set of circuit names and named boundary pins
+for every extracted/reference circuit. All corresponding pin nets are mandatory
+native comparison constraints; duplicate or mismatched module/boundary
+correspondence fails closed as `INCONCLUSIVE` (or a deck error), never as a
+pass. Deep extraction can materialize empty helper circuits absent from the CDL;
+those are intentionally not discarded or aliased, so the hierarchy smoke can be
+inconclusive until the source CDL exposes the same boundaries. There is no
+automatic fallback to flat: use `--lvs-mode flat` explicitly to select the strict
+flat path. No full-macro runtime improvement is claimed until a full hierarchical
+run completes.
 Generic standard-cell LVS keeps the deck's default global-tie and 10%-W modes.
 
 ## Open-source KLayout DRC/LVS and OpenRCX
@@ -53,6 +63,9 @@ nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technolo
 # OpenRAM macro strict boundary mode; generic standalone-cell checks retain the
 # PDK's global-well-tie and 10%-W comparison defaults.
 nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/opensource.py verify macro.gds TOP --netlist macro.lvs.sp --out-dir runs/opensource --pdk-root ../icsprout55-pdk --librelane-root ../librelane --mode full --lvs-profile openram-macro'
+
+# Optional strict hierarchy experiment; defaults to strict flat comparison.
+nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/macro.py technology/icsprout55/configs/ics55_1rw_64x8.py --decks klayout --klayout-mode full --lvs-mode hierarchical'
 
 # Explicitly limited top-cell interconnect screen; this does not inspect child geometry
 nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/opensource.py verify macro.gds TOP --no-lvs --mode top-interconnect'

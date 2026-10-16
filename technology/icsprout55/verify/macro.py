@@ -25,6 +25,8 @@ ap.add_argument("--klayout-mode", choices=("full", "top-interconnect"), default=
 ap.add_argument("--drc-waivers", default=str(opensource.DEFAULT_DRC_WAIVERS),
                 help="exact known leaf marker waiver JSON for KLayout")
 ap.add_argument("--drc-profile", choices=("macro", "diagnostic"), default="macro")
+ap.add_argument("--lvs-mode", choices=("flat", "hierarchical"), default="flat",
+                help="strict OpenRAM comparison; hierarchy requires exact module correspondence")
 ap.add_argument("--pdk-root")
 ap.add_argument("--librelane-root")
 pex_input = ap.add_mutually_exclusive_group()
@@ -74,9 +76,8 @@ if commercial:
 if "klayout" in decks:
     klayout_results = opensource.run_many(
         items, pdk_root=a.pdk_root, librelane_root=a.librelane_root,
-        out_dir=os.path.join(out, "signoff"), mode=a.klayout_mode, quiet=a.quiet,
         drc_waivers=a.drc_waivers, drc_profile=a.drc_profile,
-        lvs_profile="openram-macro")
+        lvs_profile="openram-macro", lvs_mode=a.lvs_mode)
     checks.extend(klayout_results.values())
 if a.pex_json:
     pex_ok = opensource.run_rcx(

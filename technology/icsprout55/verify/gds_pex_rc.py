@@ -757,6 +757,8 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
     port_nodes: dict[str, str] = {}
     resistors = []
     limitations = list(process.get("limitations", [])) if isinstance(process.get("limitations"), Sequence) else []
+    floating_conductors: list[dict[str, Any]] = []
+    unanchored_feol_nodes: dict[str, str] = {}
     if mode == "rcc":
         cells, by_net, mesh_resistors = _mesh(net_records, process)
         # Resolve anchors to mesh cells. Multiple contacts on one physical
@@ -833,7 +835,6 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
         }
         for net in net_records:
             representatives.setdefault(net, net)
-        unanchored_feol_nodes: dict[str, str] = {}
         component_nets: dict[str, str] = {}
         for device in geometry.get("devices", []):
             if not isinstance(device, Mapping):
@@ -937,6 +938,40 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
         for net, roots in components.items():
             if len(roots) > 1:
                 raise ValueError("net %s has disconnected physical anchor components" % net)
+        # Inventory physical mesh components that have no port or FEOL anchor.
+        # Keep this separate from unanchored FEOL-only terminal nodes: the latter
+        # are ideal device nodes and are not physical metal conductors.
+        root_cells: dict[int, list[int]] = defaultdict(list)
+        for cell in cells:
+            root_cells[find(cell["id"])].append(cell["id"])
+        anchored_roots = set()
+        for anchor_name, ids in anchor_cells.items():
+            if anchor_name in ports or anchor_name.casefold().startswith("feol:"):
+                anchored_roots.update(find(cell_id) for cell_id in ids)
+        anchor_by_root: dict[int, list[str]] = defaultdict(list)
+        for anchor_name, ids in anchor_cells.items():
+            for cell_id in sorted(set(ids)):
+                anchor_by_root[find(cell_id)].append(anchor_name)
+        for root in sorted(root_cells):
+            if root in anchored_roots:
+                continue
+            ids = sorted(root_cells[root])
+            nodes = sorted({node_names[cell_id] for cell_id in ids})
+            nets = sorted({cells[cell_id]["net"] for cell_id in ids})
+            layers = sorted({cells[cell_id]["layer"] for cell_id in ids})
+            anchors = sorted(set(anchor_by_root.get(root, [])))
+            floating_conductors.append({
+                "component_id": "floating-metal-%06d" % len(floating_conductors),
+                "representative_node": nodes[0], "nodes": nodes,
+                "logical_nets": nets, "layers": layers, "anchors": anchors,
+                "port_anchors": sorted(name for name in anchors if name in ports),
+                "feol_anchors": sorted(name for name in anchors if name.casefold().startswith("feol:")),
+                "initial_voltage_v": None, "initial_voltage_status": "unknown",
+                "initial_charge_c": None, "initial_charge_status": "unknown",
+                "state_status": "unknown",
+            })
+        if floating_conductors:
+            limitations.append("RCC inventory includes physical metal components without port or FEOL anchors; their voltage and charge are unknown and are not grounded.")
         # Ground/self C is attached to a representative finite-volume node;
         # the metal resistors, rather than a lumped top-pin resistor, retain
         # the distributed path between all terminal anchors.
@@ -977,6 +1012,12 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
             limitations.append("Explicit coupling overrides do not cover all used metal layers.")
     if status == "explicit_coupling" and not same and not cross:
         limitations.append("Explicit coupling process supplied no geometrically overlapping/facing candidate pairs.")
+    unanchored_feol = [
+        {"component": component, "node": node, "state_status": "unknown"}
+        for component, node in sorted(unanchored_feol_nodes.items())
+    ]
+    if unanchored_feol:
+        limitations.append("Uncontacted FEOL-only components are reported separately as ideal terminal nodes without BEOL parasitics.")
     return {
         "schema_version": 1, "design": design, "status": status, "mode": mode,
         "signoff": False, "ground_capacitance_pf": ground_total,
@@ -984,10 +1025,20 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
         "resistance_ohm": sum(float(item["value_ohm"]) for item in resistors),
         "capacitors": capacitors, "resistors": resistors,
         "terminal_nodes": terminal_nodes, "port_nodes": port_nodes,
+        "floating_conductors": floating_conductors,
+        "unanchored_feol_nodes": unanchored_feol,
+        "initialization": {
+            "default_policy": "uninitialized",
+            "description": "Extraction does not determine initial voltage or charge; floating conductors must not be silently grounded.",
+            "voltage_status": "unknown",
+            "charge_status": "unknown",
+        },
         "summary": {
             "nets": len(net_records), "ports": len(ports),
             "devices": len(geometry.get("devices", [])) if isinstance(geometry.get("devices", []), Sequence) else 0,
             "rectangles": sum(len(r.get("rectangles", [])) for r in net_records.values()),
+            "floating_conductors": len(floating_conductors),
+            "unanchored_feol_nodes": len(unanchored_feol),
             "limitations": sorted(set(limitations)),
         },
         "provenance": dict(process.get("provenance", {})) if isinstance(process.get("provenance"), Mapping) else {},

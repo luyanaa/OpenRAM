@@ -79,6 +79,100 @@ class ProbeSampleTest(unittest.TestCase):
         self.assertGreater(sampled[1], 0.9)
 
 
+class InitializationContractTest(unittest.TestCase):
+    @staticmethod
+    def inputs(directory):
+        netlist = Path(directory) / "macro.pex.sp"
+        netlist.write_text(
+            ".subckt macro vdd gnd clk0 din0 dout0[0]\n"
+            ".ends macro\n", encoding="utf-8")
+        trace = Path(directory) / "trace.txt"
+        trace.write_text("C 0 din0=0\nE 0 dout0=0\n", encoding="utf-8")
+        return netlist, trace
+
+    def test_uninitialized_baseline_has_no_ic_and_unknown_charge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            netlist, trace = self.inputs(directory)
+            output = Path(directory) / "uninitialized"
+            deck, _, _, _, _ = ngspice_pex.build_deck(
+                netlist, trace, "macro", Path("model.lib"), output,
+                2.5, 1.08, -40, "ss", 0, 5, 0.03,
+                initialization="uninitialized",
+                parasitics_metadata={"floating_conductors": [{"nodes": ["__PEX_N1"]}]})
+
+            self.assertNotIn(".ic ", deck.read_text(encoding="utf-8"))
+            plan = __import__("json").loads(
+                (output / "initialization_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["policy"], "uninitialized")
+            self.assertEqual(plan["floating_nodes"], [])
+            self.assertEqual(plan["voltage_status"], "unknown")
+            self.assertIsNone(plan["initial_voltage_v"])
+            self.assertEqual(plan["charge_status"], "unknown")
+            self.assertIsNone(plan["initial_charge_c"])
+
+    def test_zero_voltage_sets_voltage_only_for_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            netlist, trace = self.inputs(directory)
+            output = Path(directory) / "zero_voltage"
+            deck, _, _, _, _ = ngspice_pex.build_deck(
+                netlist, trace, "macro", Path("model.lib"), output,
+                2.5, 1.08, -40, "ss", 0, 5, 0.03,
+                initialization="zero-voltage",
+                parasitics_metadata={"floating_conductors": [{
+                    "nodes": ["__PEX_N2", "__PEX_N1"],
+                    "initial_voltage_status": "unknown",
+                    "initial_charge_status": "unknown",
+                }]})
+
+            text = deck.read_text(encoding="utf-8")
+            self.assertIn(".ic V(xsram.__PEX_N1)=0", text)
+            self.assertIn(".ic V(xsram.__PEX_N2)=0", text)
+            self.assertNotIn(".ic V(__PEX_N1)=0", text)
+            self.assertNotIn(".ic V(__PEX_N2)=0", text)
+            plan = __import__("json").loads(
+                (output / "initialization_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["floating_nodes"], ["__PEX_N1", "__PEX_N2"])
+            self.assertEqual(plan["voltage_status"], "specified")
+            self.assertEqual(plan["initial_voltage_v"], 0.0)
+            self.assertEqual(plan["charge_status"], "unknown")
+            self.assertIsNone(plan["initial_charge_c"])
+
+    def test_zero_voltage_requires_non_ground_floating_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            netlist, trace = self.inputs(directory)
+            with self.assertRaisesRegex(ValueError, "contains a ground node"):
+                ngspice_pex.build_deck(
+                    netlist, trace, "macro", Path("model.lib"), Path(directory) / "bad",
+                    2.5, 1.08, -40, "ss", 0, 5, 0.03,
+                    initialization="zero-voltage",
+                    parasitics_metadata={"floating_conductors": [{"nodes": ["0"]}]})
+
+    def test_zero_voltage_rejects_known_initial_charge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            netlist, trace = self.inputs(directory)
+            with self.assertRaisesRegex(ValueError, "specified initial charge"):
+                ngspice_pex.build_deck(
+                    netlist, trace, "macro", Path("model.lib"), Path(directory) / "bad_charge",
+                    2.5, 1.08, -40, "ss", 0, 5, 0.03,
+                    initialization="zero-voltage",
+                    parasitics_metadata={"floating_conductors": [{
+                        "nodes": ["__PEX_N1"], "initial_voltage_status": "unknown",
+                        "initial_charge_c": 1e-15, "initial_charge_status": "specified",
+                    }]})
+
+    def test_zero_voltage_rejects_nonunknown_charge_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            netlist, trace = self.inputs(directory)
+            with self.assertRaisesRegex(ValueError, "charge metadata is mismatched"):
+                ngspice_pex.build_deck(
+                    netlist, trace, "macro", Path("model.lib"), Path(directory) / "bad_status",
+                    2.5, 1.08, -40, "ss", 0, 5, 0.03,
+                    initialization="zero-voltage",
+                    parasitics_metadata={"floating_conductors": [{
+                        "nodes": ["__PEX_N1"], "initial_voltage_status": "unknown",
+                        "initial_charge_status": "specified",
+                    }]})
+
 class ReadwriteTargetTest(unittest.TestCase):
     def target(self, text, failures=None, read_port=None):
         with tempfile.TemporaryDirectory() as directory:

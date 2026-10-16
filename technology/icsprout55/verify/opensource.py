@@ -183,9 +183,13 @@ def _run_drc(gds, top, pdk_root, librelane_root, out_dir, mode, waiver_file, pro
 
 
 def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
-             lvs_profile="generic"):
+             lvs_profile="generic", lvs_mode="flat"):
     if lvs_profile not in ("generic", "openram-macro"):
         raise ValueError("lvs_profile must be 'generic' or 'openram-macro'")
+    if lvs_mode not in ("flat", "hierarchical"):
+        raise ValueError("lvs_mode must be 'flat' or 'hierarchical'")
+    if lvs_mode == "hierarchical" and lvs_profile != "openram-macro":
+        raise ValueError("hierarchical LVS requires the 'openram-macro' profile")
     deck = pdk_root / "libs.tech" / "lvs" / "ics55.lvs"
     if not deck.is_file():
         raise OpenSourceError("KLayout LVS deck not found: {}".format(deck))
@@ -203,13 +207,20 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
             "-rd", "top={}".format(top), "-rd", "schematic={}".format(netlist),
             "-rd", "report={}".format(report), "-rd", "target_netlist={}".format(extracted)]
     if lvs_profile == "openram-macro":
+        if lvs_mode == "hierarchical":
+            args.extend(["-rd", "strict_hierarchy=true"])
         args.extend(["-rd", "no_well_ties=true", "-rd", "strict_topology=true"])
     args.append("-z")
     rc, output = _run_klayout(args, librelane_root, out_dir / "lvs.log")
     if rc != 0:
         raise OpenSourceError("KLayout LVS exited {} (see {})".format(rc, out_dir / "lvs.log"))
     if "CONGRATULATIONS! Netlists match." not in output:
-        verdict = "mismatch" if "ERROR: netlists do not match." in output else "no LVS verdict"
+        if "ICS55_LVS_COMPARE=INCONCLUSIVE" in output:
+            verdict = "inconclusive"
+        elif "ERROR: netlists do not match." in output:
+            verdict = "mismatch"
+        else:
+            verdict = "no LVS verdict"
         return False, verdict, report
     return True, "matched", report
 
@@ -217,13 +228,17 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
 def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
                out_dir="opensource", mode="full", run_drc=True, run_lvs=True, out=print,
                drc_waivers=DEFAULT_DRC_WAIVERS, drc_profile="macro",
-               lvs_profile="generic"):
+               lvs_profile="generic", lvs_mode="flat"):
     if mode not in ("full", "top-interconnect"):
         raise ValueError("mode must be 'full' or 'top-interconnect'")
     if drc_profile not in ("macro", "diagnostic"):
         raise ValueError("drc_profile must be 'macro' or 'diagnostic'")
     if lvs_profile not in ("generic", "openram-macro"):
         raise ValueError("lvs_profile must be 'generic' or 'openram-macro'")
+    if lvs_mode not in ("flat", "hierarchical"):
+        raise ValueError("lvs_mode must be 'flat' or 'hierarchical'")
+    if lvs_mode == "hierarchical" and lvs_profile != "openram-macro":
+        raise ValueError("hierarchical LVS requires the 'openram-macro' profile")
     if not run_drc and not run_lvs:
         raise ValueError("at least one of DRC or LVS must be enabled")
     pdk, librelane = _resolve_roots(pdk_root, librelane_root)
@@ -249,7 +264,7 @@ def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
             raise ValueError("LVS requires a schematic netlist")
         try:
             ok, verdict, report = _run_lvs(
-                gds, top, netlist, pdk, librelane, out_dir / "lvs", lvs_profile)
+                gds, top, netlist, pdk, librelane, out_dir / "lvs", lvs_profile, lvs_mode)
             results["lvs"] = ok
             out("KLayout LVS: {}; report {}".format(verdict, report))
         except OpenSourceError as exc:
@@ -260,7 +275,7 @@ def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
 
 def run_many(items, pdk_root=None, librelane_root=None, out_dir=".", mode="full",
              run_drc=True, run_lvs=True, quiet=False, out=print, drc_waivers=DEFAULT_DRC_WAIVERS,
-             drc_profile="macro", lvs_profile="generic"):
+             drc_profile="macro", lvs_profile="generic", lvs_mode="flat"):
     results = {}
     for item in items:
         tag = item["tag"]
@@ -270,7 +285,7 @@ def run_many(items, pdk_root=None, librelane_root=None, out_dir=".", mode="full"
             pdk_root=pdk_root, librelane_root=librelane_root,
             out_dir=Path(out_dir) / tag / "opensource", mode=mode,
             run_drc=run_drc, run_lvs=run_lvs, out=emit, drc_waivers=drc_waivers,
-            drc_profile=drc_profile, lvs_profile=lvs_profile).values())
+            drc_profile=drc_profile, lvs_profile=lvs_profile, lvs_mode=lvs_mode).values())
         if quiet:
             out("{} KLayout {}: {}".format(tag, mode, "PASS" if results[tag] else "FAIL"))
     return results
@@ -632,6 +647,8 @@ def _main(argv=None):
                         help="macro excludes chip-fill density and provisional antenna; diagnostic includes them")
     verify.add_argument("--lvs-profile", choices=("generic", "openram-macro"), default="generic",
                         help="openram-macro retains declared pins and uses strict physical-topology comparison")
+    verify.add_argument("--lvs-mode", choices=("flat", "hierarchical"), default="flat",
+                        help="strict OpenRAM comparison; hierarchy requires exact module correspondence")
     report = subparsers.add_parser("drc-report", help="classify an existing DRC report without rerunning KLayout")
     report.add_argument("report")
     report.add_argument("--drc-waivers", default=str(DEFAULT_DRC_WAIVERS))
@@ -720,10 +737,13 @@ def _main(argv=None):
             parser.error("verify requires --netlist unless --no-lvs is set")
         if args.no_drc and args.no_lvs:
             parser.error("enable at least one of DRC or LVS")
+        if args.lvs_mode == "hierarchical" and args.lvs_profile != "openram-macro":
+            parser.error("--lvs-mode hierarchical requires --lvs-profile openram-macro")
         results = verify_one(args.gds, args.top, args.netlist, args.pdk_root,
                              args.librelane_root, args.out_dir, args.mode,
                              not args.no_drc, run_lvs, drc_waivers=args.drc_waivers,
-                             drc_profile=args.drc_profile, lvs_profile=args.lvs_profile)
+                             drc_profile=args.drc_profile, lvs_profile=args.lvs_profile,
+                             lvs_mode=args.lvs_mode)
         return 0 if all(results.values()) else 1
     if args.command == "gds-topology":
         try:

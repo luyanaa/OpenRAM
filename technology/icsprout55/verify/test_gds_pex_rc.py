@@ -121,6 +121,36 @@ class RccAnchorTests(unittest.TestCase):
         self.assertEqual(parasitics["port_nodes"]["probe"], "probe")
         self.assertEqual(parasitics["terminal_nodes"]["M1:D"], "probe")
 
+    def test_rcc_inventories_unanchored_metal_without_grounding(self):
+        geometry = self.geometry()
+        geometry["nets"].append({
+            "name": "floating_metal",
+            "rectangles": [{"layer": "MET1", "x0": 20.0, "y0": 0.0,
+                            "x1": 22.0, "y1": 1.0}],
+            "vias": [],
+            "anchors": [],
+        })
+
+        parasitics = extract_parasitics(geometry, self.process(), mode="rcc")
+
+        self.assertEqual(len(parasitics["floating_conductors"]), 1)
+        component = parasitics["floating_conductors"][0]
+        self.assertEqual(component["logical_nets"], ["floating_metal"])
+        self.assertEqual(component["representative_node"], component["nodes"][0])
+        self.assertNotIn(component["representative_node"].casefold(), {"0", "gnd"})
+        self.assertIsNone(component["initial_voltage_v"])
+        self.assertEqual(component["initial_voltage_status"], "unknown")
+        self.assertIsNone(component["initial_charge_c"])
+        self.assertEqual(component["initial_charge_status"], "unknown")
+        self.assertEqual(component["state_status"], "unknown")
+        self.assertTrue(any(
+            capacitor["node1"] == component["representative_node"] and capacitor["node2"] == "0"
+            for capacitor in parasitics["capacitors"]))
+        self.assertFalse(any(
+            resistor["node1"].casefold() in {"0", "gnd"} or
+            resistor["node2"].casefold() in {"0", "gnd"}
+            for resistor in parasitics["resistors"]))
+
     def test_uncontacted_diffusion_keeps_a_shared_ideal_node(self):
         geometry = self.geometry()
         geometry["nets"].append({
