@@ -206,8 +206,16 @@ def gen(vfile, outdir, ncyc, seed, clk_delay1=0.0):
     L.append("    $fclose(f); $finish;")
     L.append("  end")
     L.append("endmodule")
-    open(os.path.join(outdir, "tb.v"), "w").write("\n".join(l for l in L if l is not None) + "\n")
-    meta = dict(name=name, aw=aw, dw=dw, ports=ports, ncyc=ncyc)
+    with open(os.path.join(outdir, "tb.v"), "w") as tb_file:
+        tb_file.write("\n".join(l for l in L if l is not None) + "\n")
+    meta = dict(schema_version=1, kind="ics55_tbgen_trace", name=name, aw=aw, dw=dw,
+                ports=ports, ncyc=ncyc, seed=seed, clock_period_ns=10.0,
+                cycle_semantics="C values are applied before the rising edge of that cycle",
+                trace_file="trace.txt")
+    with open(os.path.join(outdir, "trace.meta.json"), "w") as meta_file:
+        import json
+        json.dump(meta, meta_file, indent=2, sort_keys=True)
+        meta_file.write("\n")
     return meta
 
 

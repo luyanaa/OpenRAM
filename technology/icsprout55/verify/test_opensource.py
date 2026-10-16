@@ -1,4 +1,5 @@
 """Regression tests for the generic/OpenRAM KLayout LVS profile boundary."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,13 +10,51 @@ import opensource
 STRICT_DECK = opensource.DEFAULT_PDK_ROOT / "libs.tech" / "lvs" / "ics55.lvs"
 
 
+class StrictCapabilityTests(unittest.TestCase):
+    def test_strict_capability_manifest_is_valid(self):
+        capability = opensource._validate_strict_capability(opensource.DEFAULT_PDK_ROOT)
+        self.assertEqual(capability["schema"], opensource.STRICT_CAPABILITY_SCHEMA)
+        self.assertEqual(capability["klayout_version"], "0.30.7")
+        self.assertIn("ics55.lvs", capability["deck_hashes"])
+
+    def test_strict_profile_rejects_deck_hash_drift_before_tool_launch(self):
+        with patch.object(opensource, "_sha256", return_value="0" * 64):
+            with self.assertRaises(opensource.OpenSourceError):
+                opensource._validate_strict_capability(opensource.DEFAULT_PDK_ROOT)
+
 class LvsProfileTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.pdk = root / "pdk"
-        (self.pdk / "libs.tech/lvs").mkdir(parents=True)
-        (self.pdk / "libs.tech/lvs/ics55.lvs").write_text("# test deck\n")
+        lvs = self.pdk / "libs.tech/lvs"
+        rule_decks = lvs / "rule_decks"
+        rule_decks.mkdir(parents=True)
+        (lvs / "ics55.lvs").write_text("# test deck\n")
+        (rule_decks / "combine_fingers.lvs").write_text("# test combine\n")
+        manifest = self.pdk / "tests/regression/klayout_alignment_manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"frozen_hashes": {"lvs_rule_decks": {
+            "ics55.lvs": opensource._sha256(lvs / "ics55.lvs"),
+            "combine_fingers.lvs": opensource._sha256(rule_decks / "combine_fingers.lvs"),
+        }}}))
+        (lvs / "openram_strict_capability.json").write_text(json.dumps({
+            "schema": opensource.STRICT_CAPABILITY_SCHEMA,
+            "profile": "openram-macro",
+            "pdk_revision": "fixture-revision",
+            "klayout_version": "0.30.7",
+            "strict_topology": True,
+            "no_well_ties": True,
+            "comparison": {
+                "mos_w_l_absolute_um": 1e-9,
+                "mos_w_l_relative": 0.0,
+                "declared_top_pins": "case-insensitive-exact",
+                "device_combination": "physical-parallel-only",
+                "net_joining": False,
+            },
+            "hash_manifest": "../../tests/regression/klayout_alignment_manifest.json",
+            "hash_scope": "frozen_hashes.lvs_rule_decks",
+        }))
         self.gds = root / "macro.gds"
         self.netlist = root / "macro.lvs.sp"
         self.gds.write_text("gds")
@@ -25,7 +64,6 @@ class LvsProfileTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
     def fake_klayout(self, args, _librelane_root, log_path):
         self.calls.append(list(args))
         Path(log_path).write_text("CONGRATULATIONS! Netlists match.\n")
@@ -93,7 +131,7 @@ class LvsProfileTests(unittest.TestCase):
                 "layout_names == reference_names",
                 "layout_pins.keys.sort == reference_pins.keys.sort",
                 "schematic.flatten unless NET_ONLY || STRICT_HIERARCHY",
-                "align unless NET_ONLY || STRICT_HIERARCHY",
+                "align unless NET_ONLY || STRICT_TOPOLOGY",
                 "strict_hierarchy requires strict_topology=true",
                 "validate_spice_circuit_definitions(schematic_source) if STRICT_HIERARCHY",
                 "RBA::DeviceClassMOS4Transistor::PARAM_L",

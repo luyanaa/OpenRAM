@@ -1018,13 +1018,69 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
     ]
     if unanchored_feol:
         limitations.append("Uncontacted FEOL-only components are reported separately as ideal terminal nodes without BEOL parasitics.")
+    conductor_nodes: dict[str, dict[str, Any]] = {}
+    if mode == "rcc":
+        for net in sorted(net_records):
+            conductor_nodes["net:" + net] = {
+                "identity": net, "kind": "logical-net", "logical_net": net,
+                "node": str(representatives.get(net, net)),
+            }
+        for component, node in sorted(anchor_nodes.items()):
+            conductor_nodes["component:" + component] = {
+                "identity": component, "kind": "feol-or-port", "logical_net": anchor_net.get(component),
+                "node": str(node),
+            }
+        for component, node in sorted(unanchored_feol_nodes.items()):
+            conductor_nodes["component:" + component] = {
+                "identity": component, "kind": "unanchored-feol", "logical_net": component_nets.get(component),
+                "node": str(node),
+            }
+        for item in floating_conductors:
+            identity = str(item["component_id"])
+            conductor_nodes["floating:" + identity] = {
+                "identity": identity, "kind": "floating-metal",
+                "logical_nets": list(item["logical_nets"]),
+                "node": str(item["representative_node"]),
+                "initial_voltage_status": item["initial_voltage_status"],
+                "initial_charge_status": item["initial_charge_status"],
+            }
+    else:
+        for net in sorted(net_records):
+            conductor_nodes["net:" + net] = {
+                "identity": net, "kind": "logical-net", "logical_net": net, "node": net,
+            }
+        for device in geometry.get("devices", []):
+            components = device.get("terminal_components", {})
+            terms = device.get("terminals", {})
+            for terminal in ("D", "G", "S", "B"):
+                component = str(components.get(terminal, "")).strip()
+                if not component:
+                    continue
+                key = "component:" + component
+                record = {"identity": component, "kind": "feol-or-port",
+                          "logical_net": str(terms.get(terminal, "")), "node": str(terms.get(terminal, ""))}
+                previous = conductor_nodes.get(key)
+                if previous and previous != record:
+                    raise ValueError("conductor component %s has conflicting ownership" % component)
+                conductor_nodes[key] = record
+    for port in sorted(ports):
+        conductor_nodes["port:" + port] = {
+            "identity": port, "kind": "port", "logical_net": str(port_nodes[port]),
+            "node": str(port_nodes[port]),
+        }
+    for key, record in conductor_nodes.items():
+        if not isinstance(record.get("node"), str) or not record["node"].strip():
+            raise ValueError("conductor %s has no emitted node" % key)
+
     return {
-        "schema_version": 1, "design": design, "status": status, "mode": mode,
+        "schema_version": 1, "conductor_contract": "common-logical-and-physical-v1",
+        "design": design, "status": status, "mode": mode,
         "signoff": False, "ground_capacitance_pf": ground_total,
         "coupling_capacitance_pf": coupling_total,
         "resistance_ohm": sum(float(item["value_ohm"]) for item in resistors),
         "capacitors": capacitors, "resistors": resistors,
         "terminal_nodes": terminal_nodes, "port_nodes": port_nodes,
+        "conductor_nodes": conductor_nodes,
         "floating_conductors": floating_conductors,
         "unanchored_feol_nodes": unanchored_feol,
         "initialization": {

@@ -134,6 +134,12 @@ OpenRAM. Default compiled Liberty remains analytical unless measured
 characterization is explicitly generated with `sim/charz.py` and
 `sim/mklib.py`; those tables are valid only at their recorded load/slew axes.
 
+Strict macro LVS records the validated PDK capability and frozen LVS-deck hash
+manifest in each output directory before KLayout starts. A missing or drifted
+strict capability fails closed; generic standalone-cell LVS remains separate.
+This validates the local open-source contract only and does not claim Calibre
+equivalence or foundry signoff.
+
 
 ## Physical verification
 

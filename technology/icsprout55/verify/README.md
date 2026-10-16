@@ -47,6 +47,13 @@ inconclusive until the source CDL exposes the same boundaries. There is no
 automatic fallback to flat: use `--lvs-mode flat` explicitly to select the strict
 flat path. No full-macro runtime improvement is claimed until a full hierarchical
 run completes.
+
+Strict OpenRAM macro LVS is fail-closed against PDK drift. Before launching
+KLayout, `opensource.py` validates `../icsprout55-pdk/libs.tech/lvs/openram_strict_capability.json`,
+the frozen manifest's SHA-256 values for the LVS deck and included rule decks,
+and the strict comparison settings. The validated capability is copied to the
+LVS output directory as `strict_capability.json`. Generic standalone-cell LVS
+does not require this capability file and retains the released-library defaults.
 Generic standard-cell LVS keeps the deck's default global-tie and 10%-W modes.
 
 ## Open-source KLayout DRC/LVS and OpenRCX
@@ -254,14 +261,18 @@ Repeat the ngspice command with the desired device-model corner and temperature
 (for example, `--corner snfp --vdd 1.08 --temp 125`).
 
 This source-free extraction is distinct from routed-geometry JSON RCX. It is
-limited to supported core MOS and BEOL geometry. FEOL diffusion/poly/contact
-resistance and capacitance are idealized; uncontacted FEOL-only terminals are
-represented as ideal nodes, and repeated shapes of one top-level port connect
-to its named SPICE node. The `pdk-estimate` source uses generator coefficients,
-not calibrated coupling data: output is `status=estimated`,
-`accepted=false`, `signoff=false`. Artifact production can therefore complete
-while the command returns nonzero; this is not foundry signoff or a Calibre
-substitute.
+limited to supported core MOS and BEOL geometry. The parasitic JSON carries
+`conductor_nodes`, a common identity map for logical nets, top-level ports, FEOL
+components, and floating metal components in both C-only and RCC modes. Records
+name the emitted simulator node and preserve unknown voltage/charge status for
+floating conductors. This metadata does not ground or initialize any node.
+FEOL diffusion/poly/contact resistance and capacitance are idealized;
+uncontacted FEOL-only terminals are represented as ideal nodes, and repeated
+shapes of one top-level port connect to its named SPICE node. The `pdk-estimate`
+source uses generator coefficients, not calibrated coupling data: output is
+`status=estimated`, `accepted=false`, `signoff=false`. Artifact production can
+therefore complete while the command returns nonzero; this is not foundry
+signoff or a Calibre substitute.
 
 ### MOS topology diagnostics before RC interpretation
 

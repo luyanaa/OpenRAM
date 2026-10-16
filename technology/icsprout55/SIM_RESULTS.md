@@ -719,6 +719,11 @@ port1 4.484458–5.0 ns，W_EN 到 0.8 VDD 更晚（4.744202 / 4.773552 ns），
 电气定义；信号分叉与 cycle/trace 写入语义须继续核查，不能据此宣称路径根因。
 逐周期结果、哈希、控制窗口和浮空节点波形保存在
 `ngspice_rcc_2rw_snfp_control_float_ic/`。这是新的确定性短周期失效复测；
+
+The extracted parasitic JSON now includes a common `conductor_nodes` identity
+map for logical nets, ports, FEOL components, and floating metal components in
+C-only and RCC modes. It names emitted simulator nodes and retains unknown
+voltage/charge status; it does not ground or initialize floating conductors.
 `24/48` 的具体写语义及方向尚未完整定位，也不能把失败归咎于 PEX 拓扑。
 严格 native LVS 回归也已在冻结原始 2RW 宏上完成：411.99 s，50 个直接顶层
 端口的 layout/reference 集合相同，`ICS55_LVS_COMPARE=PASS`；报告和抽取网表在

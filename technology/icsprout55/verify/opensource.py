@@ -50,6 +50,82 @@ def _resolve_roots(pdk_root=None, librelane_root=None):
         raise OpenSourceError("ICS55 PDK root does not exist: {}".format(pdk))
     return pdk, librelane
 
+STRICT_CAPABILITY_NAME = "openram_strict_capability.json"
+STRICT_CAPABILITY_SCHEMA = "ics55-openram-strict-lvs-capability/1"
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_strict_capability(pdk_root):
+    """Validate the source-controlled strict OpenRAM LVS contract."""
+    root = Path(pdk_root).resolve()
+    capability_path = root / "libs.tech" / "lvs" / STRICT_CAPABILITY_NAME
+    try:
+        capability = json.loads(capability_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise OpenSourceError(
+            "strict OpenRAM LVS capability is missing or malformed: {}".format(capability_path)
+        ) from exc
+    if not isinstance(capability, dict) or capability.get("schema") != STRICT_CAPABILITY_SCHEMA:
+        raise OpenSourceError("strict OpenRAM LVS capability has an unsupported schema")
+    if capability.get("profile") != "openram-macro":
+        raise OpenSourceError("strict OpenRAM LVS capability selects the wrong profile")
+    if capability.get("strict_topology") is not True or capability.get("no_well_ties") is not True:
+        raise OpenSourceError("strict OpenRAM LVS capability does not require the OpenRAM flags")
+    comparison = capability.get("comparison")
+    if not isinstance(comparison, dict) or comparison.get("mos_w_l_absolute_um") != 1e-9 \
+            or comparison.get("mos_w_l_relative") != 0.0 \
+            or comparison.get("declared_top_pins") != "case-insensitive-exact" \
+            or comparison.get("device_combination") != "physical-parallel-only" \
+            or comparison.get("net_joining") is not False:
+        raise OpenSourceError("strict OpenRAM LVS capability has unsafe comparison settings")
+    if not isinstance(capability.get("pdk_revision"), str) or not capability["pdk_revision"]:
+        raise OpenSourceError("strict OpenRAM LVS capability has no PDK revision")
+    if not isinstance(capability.get("klayout_version"), str) or not capability["klayout_version"]:
+        raise OpenSourceError("strict OpenRAM LVS capability has no KLayout version")
+    manifest_ref = capability.get("hash_manifest")
+    if not isinstance(manifest_ref, str) or not manifest_ref:
+        raise OpenSourceError("strict OpenRAM LVS capability has no hash manifest")
+    manifest_path = (capability_path.parent / manifest_ref).resolve()
+    try:
+        manifest_path.relative_to(root)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise OpenSourceError("strict OpenRAM LVS hash manifest is missing, malformed, or outside the PDK root") from exc
+    frozen = manifest.get("frozen_hashes") if isinstance(manifest, dict) else None
+    expected = frozen.get("lvs_rule_decks") if isinstance(frozen, dict) else None
+    if capability.get("hash_scope") != "frozen_hashes.lvs_rule_decks" or not isinstance(expected, dict):
+        raise OpenSourceError("strict OpenRAM LVS hash manifest lacks frozen LVS deck hashes")
+    if "ics55.lvs" not in expected or "combine_fingers.lvs" not in expected:
+        raise OpenSourceError("strict OpenRAM LVS hash manifest lacks required deck hashes")
+    mismatches = []
+    for name, wanted in sorted(expected.items()):
+        if name == "ics55.lvs":
+            deck_path = root / "libs.tech" / "lvs" / name
+        else:
+            deck_path = root / "libs.tech" / "lvs" / "rule_decks" / name
+        if not isinstance(wanted, str) or not deck_path.is_file():
+            mismatches.append(name)
+            continue
+        if _sha256(deck_path) != wanted:
+            mismatches.append(name)
+    if mismatches:
+        raise OpenSourceError(
+            "strict OpenRAM LVS deck hash drift: {}".format(", ".join(mismatches)))
+    return {
+        "schema": capability["schema"],
+        "pdk_revision": capability.get("pdk_revision"),
+        "klayout_version": capability.get("klayout_version"),
+        "manifest": str(manifest_path),
+        "deck_hashes": dict(sorted(expected.items())),
+    }
+
 
 def _run_klayout(args, librelane_root, log_path):
     explicit = os.environ.get("ICS55_KLAYOUT")
@@ -210,7 +286,9 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
         if lvs_mode == "hierarchical":
             args.extend(["-rd", "strict_hierarchy=true"])
         args.extend(["-rd", "no_well_ties=true", "-rd", "strict_topology=true"])
-    args.append("-z")
+        capability = _validate_strict_capability(pdk_root)
+        (out_dir / "strict_capability.json").write_text(
+            json.dumps(capability, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     rc, output = _run_klayout(args, librelane_root, out_dir / "lvs.log")
     if rc != 0:
         raise OpenSourceError("KLayout LVS exited {} (see {})".format(rc, out_dir / "lvs.log"))
@@ -381,6 +459,7 @@ def run_gds_pex(gds, top=None, pdk_root=None, out_dir="pex", source="lef",
                   if key not in ("capacitors", "resistors", "terminal_nodes", "port_nodes")}
         result.update(corner=corner, netlist=str(netlist),
                       netlist_sha256=hashlib.sha256(netlist.read_bytes()).hexdigest(),
+                      conductor_contract="common-logical-and-physical-v1",
                       accepted=parasitics["status"] == "explicit_coupling", signoff=False)
         results.append(result)
         out("GDS PEX {}: {}; netlist {}".format(corner, parasitics["status"], netlist))

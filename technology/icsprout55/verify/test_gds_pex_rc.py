@@ -85,12 +85,25 @@ class RccAnchorTests(unittest.TestCase):
     def test_rcc_preserves_feol_shorts_and_separate_metal_accesses(self):
         parasitics = extract_parasitics(self.geometry(), self.process(), mode="rcc")
 
+        self.assertEqual(parasitics["conductor_contract"], "common-logical-and-physical-v1")
         device_drain = parasitics["terminal_nodes"]["M1:D"]
         device_source = parasitics["terminal_nodes"]["M1:S"]
         self.assertEqual(device_drain, "probe")
         self.assertNotEqual(device_drain, device_source)
         self.assertTrue(parasitics["resistors"])
-        self.assertTrue(all(item["node1"] != item["node2"] for item in parasitics["resistors"]))
+        self.assertEqual(parasitics["conductor_nodes"]["port:probe"]["node"], "probe")
+        self.assertEqual(parasitics["conductor_nodes"]["component:feol:P_SD:0"]["logical_net"], "probe")
+        self.assertEqual(parasitics["conductor_nodes"]["component:feol:P_SD:0"]["kind"], "feol-or-port")
+    def test_c_mode_uses_the_same_logical_conductor_contract(self):
+        parasitics = extract_parasitics(self.geometry(), self.process(), mode="c")
+
+        self.assertEqual(parasitics["port_nodes"]["probe"], "probe")
+        self.assertEqual(parasitics["terminal_nodes"]["M1:D"], "probe")
+        self.assertEqual(parasitics["conductor_nodes"]["net:probe"]["node"], "probe")
+        self.assertEqual(parasitics["conductor_nodes"]["port:probe"]["kind"], "port")
+        self.assertEqual(
+            parasitics["conductor_nodes"]["component:feol:P_SD:0"]["logical_net"],
+            "probe")
 
     def test_repeated_port_shapes_share_the_top_level_node(self):
         geometry = self.geometry()
@@ -143,6 +156,12 @@ class RccAnchorTests(unittest.TestCase):
         self.assertIsNone(component["initial_charge_c"])
         self.assertEqual(component["initial_charge_status"], "unknown")
         self.assertEqual(component["state_status"], "unknown")
+        floating_key = next(key for key in parasitics["conductor_nodes"]
+                            if key.startswith("floating:"))
+        self.assertEqual(parasitics["conductor_nodes"][floating_key]["kind"],
+                         "floating-metal")
+        self.assertEqual(parasitics["conductor_nodes"][floating_key]["node"],
+                         component["representative_node"])
         self.assertTrue(any(
             capacitor["node1"] == component["representative_node"] and capacitor["node2"] == "0"
             for capacitor in parasitics["capacitors"]))

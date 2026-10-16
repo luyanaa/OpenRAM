@@ -129,9 +129,14 @@ initial voltage as zero capacitor charge.
 `tbgen.py` reads the `// Port N: RW|R|W` comments on the generated behavioral
 model. Its `C` trace records include both `roleN=RW|R|W` and `opN=I|R|W`; the
 generated Verilog testbench drives the corresponding `csbN` and `addrN` values
-on every cycle before the clock edge. `charz.py` uses those fields to classify
-operations; pure read and write ports need no `webN` pin. Re-generate traces
-with `tbgen.py` before characterizing a pure R or W port.
+on every cycle before the clock edge; `charz.py` uses those fields to classify
+operations; pure read and write ports need no `webN` pin. The generated
+`tbgen.py` directory also contains `trace.meta.json`, a deterministic sidecar
+recording model dimensions, port-role metadata, seed, cycle count, clock period,
+and the rule that each `C` record is applied before that cycle's rising edge.
+Existing `trace.txt` readers remain the source of simulation inputs and continue
+to accept traces without the sidecar. Re-generate traces with `tbgen.py` before
+characterizing a pure R or W port.
 
 `charz.py` records per-port timing and energy from a `--diag` run. `--diag`
 also saves each `XSRAM.XcontrolN.rbl_bl_delay` replica net. Use separate sweep

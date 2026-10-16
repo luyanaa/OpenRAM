@@ -159,6 +159,12 @@ END LIBRARY
                     output.write(behavioral_model(macro, roles))
                 trace_dir = os.path.join(temp, "tb")
                 tbgen.gen(source, trace_dir, 24, 1)
+                with open(os.path.join(trace_dir, "trace.meta.json")) as meta_file:
+                    trace_meta = json.load(meta_file)
+                self.assertEqual(trace_meta["kind"], "ics55_tbgen_trace")
+                self.assertEqual(trace_meta["seed"], 1)
+                self.assertEqual(trace_meta["cycle_semantics"],
+                                 "C values are applied before the rising edge of that cycle")
                 with open(os.path.join(trace_dir, "tb.v")) as input_file:
                     generated_tb = input_file.read()
                 for port, role in roles.items():
