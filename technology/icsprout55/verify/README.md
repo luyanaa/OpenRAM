@@ -266,6 +266,11 @@ limited to supported core MOS and BEOL geometry. The parasitic JSON carries
 components, and floating metal components in both C-only and RCC modes. Records
 name the emitted simulator node and preserve unknown voltage/charge status for
 floating conductors. This metadata does not ground or initialize any node.
+For RCC, a logical net backed only by one unanchored FEOL component names that
+component's emitted `__PEX_FEOL_*` node. Distinct unanchored components, or an
+unanchored component plus a different metal representative, cannot be collapsed
+into a single logical-net identity; extraction rejects that ambiguous metadata
+instead of inventing an electrical connection.
 FEOL diffusion/poly/contact resistance and capacitance are idealized;
 uncontacted FEOL-only terminals are represented as ideal nodes, and repeated
 shapes of one top-level port connect to its named SPICE node. The `pdk-estimate`

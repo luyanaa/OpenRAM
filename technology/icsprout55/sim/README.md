@@ -124,6 +124,48 @@ condition: it does not add UIC, shunts, or MOS/storage/port forcing. Metadata
 with a specified or non-unknown initial charge is rejected; do not interpret
 initial voltage as zero capacitor charge.
 
+## Capability-gated control-timing search
+
+`python -m compiler.architecture` enumerates exact admitted implementation
+tuples, replays matching local observations, and optionally executes new
+operating points with `--execute`. It does not invoke the remote wrappers.
+Commands and the supplied registry/request are documented in
+[the technology README](../README.md#capability-gated-architecture-timing-search).
+
+The adapter uses the selected physical write-driver EN and sense-amplifier
+tail-gate terminals, not only a representative logical control waveform:
+
+- `wen_pulse_ns`: minimum complete single EN pulse above 0.8 VDD. No pulse
+  yields zero; clipped or chopped pulses remain unknown.
+- `bl_diff_v`: signed BL-minus-BR differential at each observed SA activation,
+  with polarity chosen for the expected bit. Wrong-polarity differential is
+  negative, not an absolute-value success.
+- `sa_setup_ns`: SA 0.5 VDD activation minus readiness at the requested signed
+  BL differential. An observed early SA is negative; never-observed readiness
+  remains unknown.
+- `write_recovery_ns`: the next actual access edge on either port minus the
+  last local EN release below 0.2 VDD. A late release is negative.
+- Selected WL delay requires an observed rising crossing. A gate already high
+  at the access-window start is `already_high` with unknown delay, not 0 ns.
+  Aggregate write margins require sampled writes on every declared write port,
+  independently of read-port coverage.
+
+Read/preceding-write targets, physical probes and sampled cycles remain in
+the result. WL/replica delays, Q completion and output settling are diagnostic
+details, not full-array stability or Monte Carlo characterization. Research
+thresholds must be explicit in the request. Missing energy or other requested
+objectives prevents a complete Pareto point; estimated extraction never
+establishes physical feasibility or foundry signoff.
+
+New native adapter runs save `model-dependencies-before.json` before launching
+ngspice and an `observation-manifest.json` after verifying unchanged model/tool
+bytes. The latter binds the model closure to exact inputs, executed deck,
+initialization, probe columns, run result and waveforms. Registered bundles use
+`models__<observation>` and, when metadata differs, `extraction__<observation>`.
+Missing observation-time model provenance is unknown; do not manufacture a
+posthoc manifest for an archived passing run.
+
+
 ## Measured multi-port Liberty
 
 `tbgen.py` reads the `// Port N: RW|R|W` comments on the generated behavioral

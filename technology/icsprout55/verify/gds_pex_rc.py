@@ -871,6 +871,26 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
                     terminal_nodes[key] = unanchored_feol_nodes[component]
                 else:
                     raise ValueError("device %s terminal %s has no physical anchor %s" % (dname, terminal, component))
+        # A logical-net representative must resolve to one emitted electrical
+        # node. Unanchored FEOL-only terminals have their own emitted nodes;
+        # do not silently alias distinct physical components through the
+        # logical net name.
+        logical_conductor_nodes = {
+            net: str(representatives.get(net, net)) for net in net_records
+        }
+        unanchored_nodes_by_net: dict[str, set[str]] = defaultdict(set)
+        for component, node in unanchored_feol_nodes.items():
+            unanchored_nodes_by_net[component_nets[component]].add(node)
+        for net, feol_nodes in unanchored_nodes_by_net.items():
+            candidates = set(feol_nodes)
+            if by_net.get(net):
+                candidates.add(logical_conductor_nodes[net])
+            if len(candidates) > 1:
+                raise ValueError(
+                    "logical net %s has multiple disconnected physical conductor nodes" % net
+                )
+            logical_conductor_nodes[net] = next(iter(candidates))
+
         if unanchored_feol_nodes:
             limitations.append("Uncontacted FEOL-only components use ideal terminal nodes without BEOL parasitics.")
         for port in ports:
@@ -1023,7 +1043,7 @@ def extract_parasitics(geometry: Mapping[str, Any], process: Mapping[str, Any], 
         for net in sorted(net_records):
             conductor_nodes["net:" + net] = {
                 "identity": net, "kind": "logical-net", "logical_net": net,
-                "node": str(representatives.get(net, net)),
+                "node": logical_conductor_nodes[net],
             }
         for component, node in sorted(anchor_nodes.items()):
             conductor_nodes["component:" + component] = {

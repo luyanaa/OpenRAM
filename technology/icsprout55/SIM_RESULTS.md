@@ -812,3 +812,101 @@ OpenRAM runner 现请求 PDK `strict_topology=true`：禁用 simplify/purge，
 PDK deck 的默认宽度公差未改。完整 TG 宏的严格 native verdict 仍需独立完成；
 其严格重跑同样在 3600.26 s 超时，仅留下 48487 行预比较抽取网表，
 没有 report/log/verdict。冻结原始 2RW 宏则已单独严格通过，见上方短周期复测段。
+
+## Capability-gated SRAM timing search：首次执行
+
+新增本地入口 `python -m compiler.architecture`，由
+`architecture_capabilities.json` 和
+`configs/ics55_2rw_control_timing_search.json` 驱动。当前只登记冻结的
+32x8、单 bank、mux-1、SC9T、NMOS column-mux 2RW tuple；没有把 TG、
+H7C 或未验证的 decoder/replica/driver sizing 当成已支持搜索变量。
+操作周期搜索不等于晶体管尺寸优化，也没有生成新的 memory-family backend。
+
+从冻结 geometry/process 重新运行当前 RCC extractor，生成的 SPICE 与原网表
+逐字节一致，SHA256 仍为
+`99c2442eccd36dd97ec00e99b81d8c5662a4b44db425b99640ca2b73454f04d0`。
+新增执行 metadata 在
+`ics55_work/runs/optimizer_execution/execution_metadata/pex_summary.json`，
+SHA256 为 `dd4498af49852b81f967966967cca12aa1096352d4ba16f7a16955817ee72b4f`；
+记录 8 个 parasitic-only floating R-components、296 个节点。
+显式 zero-voltage 模式仅对这些节点施加普通、随后释放的层次 `.ic`，
+没有 UIC、shunt、接地 alias 或 storage/MOS/port 强制初态。
+
+新的 SNFP/125 C、1.08 V、5 fF、30 ps slew、5 ns 实验完成：
+6 次 read / 48 个 bit checks 全通过，`tacc_ns=3.941615159`，
+耗时 1239.647 s。这里 tacc 沿用 trace 的读周期边沿定义，包含半周期
+launch 等待，不是独立的 falling-edge-to-output 延迟。结果在
+`optimizer_execution/ngspice_snfp_5ns/simulation.json`，SHA256
+`21810987b13c192680549af40a3c3eed859c43fe015b6c219c65372498e4850e`。
+
+复审发现旧观测仅保存顶层模型库 SHA，没有仿真启动时完整的递归
+`.lib/.include` 文件哈希。当前模型 fingerprint 改变虽然能令 cache 失效，
+却不能证明旧波形匹配新 included models；现在必须同时验证原始
+execution-time model-closure manifest 与准确的 inputs/outputs。
+缺失者保留为历史诊断，不能进入当前模型可行前沿；不补造 posthoc manifest。
+上述 5 ns 运行也在这一补强前启动，因此功能观测有效，但同样不作为
+闭包完整的当前模型优化证据。历史 2.5 ns 失败与 10 ns passing controls
+没有被删除、改判或仅为确认而重跑。
+
+CLI 区分 timing-screen 与 full-PPA/physical frontier。现有 trace 双端口同时
+活动且没有 isolated-operation supply-current 数据，read/write energy、
+idle/peak current、完整阵列稳定性、Vmin/MC、PG/IR 和 valid-domain Liberty
+均未获得；estimated PEX 始终 `accepted=false`、`signoff=false`。
+实际 replay、缓存、跨 PVT domain、缺失目标与禁止未授权执行的场景已运行；
+缺失模型闭包会令 replay 保持 unknown，不会把未测能耗当作 0。
+
+同时补强 strict LVS preflight：检查所选真实 KLayout 版本及全部 11 个
+被 include 的 deck 文件哈希，再使用同一 launcher 执行。固定 Nix 环境实际
+报告 KLayout 0.30.7；当前 TG leaf smoke 成功通过 preflight、但 native LVS
+为 mismatch，抽取中出现历史 passing leaf 未保留的空 helper circuits/contact
+instances。证据为 `optimizer_execution/strict_leaf_smoke_correct_top/`；
+没有放宽物理规则或隐藏 mismatch。它不改写完整 TG 宏的历史 timeout/
+inconclusive 结论，也不使 TG 获得搜索准入。
+
+77 项相关回归通过，覆盖 admission、真实 RCC extractor、小型 PWL 控制窗、
+模型闭包/初态、stage promotion、缓存/完整目标与 strict preflight 边界；
+这些隔离测试不依赖被忽略的工作目录或另行提供的 licensed PDK。
+真实 CLI 的 `--max-evaluations 0 --ngspice /must-not-execute` 保留全部
+4 个候选为 limited/unknown，未启动模拟器。多 fidelity 选择先执行前级并过滤
+失败/支配点，缺失 F1 时不会从 F0 越级到 F2，也不会通过已有高阶 cache 绕过
+前级失败；直接请求 F3 则只表示显式的 F3 研究。
+
+### 原生 optimizer 路径：7.5 ns
+
+补强后的 `--execute` 路径完成新的 SNFP/125 C、1.08 V、5 fF、
+30 ps slew、7.5 ns 点；本次 ngspice47 模拟为 1433.248 s，
+6 次 read / 48 个 bit checks 全通过，`tacc_ns=5.192931714`。
+实际运行前记录了完整 26 文件模型闭包和 simulator binary/version，
+运行后确认模型/tool bytes 未变。`observation-manifest.json` SHA256 为
+`97906c8324789294c93fb12b5685cd99e59c5cc2d71cf2cafffc4fe14c46e489`，
+同时绑定 GDS/netlist/trace/map、执行 deck、初态、extraction、probes、
+simulation result 与 waves；没有为旧波形补造模型历史。
+
+| 采样 local-gate 约束 | 实测最小值 | 显式研究阈值 |
+|---|---:|---:|
+| W_EN full-swing pulse | 1.498925 ns | >=0.1 ns |
+| SA setup relative to signed-BL readiness | 1.327104 ns | >=0 ns |
+| Signed BL differential at SA activation | 1.002522 V | >=0.05 V |
+| EN release to next actual access recovery | 1.449517 ns | >=0.01 ns |
+
+物理控制探针覆盖 port0 的 row0/column1 与 port1 的 row1/column0 目标。
+已在窗口开始为高的 WL 显式标为 `already_high`/unknown delay；不会登记为
+0 ns 边沿。实际 GDS top-cell bounding-box area 为 28720.2528 um²，
+不是 bitcell/periphery 分解或有效 bit 面积。表中 margin 不是 foundry SA
+spec，也不是完整阵列/PVT/MC 最坏情况界限。
+
+真实 native 搜索报告：
+`ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/report.json`。
+登记该 observation 后，当前代码的默认 replay 报告：
+`ics55_work/runs/optimizer_execution/snfp_search_final/report.json`。
+7.5 ns 进入 timing-screen frontier，physical frontier 仍为空；2.5/5/10 ns
+没有完整的当前模型闭包证据，保持 unknown，而不是被改写成新功能结论。
+因此7.5 ns 是一个已证明的研究筛选点，不是最短周期或优化后的晶体管实现。
+
+重复默认搜索并设 `--max-evaluations 0`，四个 cache hits、
+`evaluations_performed=0`，保留同一 timing-screen frontier，没有再次运行
+ngspice。另行执行 SS/-40 C 的7.5 ns 请求，正确以 corner mismatch 拒绝
+SNFP observation；full-PPA 请求即使7.5 ns control screening 通过，也因
+Eread/Ewrite 为 null 保持空 frontier。对应最终报告为
+`optimizer_execution/sscold_search_final/` 和
+`optimizer_execution/full_ppa_search_final/`。

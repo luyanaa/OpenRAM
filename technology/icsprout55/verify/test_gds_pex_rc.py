@@ -170,7 +170,7 @@ class RccAnchorTests(unittest.TestCase):
             resistor["node2"].casefold() in {"0", "gnd"}
             for resistor in parasitics["resistors"]))
 
-    def test_uncontacted_diffusion_keeps_a_shared_ideal_node(self):
+    def test_uncontacted_diffusion_maps_logical_node_and_rejects_ambiguity(self):
         geometry = self.geometry()
         geometry["nets"].append({
             "name": "floating",
@@ -202,6 +202,26 @@ class RccAnchorTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first.startswith("__PEX_FEOL_"))
         self.assertNotEqual(first, parasitics["port_nodes"]["probe"])
+        logical_node = parasitics["conductor_nodes"]["net:floating"]["node"]
+        component_node = parasitics["conductor_nodes"]["component:feol:P_SD:2"]["node"]
+        self.assertEqual(logical_node, first)
+        self.assertEqual(component_node, first)
+        self.assertIn(logical_node, parasitics["terminal_nodes"].values())
+        self.assertEqual(parasitics["unanchored_feol_nodes"][0]["node"], logical_node)
+        self.assertEqual(parasitics["initialization"]["default_policy"], "uninitialized")
+        self.assertEqual(parasitics["unanchored_feol_nodes"][0]["state_status"], "unknown")
+        self.assertFalse(any(
+            logical_node in {cap["node1"], cap["node2"]}
+            for cap in parasitics["capacitors"]))
+        self.assertFalse(any(
+            logical_node in {resistor["node1"], resistor["node2"]}
+            for resistor in parasitics["resistors"]))
+
+        geometry["devices"][1]["terminal_components"]["D"] = "feol:P_SD:3"
+        with self.assertRaisesRegex(
+                ValueError, "logical net floating has multiple disconnected physical conductor nodes"):
+            extract_parasitics(geometry, self.process(), mode="rcc")
+
 
     def test_one_feol_identity_cannot_span_nets(self):
         geometry = self.geometry()

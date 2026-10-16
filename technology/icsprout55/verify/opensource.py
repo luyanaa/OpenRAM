@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -62,6 +63,63 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+def _read_lvs_module_files(deck_path):
+    """Read the literal module list without evaluating any Ruby from the deck."""
+    try:
+        source = Path(deck_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise OpenSourceError("cannot read strict OpenRAM LVS deck: {}".format(deck_path)) from exc
+    declaration = re.compile(
+        r"^[ \t]*LVS_MODULE_FILES[ \t]*=[ \t]*\[(.*?)^[ \t]*\]",
+        re.MULTILINE | re.DOTALL)
+    matches = list(declaration.finditer(source))
+    if len(matches) != 1:
+        raise OpenSourceError("strict OpenRAM LVS deck has no unambiguous literal LVS_MODULE_FILES list")
+    body = matches[0].group(1)
+    modules = re.findall(r"'([^'\\\r\n]*)'", body)
+    remainder = re.sub(r"'[^'\\\r\n]*'|[\s,]", "", body)
+    if not modules or remainder or len(set(modules)) != len(modules):
+        raise OpenSourceError("strict OpenRAM LVS deck has an unsupported LVS_MODULE_FILES list")
+    for module in modules:
+        match = re.fullmatch(r"rule_decks/([A-Za-z0-9_.-]+\.lvs)", module)
+        if not match or match.group(1) in ("", ".", ".."):
+            raise OpenSourceError("strict OpenRAM LVS deck has an unsafe module path: {}".format(module))
+    return modules
+
+
+def _select_klayout(librelane_root):
+    explicit = os.environ.get("ICS55_KLAYOUT")
+    klayout = explicit or shutil.which("klayout")
+    if klayout:
+        return ("executable", klayout)
+    nix_shell = shutil.which("nix-shell")
+    if not nix_shell:
+        raise OpenSourceError("KLayout is not on PATH and nix-shell is unavailable")
+    if not (Path(librelane_root) / "shell.nix").is_file():
+        raise OpenSourceError("LibreLane shell.nix not found: {}".format(librelane_root))
+    return ("nix-shell", nix_shell, str(librelane_root))
+
+
+def _klayout_command(selection, args):
+    if selection[0] == "executable":
+        return [selection[1]] + list(args)
+    return [selection[1], selection[2], "--run", shlex.join(["klayout"] + list(args))]
+
+
+def _query_klayout_version(selection):
+    try:
+        result = subprocess.run(_klayout_command(selection, ["-v"]), text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    except OSError as exc:
+        raise OpenSourceError("cannot query KLayout version: {}".format(exc)) from exc
+    version = re.search(
+        r"\bKLayout\s+([0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?)",
+        result.stdout, re.IGNORECASE)
+    if result.returncode != 0 or not version:
+        raise OpenSourceError("cannot determine the selected KLayout version")
+    return version.group(1)
+
+
 def _validate_strict_capability(pdk_root):
     """Validate the source-controlled strict OpenRAM LVS contract."""
     root = Path(pdk_root).resolve()
@@ -102,18 +160,41 @@ def _validate_strict_capability(pdk_root):
     expected = frozen.get("lvs_rule_decks") if isinstance(frozen, dict) else None
     if capability.get("hash_scope") != "frozen_hashes.lvs_rule_decks" or not isinstance(expected, dict):
         raise OpenSourceError("strict OpenRAM LVS hash manifest lacks frozen LVS deck hashes")
-    if "ics55.lvs" not in expected or "combine_fingers.lvs" not in expected:
-        raise OpenSourceError("strict OpenRAM LVS hash manifest lacks required deck hashes")
+    lvs_root = root / "libs.tech" / "lvs"
+    module_files = _read_lvs_module_files(lvs_root / "ics55.lvs")
+    required = {"ics55.lvs"} | {Path(module).name for module in module_files}
+    missing = required.difference(expected)
+    if missing:
+        raise OpenSourceError(
+            "strict OpenRAM LVS hash manifest lacks included deck hashes: {}".format(
+                ", ".join(sorted(missing))))
     mismatches = []
     for name, wanted in sorted(expected.items()):
+        if (not isinstance(name, str) or Path(name).name != name or
+                "/" in name or "\\" in name or name in ("", ".", "..")):
+            mismatches.append(str(name))
+            continue
         if name == "ics55.lvs":
-            deck_path = root / "libs.tech" / "lvs" / name
+            deck_path = lvs_root / name
         else:
-            deck_path = root / "libs.tech" / "lvs" / "rule_decks" / name
-        if not isinstance(wanted, str) or not deck_path.is_file():
+            deck_path = lvs_root / "rule_decks" / name
+        try:
+            resolved_deck = deck_path.resolve()
+            resolved_deck.relative_to(root)
+        except ValueError:
             mismatches.append(name)
             continue
-        if _sha256(deck_path) != wanted:
+        if (not isinstance(wanted, str) or
+                not re.fullmatch(r"[0-9a-fA-F]{64}", wanted) or
+                not resolved_deck.is_file()):
+            mismatches.append(name)
+            continue
+        try:
+            actual = _sha256(resolved_deck)
+        except OSError:
+            mismatches.append(name)
+            continue
+        if actual != wanted:
             mismatches.append(name)
     if mismatches:
         raise OpenSourceError(
@@ -127,18 +208,10 @@ def _validate_strict_capability(pdk_root):
     }
 
 
-def _run_klayout(args, librelane_root, log_path):
-    explicit = os.environ.get("ICS55_KLAYOUT")
-    klayout = explicit or shutil.which("klayout")
-    if klayout:
-        command = [klayout] + list(args)
-    else:
-        nix_shell = shutil.which("nix-shell")
-        if not nix_shell:
-            raise OpenSourceError("KLayout is not on PATH and nix-shell is unavailable")
-        if not (Path(librelane_root) / "shell.nix").is_file():
-            raise OpenSourceError("LibreLane shell.nix not found: {}".format(librelane_root))
-        command = [nix_shell, str(librelane_root), "--run", shlex.join(["klayout"] + list(args))]
+def _run_klayout(args, librelane_root, log_path, selection=None):
+    if selection is None:
+        selection = _select_klayout(librelane_root)
+    command = _klayout_command(selection, args)
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
@@ -282,14 +355,25 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
     args = ["-b", "-r", str(deck), "-rd", "input={}".format(gds),
             "-rd", "top={}".format(top), "-rd", "schematic={}".format(netlist),
             "-rd", "report={}".format(report), "-rd", "target_netlist={}".format(extracted)]
+    selection = None
     if lvs_profile == "openram-macro":
         if lvs_mode == "hierarchical":
             args.extend(["-rd", "strict_hierarchy=true"])
         args.extend(["-rd", "no_well_ties=true", "-rd", "strict_topology=true"])
         capability = _validate_strict_capability(pdk_root)
+        selection = _select_klayout(librelane_root)
+        actual_version = _query_klayout_version(selection)
+        if actual_version != capability["klayout_version"]:
+            raise OpenSourceError(
+                "strict OpenRAM LVS requires KLayout {}, selected version is {}".format(
+                    capability["klayout_version"], actual_version))
         (out_dir / "strict_capability.json").write_text(
             json.dumps(capability, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    rc, output = _run_klayout(args, librelane_root, out_dir / "lvs.log")
+    if selection is None:
+        rc, output = _run_klayout(args, librelane_root, out_dir / "lvs.log")
+    else:
+        rc, output = _run_klayout(
+            args, librelane_root, out_dir / "lvs.log", selection=selection)
     if rc != 0:
         raise OpenSourceError("KLayout LVS exited {} (see {})".format(rc, out_dir / "lvs.log"))
     if "CONGRATULATIONS! Netlists match." not in output:

@@ -1,0 +1,311 @@
+{
+  "schema": "openram-capabilities/1",
+  "technology": "icsprout55",
+  "pdk": {
+    "revision": "9fe82cf0e28269df9c6b50806ade6b5cd3845c4c",
+    "evidence": {
+      "path": "../../../icsprout55-pdk/libs.tech/lvs/openram_strict_capability.json",
+      "sha256": "4938f7c4601679739d9499a20aeeb33a8f07f08251add71236e4f44626f6ffe4"
+    }
+  },
+  "capabilities": [
+    {
+      "id": "ics55.sram.2rw.sc9t",
+      "family": "sram",
+      "backend": "ics55-pbitcell-2rw",
+      "access_contract": {
+        "ports": [
+          "RW",
+          "RW"
+        ],
+        "clocking": "independent",
+        "same_row_write": "forbidden",
+        "read_during_write": "undefined-same-row"
+      },
+      "parameters": {
+        "word_size": {
+          "values": [
+            8
+          ]
+        },
+        "num_words": {
+          "values": [
+            32
+          ]
+        },
+        "words_per_row": {
+          "values": [
+            1
+          ]
+        },
+        "num_banks": {
+          "values": [
+            1
+          ]
+        },
+        "stdcell_library": {
+          "values": [
+            "SC9T"
+          ]
+        },
+        "column_mux": {
+          "values": [
+            "nmos"
+          ]
+        },
+        "decoder_strategy": {
+          "values": [
+            "baseline"
+          ]
+        },
+        "replica_strategy": {
+          "values": [
+            "baseline"
+          ]
+        },
+        "delay_chain_stages": {
+          "values": [
+            9
+          ]
+        },
+        "delay_chain_fanout": {
+          "values": [
+            4
+          ]
+        },
+        "write_driver_strength": {
+          "values": [
+            1
+          ]
+        }
+      },
+      "environment": {
+        "corner": {
+          "values": [
+            "ss",
+            "snfp"
+          ]
+        },
+        "voltage_v": {
+          "values": [
+            1.08
+          ]
+        },
+        "temperature_c": {
+          "minimum": -40.0,
+          "maximum": 125.0
+        },
+        "period_ns": {
+          "minimum": 2.5,
+          "maximum": 10.0
+        },
+        "cload_ff": {
+          "values": [
+            5.0
+          ]
+        },
+        "slew_ns": {
+          "values": [
+            0.03
+          ]
+        },
+        "skew1": {
+          "values": [
+            0.0
+          ]
+        },
+        "initialization": {
+          "values": [
+            "zero-voltage"
+          ]
+        },
+        "fidelity": {
+          "values": [
+            "F3"
+          ]
+        }
+      },
+      "excludes": [],
+      "implementations": [
+        {
+          "parameters": {
+            "word_size": 8,
+            "num_words": 32,
+            "words_per_row": 1,
+            "num_banks": 1,
+            "stdcell_library": "SC9T",
+            "column_mux": "nmos",
+            "decoder_strategy": "baseline",
+            "replica_strategy": "baseline",
+            "delay_chain_stages": 9,
+            "delay_chain_fanout": 4,
+            "write_driver_strength": 1
+          },
+          "models": {
+            "F3": {
+              "adapter": "ics55-ngspice",
+              "artifacts": {
+                "config": {
+                  "path": "configs/ics55_2rw_32x8.py",
+                  "sha256": "208e7b9d21846c998044e6b64b1b7e6bbb53242092676e4cc8c8f7628bbf0875"
+                },
+                "gds": {
+                  "path": "../../ics55_work/runs/out_fresh_final_2rw_baseline/fresh_final_2rw_baseline.gds",
+                  "sha256": "f3b92dbb37273630e61fbfbc2670dbfc9e5e7d7fe326f6958170fd836484622e"
+                },
+                "netlist": {
+                  "path": "../../ics55_work/runs/out_fresh_final_2rw_baseline/pex_pdk_estimate_rcc_feol_only_fix/fresh_final_2rw_baseline_typ.pex.sp",
+                  "sha256": "99c2442eccd36dd97ec00e99b81d8c5662a4b44db425b99640ca2b73454f04d0"
+                },
+                "extraction": {
+                  "path": "../../ics55_work/runs/out_fresh_final_2rw_baseline/pex_pdk_estimate_rcc_feol_only_fix/pex_summary.json",
+                  "sha256": "3e9294db7886888160089fd7ddeb63ff1160413157b0d53b6e4cfc41b7b892a8"
+                },
+                "topology": {
+                  "path": "../../ics55_work/runs/topology_repair_reviewed/topology.json",
+                  "sha256": "4a9f28a5a1d8ecf1e413bf6bafdab398fce2530440ec888639ebc69a855fe5a9"
+                },
+                "probe_map": {
+                  "path": "../../ics55_work/runs/topology_repair_reviewed/reference_map.json",
+                  "sha256": "56d27d4f2d186d419c3eeaba591479e39538ead14ed323af4795610d07660f14"
+                },
+                "trace": {
+                  "path": "../../ics55_work/runs/full_swing_2rw_sscold_snfp_write.trace",
+                  "sha256": "76d76708f450a1321b9c3eafdbcc5759aefd3c7cecc580165460feb6b9c3f26d"
+                },
+                "model": {
+                  "path": "../../../icsprout55-pdk/libs.tech/spice/foundry/ngspice/ICsprout_55LLULP1225_V1p1_hsp.lib",
+                  "sha256": "538dc00d2da055c26facc672c2daf42209fd2252161bbd96bed8f690e5b9f430"
+                },
+                "run__snfp_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_control_float_ic/simulation.json",
+                  "sha256": "6fbfb92a8d25169be4ecb1686b7738a993caefb60ebb5d1a016a892be4cb0aaa"
+                },
+                "waves__snfp_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_control_float_ic/waves.dat",
+                  "sha256": "9a029d164c0b1b0f9c582472c0cc25f440472069bf5bb91f6c8d5fde080caa74"
+                },
+                "probes__snfp_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_control_float_ic/probes.json",
+                  "sha256": "daee285b59e8fb0df8dbbcc70110b7527ad51396545e4f5cc931766f46d276dd"
+                },
+                "init__snfp_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_control_float_ic/initialization_plan.json",
+                  "sha256": "3d241dbfed8e5d37785420415461e494240d370a53d27bede55c2b9d74ce35c3"
+                },
+                "deck__snfp_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_control_float_ic/transient_floating_ic.sp",
+                  "sha256": "92831ad90e8098a660c393610e5bd55bd990ea1ebdec23e13204ade2414c473c"
+                },
+                "run__snfp_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_10ns_float_ic/simulation.json",
+                  "sha256": "3ae4523f23ce51455d39d635f5424224a2c83828fd8878b8f953d3ea7c30e568"
+                },
+                "waves__snfp_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_10ns_float_ic/waves.dat",
+                  "sha256": "8e5f013c4236fa5fe914240eff5104f0d90a501f79d3a037e55840d17043fdee"
+                },
+                "probes__snfp_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_10ns_float_ic/probes.json",
+                  "sha256": "daee285b59e8fb0df8dbbcc70110b7527ad51396545e4f5cc931766f46d276dd"
+                },
+                "init__snfp_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_10ns_float_ic/initialization_plan.json",
+                  "sha256": "22c8ef014e4e86a9291ab33d49111158cdebe87baa7444db7c47056b7bf18a3a"
+                },
+                "deck__snfp_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_snfp_10ns_float_ic/transient_floating_ic.sp",
+                  "sha256": "835bc62b5e77a96ca5fbbbc6d50d67b24c1ac0e024c8ffcdbc696c5d57f8c6e1"
+                },
+                "run__ss_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_control_float_ic/simulation.json",
+                  "sha256": "c1b2e483c28c1706480f9d13cf08ec7fb1c82a5e9fbe4489fe3c9ccaa51fe62e"
+                },
+                "waves__ss_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_control_float_ic/waves.dat",
+                  "sha256": "3068122410af0b05e8c8d1be5af07ef5b62f73718e4b5bc59a51a31eee8f9d6b"
+                },
+                "probes__ss_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_control_float_ic/probes.json",
+                  "sha256": "daee285b59e8fb0df8dbbcc70110b7527ad51396545e4f5cc931766f46d276dd"
+                },
+                "init__ss_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_control_float_ic/initialization_plan.json",
+                  "sha256": "2460a135df3bd631a5b8028e652c453863d282c07d27d18e0c94dbc65abc6718"
+                },
+                "deck__ss_short": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_control_float_ic/transient_floating_ic.sp",
+                  "sha256": "38658ed724d28501e619483fb9cc12bc06391d87197b7a77ab67456ea29e07a3"
+                },
+                "run__ss_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_10ns_float_ic/simulation.json",
+                  "sha256": "cb5647baa6a751c1c232da385b90ccce17a524d3fb207c6274370d84ba95b0aa"
+                },
+                "waves__ss_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_10ns_float_ic/waves.dat",
+                  "sha256": "054503d8d127a27f649b9a0ae41b0c9dc4127f487f67d603d37a40155bd5a725"
+                },
+                "probes__ss_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_10ns_float_ic/probes.json",
+                  "sha256": "daee285b59e8fb0df8dbbcc70110b7527ad51396545e4f5cc931766f46d276dd"
+                },
+                "init__ss_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_10ns_float_ic/initialization_plan.json",
+                  "sha256": "9b79dc93fd39d2e4a467786f7a61e7b66ceeba6b759bdf3073f292658b0a2be1"
+                },
+                "deck__ss_long": {
+                  "path": "../../ics55_work/runs/ngspice_rcc_2rw_sscold_10ns_float_ic/transient_floating_ic.sp",
+                  "sha256": "9a4037c69b3920d7ea27adf8170d9209cd0cb508b55fc7779d5ba029139f1f34"
+                },
+                "execution_extraction": {
+                  "path": "../../ics55_work/runs/optimizer_execution/execution_metadata/pex_summary.json",
+                  "sha256": "dd4498af49852b81f967966967cca12aa1096352d4ba16f7a16955817ee72b4f"
+                },
+                "run__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/simulation.json",
+                  "sha256": "d35c561354907b002566fc684a2ded2dd012ef1e4b2ef0ebdf2bec87a469a2df"
+                },
+                "waves__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/waves.dat",
+                  "sha256": "1eecfa136a8b7e18bfbcdd30ff1842f8dee8e8d7351d272d3c505ead4ff725a1"
+                },
+                "probes__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/probes.json",
+                  "sha256": "14cb454acb3e4f8c715c28573877057076f8f50fd143f23b36faec2152366ee5"
+                },
+                "init__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/initialization_plan.json",
+                  "sha256": "9c3a6962530fe1d8d941c3d7b7f5ca7b35b509d20491fb373c09c0742f2dd295"
+                },
+                "deck__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/transient.sp",
+                  "sha256": "35a09ce89e49b1a22a4256870f1c9f8c091338212580375b660f22349e819722"
+                },
+                "extraction__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/execution_metadata/pex_summary.json",
+                  "sha256": "dd4498af49852b81f967966967cca12aa1096352d4ba16f7a16955817ee72b4f"
+                },
+                "models__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/observation-manifest.json",
+                  "sha256": "97906c8324789294c93fb12b5685cd99e59c5cc2d71cf2cafffc4fe14c46e489"
+                }
+              },
+              "basic_checks": [
+                {
+                  "artifact": "topology",
+                  "pointer": "/completed",
+                  "equals": true
+                },
+                {
+                  "artifact": "topology",
+                  "pointer": "/equivalent",
+                  "equals": true
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -117,9 +117,9 @@ entire `en` interval.
 Decoder, replica-delay and periphery sizing use the existing OpenRAM
 `control_logic` architecture: word-size-based `pand3` drive, the
 `pdriver_max_size` ceiling, replica-bitline delay, and the technology's
-`static_precharge` option. There is no standalone PPA optimizer in this
-repository; measured Liberty constraints are the available optimization
-handoff.
+`static_precharge` option. A capability-gated timing search is available through
+`python -m compiler.architecture`; it does not add an unvalidated sizing API or
+replace measured Liberty characterization.
 
 When two write ports have overlapping write-enable windows to the same
 physical row (which can include distinct logical addresses in a column-muxed
@@ -139,6 +139,67 @@ manifest in each output directory before KLayout starts. A missing or drifted
 strict capability fails closed; generic standalone-cell LVS remains separate.
 This validates the local open-source contract only and does not claim Calibre
 equivalence or foundry signoff.
+
+## Capability-gated architecture timing search
+
+The first admitted implementation is the frozen 32x8, one-bank, mux-1 SC9T
+2RW baseline. Its decoder, replica, delay-chain and write-driver settings are
+fixed by an exact implementation tuple in `architecture_capabilities.json`.
+Individually legal parameter values do not imply a supported combination.
+TG, other cell/port families, new drive strengths and unvalidated generator
+variants are rejected rather than silently falling back to the baseline.
+
+Run from the repository root with the local Python environment:
+
+```sh
+python -m compiler.architecture enumerate \
+    technology/icsprout55/architecture_capabilities.json \
+    technology/icsprout55/configs/ics55_2rw_control_timing_search.json
+python -m compiler.architecture search \
+    technology/icsprout55/architecture_capabilities.json \
+    technology/icsprout55/configs/ics55_2rw_control_timing_search.json \
+    --out-dir ics55_work/runs/architecture_timing_search
+```
+
+Search defaults to replaying hash-bound local observations. Missing licensed
+PDK files or work-directory evidence fail admission; these inputs are not
+downloaded. Add `--execute` to allow serial local ngspice execution for an
+admitted operating point without a matching observation. The path invokes
+neither SSH nor Calibre. It preserves the extracted circuit and records the
+actual deck, initialization plan, tool/model identities and output hashes.
+Replay additionally requires a manifest of the complete recursive model include
+closure captured before the original simulator launch and bound to its exact
+inputs/outputs. Old observations containing only a top-library hash remain
+historical diagnostics; computing current dependency hashes cannot upgrade them.
+
+
+The example varies period at SNFP/125 C, 1.08 V, 5 fF and 30 ps slew.
+SS/-40 C is a separate comparison domain, as are different load, slew, skew,
+initialization policy, access contract and fidelity. Explicit margin thresholds
+in the request are research screening criteria, not characterized limits.
+Functional failure, absent measurements and inadequate control margins cannot
+enter a feasible frontier. The report separates timing screening from physical
+feasibility; estimated PEX is never accepted physical/signoff evidence.
+The generic engine can stage a request across multiple admitted fidelities,
+filtering failures and dominated points before higher-cost evaluation; missing
+intermediate evidence prevents promotion, including cached higher-stage reuse.
+An explicit single-F3 study does not assert prior F0/F1/F2 passes. This technology
+currently registers F3 only; its generic engine is not an F4 physical adapter.
+
+
+The supplied trace exercises both ports together and has no isolated
+per-port supply-current windows. Read/write energy and a full PPA frontier
+therefore remain unavailable. This is a control-timing experiment loop, not
+completed transistor sizing, memory-family support or signoff optimization.
+See [the execution plan](../../MEMORY_ARCHITECTURE_OPTIMIZER_PLAN.md) for the
+remaining capability and characterization gates.
+
+The first model-closure-complete local example is SNFP/125 C at7.5ns:
+48/48 bit checks and the four research control-window constraints pass.
+It is a measured screening point, not a minimum-period or sizing result.
+The separate5ns pass lacks launch-time model closure and remains diagnostic.
+Metrics, final report paths and physical limitations are in [SIM_RESULTS.md](SIM_RESULTS.md).
+
 
 
 ## Physical verification
