@@ -18,12 +18,13 @@ import time
 
 from check import crossings, value_at
 from mkscs import read_trace, subckt_pins
+from pex_debug import readwrite_target, select_probes
 
 REPO = Path(__file__).resolve().parents[3]
 
 
 def build_deck(netlist, trace, name, model, destination, period, voltage,
-               temperature, corner, skew1, cload, rise):
+               temperature, corner, skew1, cload, rise, probe_profile=None):
     pins = subckt_pins(netlist, name)
     cycles, expected = read_trace(trace)
     if not cycles or sorted(cycles) != list(range(len(cycles))):
@@ -87,6 +88,24 @@ def build_deck(netlist, trace, name, model, destination, period, voltage,
             lines.append("Cload{} {} 0 {}f".format(index, external[pin], cload))
     lines.append("XSRAM {} {}".format(" ".join(external[pin] for pin in pins), name))
     vectors = ["v({})".format(external[pin]) for pin in outputs]
+    if probe_profile is not None:
+        signals = [dict(name=pin, node=pin,
+                        stage="output" if pin in outputs else
+                        "supply" if pin in ("vdd", "gnd") else "input")
+                   for pin in pins] + probe_profile["signals"]
+        external_nodes = {pin.casefold(): node for pin, node in external.items()}
+        for signal in signals:
+            node = external_nodes.get(signal["node"].casefold())
+            if node == "0" or signal["node"] == "0":
+                signal.update(column=None, constant_v=0.0)
+                continue
+            vector = "v({})".format(node if node is not None else "xsram." + signal["node"])
+            if vector not in vectors:
+                vectors.append(vector)
+            signal.update(vector=vector, column=vectors.index(vector))
+        probe_profile.update(signals=signals, vectors=vectors)
+        (destination / "probes.json").write_text(
+            json.dumps(probe_profile, indent=2) + "\n", encoding="utf-8")
     wavefile = destination / "waves.dat"
     lines.extend((".control", "set wr_singlescale", "set wr_vecnames",
                   "set numdgt=15", "save " + " ".join(vectors),
@@ -95,28 +114,32 @@ def build_deck(netlist, trace, name, model, destination, period, voltage,
                   "quit", ".endc", ".end"))
     deck = destination / "transient.sp"
     deck.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return deck, wavefile, outputs, expected
+    return deck, wavefile, outputs, expected, probe_profile
 
 
-def check_waveforms(wavefile, outputs, expected, period, voltage, skew1):
+def check_waveforms(wavefile, outputs, expected, period, voltage, skew1, probe_profile=None):
     times = []
-    waves = {pin: [] for pin in outputs}
+    count = len(probe_profile["vectors"]) if probe_profile is not None else len(outputs)
+    columns = [[] for _ in range(count)]
+    waves = {pin: columns[index] for index, pin in enumerate(outputs)}
     with wavefile.open(encoding="utf-8") as stream:
         header = stream.readline().split()
-        if len(header) != len(outputs) + 1 or header[0].lower() != "time":
-            raise ValueError("ngspice waveform has missing output columns")
+        if len(header) != count + 1 or header[0].lower() != "time":
+            raise ValueError("ngspice waveform has missing output/probe columns")
         for line in stream:
             row = [float(value) for value in line.split()]
-            if len(row) != len(outputs) + 1 or not all(math.isfinite(value) for value in row):
+            if len(row) != count + 1 or not all(math.isfinite(value) for value in row):
                 raise ValueError("ngspice waveform has incomplete/non-finite samples")
             if times and row[0] < times[-1]:
                 raise ValueError("ngspice waveform time is not monotonic")
             times.append(row[0])
-            for index, pin in enumerate(outputs):
-                waves[pin].append(row[index + 1])
+            for index, values in enumerate(columns):
+                values.append(row[index + 1])
     if len(times) < 2:
         raise ValueError("ngspice waveform has no transient interval")
-    failures, reads, bit_reads, worst_access = [], 0, 0, 0.0
+    failures, measurements = [], []
+    reads = bit_reads = 0
+    observed_access = None
     minimum_margin = None
     for cycle, buses in sorted(expected.items()):
         for bus, bits in buses.items():
@@ -144,11 +167,58 @@ def check_waveforms(wavefile, outputs, expected, period, voltage, skew1):
                                          voltage_v=value, sample_ns=sample * 1e9))
                 transitions = [t for t in crossings(times, waves[pin], voltage / 2)
                                if edge < t < sample]
-                if transitions:
-                    worst_access = max(worst_access, transitions[-1] - edge)
-    return dict(passed=bool(reads) and not failures, reads=reads, bit_reads=bit_reads,
-                failures=failures, min_level_margin=minimum_margin,
-                tacc_ns=worst_access * 1e9, waveform_stop_ns=times[-1] * 1e9)
+                delay = transitions[-1] - edge if transitions else None
+                if delay is not None:
+                    observed_access = delay if observed_access is None else max(observed_access, delay)
+                initial = value_at(times, waves[pin], edge) / voltage
+                initial_margin = initial if expected_bit == "1" else 1 - initial
+                if margin < 0.8:
+                    status = "invalid_read" if transitions else "no_output_transition"
+                elif transitions:
+                    status = "measured"
+                elif initial_margin >= 0.8:
+                    status = "already_at_expected_level"
+                else:
+                    status = "no_output_transition"
+                measurements.append(dict(
+                    cycle=cycle, port=port, pin=pin, expected=int(expected_bit),
+                    passed=margin >= 0.8, status=status, voltage_v=value,
+                    sample_ns=sample * 1e9,
+                    tacc_ns=delay * 1e9 if status == "measured" else None))
+    passed = bool(reads) and not failures
+    measured = [item["tacc_ns"] for item in measurements if item["status"] == "measured"]
+    if not passed:
+        access_status = "functional_failure"
+    elif any(item["status"] == "no_output_transition" for item in measurements):
+        access_status = "no_output_transition"
+    else:
+        access_status = "measured" if measured else "already_at_expected_level"
+    checked = dict(passed=passed, reads=reads, bit_reads=bit_reads,
+                   failures=failures, read_measurements=measurements,
+                   min_level_margin=minimum_margin, access_time_status=access_status,
+                   tacc_ns=max(measured) if access_status == "measured" else None,
+                   observed_transition_delay_ns=None if observed_access is None else observed_access * 1e9,
+                   waveform_stop_ns=times[-1] * 1e9)
+    if probe_profile is not None:
+        samples = []
+        for target in probe_profile["targets"]:
+            points = (
+                ("write_end", (target["write_cycle"] + 2 +
+                               (skew1 if target["write_port"] else 0)) * period - 0.01),
+                ("read_edge", (target["read_cycle"] + 1 +
+                               (skew1 if target["read_port"] else 0)) * period),
+                ("read_sample", (target["read_cycle"] + 2 +
+                                 (skew1 if target["read_port"] else 0)) * period - 0.01))
+            for label, time_ns in points:
+                stages = {}
+                for signal in probe_profile["signals"]:
+                    value = signal.get("constant_v") if signal["column"] is None else value_at(
+                        times, columns[signal["column"]], time_ns * 1e-9)
+                    stages.setdefault(signal["stage"], {})[signal["name"]] = value
+                samples.append(dict(target=target, phase=label, time_ns=time_ns, stages=stages))
+        checked.update(probe_profile=probe_profile["profile"],
+                       probe_targets=probe_profile["targets"], probe_samples=samples)
+    return checked
 
 
 def main(argv=None):
@@ -167,6 +237,13 @@ def main(argv=None):
     parser.add_argument("--tr", type=float, default=0.03, help="input edge time in ns")
     parser.add_argument("--ngspice", default="ngspice")
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--probe-profile", choices=("debug-readwrite",))
+    parser.add_argument("--probe-map", type=Path,
+                        help="hashed semantic-to-physical correspondence from topology comparison")
+    parser.add_argument("--failure-report", type=Path,
+                        help="select the first failure from a same-GDS, same-trace run")
+    parser.add_argument("--words-per-row", type=int, default=1,
+                        help="physical column multiplexing for debug probes")
     args = parser.parse_args(argv)
     destination = args.out_dir.expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -174,13 +251,21 @@ def main(argv=None):
     try:
         summary_path = args.pex_summary or netlist.parent / "pex_summary.json"
         extraction = json.loads(summary_path.read_text(encoding="utf-8"))
-        selected = [corner for corner in extraction["corners"]
-                    if Path(corner["netlist"]).resolve() == netlist]
-        if len(selected) != 1 or not extraction["completed"]:
-            raise ValueError("PEX summary does not identify the completed input netlist")
+        if extraction.get("kind") in {"ics55_gds_topology_diagnostic", "ics55_gds_mos_only"}:
+            selected = [dict(netlist=extraction["mos_only_netlist"],
+                             netlist_sha256=extraction["mos_only_netlist_sha256"],
+                             status="mos_only")]
+            accepted = False
+        else:
+            selected = [corner for corner in extraction["corners"]
+                        if Path(corner["netlist"]).resolve() == netlist]
+            accepted = extraction["accepted"]
+        if (len(selected) != 1 or not extraction["completed"] or
+                Path(selected[0]["netlist"]).resolve() != netlist):
+            raise ValueError("extraction summary does not identify the completed input netlist")
         digest = hashlib.sha256(netlist.read_bytes()).hexdigest()
         if digest != selected[0]["netlist_sha256"]:
-            raise ValueError("PEX netlist changed after extraction; hash does not match summary")
+            raise ValueError("netlist changed after extraction; hash does not match summary")
         pdk = (args.pdk_root or Path(os.environ.get("ICS55_PDK_ROOT", REPO.parent / "icsprout55-pdk"))).expanduser().resolve()
         model = pdk / "libs.tech/spice/foundry/ngspice/ICsprout_55LLULP1225_V1p1_hsp.lib"
         if not model.is_file():
@@ -188,9 +273,52 @@ def main(argv=None):
         executable = shutil.which(args.ngspice)
         if executable is None:
             raise ValueError("ngspice executable is missing: " + args.ngspice)
-        deck, wavefile, outputs, expected = build_deck(
+        probe_profile = None
+        if args.probe_profile:
+            if args.probe_map is None:
+                raise ValueError("--probe-profile requires an established --probe-map")
+            mapping = json.loads(args.probe_map.read_text(encoding="utf-8"))
+            if mapping["input_gds_sha256"] != extraction["input_gds_sha256"]:
+                raise ValueError("probe map belongs to a different GDS")
+            if mapping["netlist_sha256"] != digest:
+                raise ValueError("probe map belongs to a different emitted netlist")
+            failures = None
+            if args.failure_report:
+                recorded = json.loads(args.failure_report.read_text(encoding="utf-8"))
+                if (recorded["input_gds_sha256"] != extraction["input_gds_sha256"] or
+                        recorded["trace_sha256"] != hashlib.sha256(trace.read_bytes()).hexdigest()):
+                    raise ValueError("failure report belongs to a different GDS or trace")
+                failures = recorded["failures"]
+            _, expected_reads = read_trace(trace)
+            read_ports = sorted({int(bus[4:]) for buses in expected_reads.values() for bus in buses})
+            if failures is not None:
+                read_ports = [port for port in read_ports if any(
+                    item["pin"].startswith("dout{}[".format(port)) for item in failures)]
+            if not read_ports:
+                raise ValueError("debug profile has no target read ports")
+            profiles = [select_probes(
+                mapping, readwrite_target(trace, failures, read_port=port), args.words_per_row)
+                for port in read_ports]
+            signals = {}
+            for profile in profiles:
+                for signal in profile["signals"]:
+                    previous = signals.get(signal["name"])
+                    if previous is not None and previous["node"] != signal["node"]:
+                        raise ValueError("debug targets disagree on a physical signal mapping")
+                    signals[signal["name"]] = signal
+            probe_profile = dict(profile="debug-readwrite",
+                                 targets=[profile["target"] for profile in profiles],
+                                 signals=list(signals.values()))
+            probe_profile.update(input_gds_sha256=extraction["input_gds_sha256"],
+                                 netlist_sha256=digest, probe_map=str(args.probe_map.resolve()),
+                                 probe_map_sha256=hashlib.sha256(args.probe_map.read_bytes()).hexdigest(),
+                                 topology_equivalent=mapping["equivalent"])
+        elif args.probe_map or args.failure_report:
+            raise ValueError("--probe-map/--failure-report require --probe-profile")
+        deck, wavefile, outputs, expected, probe_profile = build_deck(
             netlist, trace, extraction["design"], model, destination,
-            args.period, args.vdd, args.temp, args.corner, args.skew1, args.cload, args.tr)
+            args.period, args.vdd, args.temp, args.corner, args.skew1, args.cload, args.tr,
+            probe_profile)
         if wavefile.exists():
             wavefile.unlink()
         command = [executable, "-n", "-D", "ngbehavior=hsa", "-b", str(deck)]
@@ -201,11 +329,14 @@ def main(argv=None):
         (destination / "ngspice.log").write_text(result.stdout, encoding="utf-8", errors="replace")
         if result.returncode != 0 or not wavefile.is_file():
             raise ValueError("ngspice produced no complete waveform; see ngspice.log")
-        checked = check_waveforms(wavefile, outputs, expected, args.period, args.vdd, args.skew1)
+        checked = check_waveforms(wavefile, outputs, expected, args.period, args.vdd,
+                                 args.skew1, probe_profile)
         checked.update(netlist=str(netlist), netlist_sha256=digest,
                        input_gds_sha256=extraction["input_gds_sha256"],
                        trace_sha256=hashlib.sha256(trace.read_bytes()).hexdigest(),
-                       pex_status=selected[0]["status"], pex_accepted=extraction["accepted"],
+                       pex_status=selected[0]["status"], pex_accepted=accepted,
+                       extraction_summary=str(summary_path.resolve()),
+                       extraction_summary_sha256=hashlib.sha256(summary_path.read_bytes()).hexdigest(),
                        signoff=False, model=str(model), corner=args.corner, voltage_v=args.vdd,
                        temperature_c=args.temp, period_ns=args.period, cload_ff=args.cload,
                        seconds=round(time.monotonic() - start, 3))

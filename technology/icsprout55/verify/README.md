@@ -25,6 +25,20 @@ venv/bin/python technology/icsprout55/verify/where.py $ICS55_WORK/runs/macro_X m
 `leaf.py` runs LVS with `VIRTUAL CONNECT NAME vdd gnd` (block supply rails
 are joined by the parent's power grid); `macro.py` never does.
 
+`leaf.py` uses the generic PDK LVS profile for standalone generated cells.
+`macro.py` uses `openram-macro`, which passes `no_well_ties=true` and
+`strict_topology=true`: retain declared unused ports, combine only physically
+parallel devices, compare model/W/L at 1e-9 um absolute and zero relative
+tolerance, and bind every same-named top pin's nets as mandatory comparison
+correspondences. This never joins nets. The extracted netlist is saved before
+comparison so a search timeout preserves the graph for diagnosis.
+The open-source runner applies `strict_topology=true` only when its explicit
+`lvs_profile` is `openram-macro`; its default `generic` profile passes no
+profile flags and therefore preserves the PDK deck defaults.
+Direct `opensource.py verify` defaults to the generic profile; request
+`--lvs-profile openram-macro` explicitly for an OpenRAM macro.
+Generic standard-cell LVS keeps the deck's default global-tie and 10%-W modes.
+
 ## Open-source KLayout DRC/LVS and OpenRCX
 
 The optional runner uses `../icsprout55-pdk` and KLayout from the
@@ -36,8 +50,9 @@ NIXPKGS_URL=https://github.com/NixOS/nixpkgs/archive/b3aad468604d3e488d627c0b439
 # Compile a macro and run full-hierarchy KLayout DRC + LVS
 nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/macro.py technology/icsprout55/configs/ics55_1rw_64x8.py --decks klayout --klayout-mode full'
 
-# Or check an existing GDS/CDL pair
-nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/opensource.py verify macro.gds TOP --netlist macro.lvs.sp --out-dir runs/opensource --pdk-root ../icsprout55-pdk --librelane-root ../librelane --mode full'
+# OpenRAM macro strict boundary mode; generic standalone-cell checks retain the
+# PDK's global-well-tie and 10%-W comparison defaults.
+nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/opensource.py verify macro.gds TOP --netlist macro.lvs.sp --out-dir runs/opensource --pdk-root ../icsprout55-pdk --librelane-root ../librelane --mode full --lvs-profile openram-macro'
 
 # Explicitly limited top-cell interconnect screen; this does not inspect child geometry
 nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/opensource.py verify macro.gds TOP --no-lvs --mode top-interconnect'
@@ -49,10 +64,7 @@ and MOM checks; it is not a full-macro DRC result. Both open decks are
 provisional screening decks derived from released GDS/LEF, not foundry
 signoff decks. Keep the Calibre flow for signoff.
 
-OpenRAM macro LVS invokes the PDK deck with `no_well_ties=true`: MOS bulk
-terminals follow CT-qualified physical taps instead of global VSS/VDD aliases.
-Generic standard-cell LVS keeps the deck's default global-tie mode. The PDK
-deck uses PORT DEPTH 0 for direct top-cell conductor labels, so internal
+The PDK deck uses PORT DEPTH 0 for direct top-cell conductor labels, so internal
 power labels do not become external ports; only a case-equivalent parsed root
 circuit name is normalized.
 
@@ -238,6 +250,41 @@ not calibrated coupling data: output is `status=estimated`,
 while the command returns nonzero; this is not foundry signoff or a Calibre
 substitute.
 
+### MOS topology diagnostics before RC interpretation
+
+Check the same frozen GDS against its original LVS netlist and the emitted RCC:
+
+```sh
+python technology/icsprout55/verify/opensource.py gds-topology macro.gds \
+  macro.lvs.sp --top macro_top --rcc-netlist macro_top_typ.pex.sp \
+  --out-dir runs/gds_topology
+python technology/icsprout55/verify/opensource.py gds-rc-topology \
+  runs/gds_topology/geometry.json macro_top_typ.pex.sp \
+  --out-dir runs/ideal_wire_check
+```
+
+Invariant A collapses every emitted resistor edge and omits capacitors, then
+checks MOS model/W/L, D/G/S/B connections and top ports against direct GDS
+extraction. Invariant B compares that GDS MOS graph to the original flattened
+reference with strict W/L (1e-9 um absolute tolerance), fixed top-pin identity
+and the built-in MOS4 D/S symmetry. Only already-physical parallel devices
+may be reduced; reference widths never justify joining diffusion or supply nets.
+
+`topology.json` records the individual verdicts and overall `equivalent`.
+Topology commands return nonzero on a required mismatch; `completed` means
+artifact emission, not equivalence. A schema-v1 `reference_map.json` binds
+semantic nets/devices to actual nodes of the exact emitted netlist hash.
+Its `equivalent=true` requires A and B for an RCC target, or B for MOS-only.
+Selected records must also have `usable_exact_identity=true`; ambiguous
+candidates are diagnostic only, never usable probes. Merged MOS terminal
+lists retain every distinct physical point rather than an arbitrary member.
+Legacy maps without this overall contract must be regenerated.
+
+The independently emitted MOS-only netlist has no R/C cards and uses
+`mos_summary.json` with the local ngspice adapter. Emission is not proof of
+equivalence; all these artifacts remain non-signoff and unaccepted for PEX
+calibration purposes.
+
 ### Fresh final-configuration evidence
 
 These reports are from two isolated builds of the current source configurations.
@@ -247,7 +294,7 @@ output names/paths so verification can be run separately on each resulting GDS.
 
 | Candidate | Source config SHA-256 | GDS SHA-256 | Pinned KLayout 0.30.7 full-hierarchy result |
 |---|---|---|---|
-| 2RW `fresh_final_2rw_baseline` | `208e7b9d21846c998044e6b64b1b7e6bbb53242092676e4cc8c8f7628bbf0875` | `f3b92dbb37273630e61fbfbc2670dbfc9e5e7d7fe326f6958170fd836484622e` | DRC 0 raw / 0 waived / 0 unwaived; LVS mismatch |
+| 2RW `fresh_final_2rw_baseline` | `208e7b9d21846c998044e6b64b1b7e6bbb53242092676e4cc8c8f7628bbf0875` | `f3b92dbb37273630e61fbfbc2670dbfc9e5e7d7fe326f6958170fd836484622e` | DRC 0 raw / 0 waived / 0 unwaived; initial LVS mismatch, repaired-deck LVS match on the same GDS |
 | 1RW/TG `fresh_latest_1rw_tgate_baseline` | `1cf47811c4f17ef1512ae635fba667bd190b2db4d1bda7ecde0fd8164860772d` | `3288e7d2bd0aa6ce8fc5060b539101a2bb828a8f0d567d1ca937159465887829` | DRC 133 raw / 0 waived / 133 unwaived; LVS mismatch |
 
 Source configurations: `technology/icsprout55/configs/ics55_2rw_32x8.py`
@@ -266,10 +313,15 @@ OpenRAM's emitted config snapshots are
 
 The exact GDS files and reports are under
 `ics55_work/runs/out_fresh_final_2rw_baseline/` and
-`ics55_work/runs/out_fresh_latest_1rw_tgate_baseline/`; each DRC/LVS report is
-under `signoff/pinned_klayout_0.30.7/`. The 1RW/TG markers are M1 spacing 33,
-M2 spacing 66, M3 spacing 33, and V2 upper cover 1. Both LVS logs report a
-netlist mismatch without a localized cause. No historical report is substituted.
+`ics55_work/runs/out_fresh_latest_1rw_tgate_baseline/`; initial DRC/LVS reports
+are under `signoff/pinned_klayout_0.30.7/`. The 1RW/TG markers are M1 spacing 33,
+M2 spacing 66, M3 spacing 33, and V2 upper cover 1. Both initial LVS runs failed;
+the frozen reports remain intact.
+The repaired 2RW LVS report is under `signoff/parallel_only_klayout_0.30.7/`.
+Removing CDL-guided S/D net joining eliminated the synthetic `gnd|vdd` alias;
+all 5884 matched reduced MOS have exactly equal W/L. The independent direct
+GDS topology CLI also passes A and B at `ics55_work/runs/topology_repair_strict_b/`
+(6042 raw MOS; 5884 physically reduced matched devices; 50 top ports).
 
 Calibre was skipped as optional for this pass; this local environment has no
 Calibre executable, local decks, or configured license. No Calibre DRC/LVS

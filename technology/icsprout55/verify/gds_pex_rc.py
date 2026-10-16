@@ -1079,4 +1079,64 @@ def write_spice(geometry: Mapping[str, Any], parasitics: Mapping[str, Any], path
         raise ValueError("cannot write SPICE output %s: %s" % (output, exc)) from exc
 
 
-__all__ = ["build_process", "extract_parasitics", "write_spice"]
+
+def write_mos_only_spice(geometry: Mapping[str, Any], path: str | Path) -> None:
+    """Write source-free GDS MOS devices on ideal logical nets, with no RC."""
+    design, net_records, ports = _validate_geometry(geometry)
+    gds_sha256 = str(geometry.get("input_gds_sha256", "")).strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", gds_sha256):
+        raise ValueError("geometry.input_gds_sha256 must be a SHA-256 digest")
+    devices = geometry.get("devices", [])
+    if not isinstance(devices, Sequence) or isinstance(devices, (str, bytes)):
+        raise ValueError("geometry.devices must be a list")
+    device_names = [str(device.get("name", "")) for device in devices if isinstance(device, Mapping)]
+    _check_case_unique(device_names, "device names")
+    lines = [
+        "* ICsprout55 source-free GDS MOS-only topology",
+        "* provenance=GDS; net_mode=ideal_logical; status=research_non_signoff; signoff=false",
+        "* input_gds_sha256=%s" % gds_sha256.lower(),
+        "* No extracted or estimated interconnect resistance/capacitance is present.",
+        ".subckt %s %s" % (design, " ".join(ports)),
+    ]
+    elements = []
+    for index, device in enumerate(devices):
+        if not isinstance(device, Mapping):
+            raise ValueError("geometry.devices[%d] is not an object" % index)
+        name = str(device.get("name", "")).strip()
+        model = str(device.get("model", "")).strip()
+        terms = device.get("terminals")
+        if not name or not model or not isinstance(terms, Mapping):
+            raise ValueError("device %s lacks a name, model, or terminal mapping" % name)
+        nodes = []
+        for terminal in ("D", "G", "S", "B"):
+            node = str(terms.get(terminal, "")).strip()
+            if not node or node not in net_records:
+                raise ValueError("device %s terminal %s references unknown logical net %s" %
+                                 (name, terminal, node))
+            nodes.append(node)
+        params = [
+            "w=%su" % _number(device.get("w_um"), name + ".w_um", True),
+            "l=%su" % _number(device.get("l_um"), name + ".l_um", True),
+            "nf=1", "mismod=0",
+        ]
+        for field, parameter, suffix in (
+            ("as_um2", "as", "p"), ("ad_um2", "ad", "p"),
+            ("ps_um", "ps", "u"), ("pd_um", "pd", "u"),
+        ):
+            if field in device and device[field] is not None:
+                value = _number(device[field], name + "." + field)
+                if value < 0.0:
+                    raise ValueError("%s must not be negative" % (name + "." + field))
+                params.append("%s=%s%s" % (parameter, value, suffix))
+        elements.append("X%s %s %s %s" % (name, " ".join(nodes), model, " ".join(params)))
+    _check_case_unique(["X" + name for name in device_names], "SPICE element names")
+    lines.extend(elements)
+    lines.extend([".ends %s" % design, ""])
+    output = Path(path)
+    try:
+        output.write_text("\n".join(lines))
+    except OSError as exc:
+        raise ValueError("cannot write MOS-only SPICE output %s: %s" % (output, exc)) from exc
+
+
+__all__ = ["build_process", "extract_parasitics", "write_mos_only_spice", "write_spice"]

@@ -182,7 +182,10 @@ def _run_drc(gds, top, pdk_root, librelane_root, out_dir, mode, waiver_file, pro
     return summarize_drc_report(report, waiver_file, out_dir / "drc_summary.json", out=lambda _: None), report
 
 
-def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir):
+def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
+             lvs_profile="generic"):
+    if lvs_profile not in ("generic", "openram-macro"):
+        raise ValueError("lvs_profile must be 'generic' or 'openram-macro'")
     deck = pdk_root / "libs.tech" / "lvs" / "ics55.lvs"
     if not deck.is_file():
         raise OpenSourceError("KLayout LVS deck not found: {}".format(deck))
@@ -198,8 +201,10 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir):
     extracted = out_dir / "extracted.spice"
     args = ["-b", "-r", str(deck), "-rd", "input={}".format(gds),
             "-rd", "top={}".format(top), "-rd", "schematic={}".format(netlist),
-            "-rd", "report={}".format(report), "-rd", "target_netlist={}".format(extracted),
-            "-rd", "no_well_ties=true", "-z"]
+            "-rd", "report={}".format(report), "-rd", "target_netlist={}".format(extracted)]
+    if lvs_profile == "openram-macro":
+        args.extend(["-rd", "no_well_ties=true", "-rd", "strict_topology=true"])
+    args.append("-z")
     rc, output = _run_klayout(args, librelane_root, out_dir / "lvs.log")
     if rc != 0:
         raise OpenSourceError("KLayout LVS exited {} (see {})".format(rc, out_dir / "lvs.log"))
@@ -211,11 +216,14 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir):
 
 def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
                out_dir="opensource", mode="full", run_drc=True, run_lvs=True, out=print,
-               drc_waivers=DEFAULT_DRC_WAIVERS, drc_profile="macro"):
+               drc_waivers=DEFAULT_DRC_WAIVERS, drc_profile="macro",
+               lvs_profile="generic"):
     if mode not in ("full", "top-interconnect"):
         raise ValueError("mode must be 'full' or 'top-interconnect'")
     if drc_profile not in ("macro", "diagnostic"):
         raise ValueError("drc_profile must be 'macro' or 'diagnostic'")
+    if lvs_profile not in ("generic", "openram-macro"):
+        raise ValueError("lvs_profile must be 'generic' or 'openram-macro'")
     if not run_drc and not run_lvs:
         raise ValueError("at least one of DRC or LVS must be enabled")
     pdk, librelane = _resolve_roots(pdk_root, librelane_root)
@@ -240,7 +248,8 @@ def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
         if netlist is None:
             raise ValueError("LVS requires a schematic netlist")
         try:
-            ok, verdict, report = _run_lvs(gds, top, netlist, pdk, librelane, out_dir / "lvs")
+            ok, verdict, report = _run_lvs(
+                gds, top, netlist, pdk, librelane, out_dir / "lvs", lvs_profile)
             results["lvs"] = ok
             out("KLayout LVS: {}; report {}".format(verdict, report))
         except OpenSourceError as exc:
@@ -251,7 +260,7 @@ def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
 
 def run_many(items, pdk_root=None, librelane_root=None, out_dir=".", mode="full",
              run_drc=True, run_lvs=True, quiet=False, out=print, drc_waivers=DEFAULT_DRC_WAIVERS,
-             drc_profile="macro"):
+             drc_profile="macro", lvs_profile="generic"):
     results = {}
     for item in items:
         tag = item["tag"]
@@ -261,7 +270,7 @@ def run_many(items, pdk_root=None, librelane_root=None, out_dir=".", mode="full"
             pdk_root=pdk_root, librelane_root=librelane_root,
             out_dir=Path(out_dir) / tag / "opensource", mode=mode,
             run_drc=run_drc, run_lvs=run_lvs, out=emit, drc_waivers=drc_waivers,
-            drc_profile=drc_profile).values())
+            drc_profile=drc_profile, lvs_profile=lvs_profile).values())
         if quiet:
             out("{} KLayout {}: {}".format(tag, mode, "PASS" if results[tag] else "FAIL"))
     return results
@@ -372,6 +381,239 @@ def run_gds_pex(gds, top=None, pdk_root=None, out_dir="pex", source="lef",
     return summary
 
 
+def emit_gds_mos_only(geometry, out_dir="gds_mos_only_run", input_gds=None,
+                      geometry_path=None):
+    """Write a GDS MOS-only netlist and its independently consumable manifest."""
+    try:
+        from .gds_pex_rc import write_mos_only_spice
+    except ImportError:
+        from gds_pex_rc import write_mos_only_spice
+
+    destination = Path(out_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    design = str(geometry.get("design", "")).strip()
+    if not design or Path(design).name != design or design in (".", ".."):
+        raise OpenSourceError("design must be a safe diagnostic artifact name")
+    mos_netlist = destination / (design + ".mos.sp")
+    write_mos_only_spice(geometry, mos_netlist)
+    manifest = {
+        "schema_version": 1,
+        "kind": "ics55_gds_mos_only",
+        "design": design,
+        "input_gds_sha256": str(geometry.get("input_gds_sha256", "")).lower(),
+        "completed": True,
+        "accepted": False,
+        "signoff": False,
+        "provenance": "source-free GDS MOS extraction; ideal logical nets; research/non-signoff",
+        "mos_only_netlist": str(mos_netlist),
+        "mos_only_netlist_sha256": hashlib.sha256(mos_netlist.read_bytes()).hexdigest(),
+    }
+    if input_gds is not None:
+        manifest["input_gds"] = str(Path(input_gds).expanduser().resolve())
+    if geometry_path is not None:
+        manifest["geometry_json"] = str(Path(geometry_path).expanduser().resolve())
+    manifest_path = destination / "mos_summary.json"
+    manifest["manifest"] = str(manifest_path)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def run_gds_mos_only(geometry_json, out_dir="gds_mos_only_run"):
+    """Emit MOS-only SPICE from a previously extracted geometry JSON artifact."""
+    try:
+        geometry = json.loads(Path(geometry_json).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenSourceError("cannot read extracted geometry JSON {}: {}".format(
+            geometry_json, exc)) from exc
+    return emit_gds_mos_only(
+        geometry, out_dir, geometry_path=geometry_json,
+        input_gds=geometry.get("input_gds"))
+
+
+def _compact_invariant_a(invariant):
+    if invariant is None:
+        return None
+    return {key: value for key, value in invariant.items()
+            if key not in ("nodes_by_logical_net", "emitted_mos_nodes")}
+
+
+def run_gds_rc_topology(geometry_json, emitted_netlist, out_dir="gds_rc_topology_run"):
+    """Check invariant A directly from frozen geometry JSON and emitted RCC SPICE."""
+    try:
+        from .gds_pex_topology import check_rc_ideal_wire_invariant
+    except ImportError:
+        from gds_pex_topology import check_rc_ideal_wire_invariant
+    try:
+        geometry = json.loads(Path(geometry_json).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenSourceError("cannot read extracted geometry JSON {}: {}".format(
+            geometry_json, exc)) from exc
+    if not isinstance(geometry, dict):
+        raise OpenSourceError("extracted geometry JSON must contain an object")
+    invariant = check_rc_ideal_wire_invariant(geometry, emitted_netlist)
+    destination = Path(out_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    report_path = destination / "invariant_a.json"
+    summary = {
+        "schema_version": 1,
+        "kind": "ics55_gds_rc_topology_invariant",
+        "input_gds_sha256": str(geometry.get("input_gds_sha256", "")),
+        "geometry_json": str(Path(geometry_json).expanduser().resolve()),
+        "emitted_netlist": str(Path(emitted_netlist).expanduser().resolve()),
+        "emitted_netlist_sha256": invariant["emitted_netlist_sha256"],
+        "completed": True,
+        "accepted": False,
+        "signoff": False,
+        "invariant_A": _compact_invariant_a(invariant),
+    }
+    summary["report"] = str(report_path)
+    report_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    return summary
+
+def run_gds_reference_topology(geometry_json, reference_netlist,
+                               out_dir="gds_reference_topology_run"):
+    """Compare frozen direct-GDS MOS geometry to source SPICE without re-extracting GDS."""
+    try:
+        from .gds_pex_topology import compare_source_netlist
+    except ImportError:
+        from gds_pex_topology import compare_source_netlist
+    try:
+        geometry = json.loads(Path(geometry_json).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OpenSourceError("cannot read extracted geometry JSON {}: {}".format(
+            geometry_json, exc)) from exc
+    if not isinstance(geometry, dict):
+        raise OpenSourceError("extracted geometry JSON must contain an object")
+    destination = Path(out_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    geometry_path = Path(geometry_json).expanduser().resolve()
+    mos_manifest = emit_gds_mos_only(
+        geometry, destination, geometry_path=geometry_path)
+    comparison = compare_source_netlist(geometry, reference_netlist)
+    map_path = destination / "reference_map.json"
+    reference_map = {
+        "schema_version": 1,
+        "input_gds_sha256": str(geometry.get("input_gds_sha256", "")),
+        "netlist_sha256": mos_manifest["mos_only_netlist_sha256"],
+        "reference_netlist_sha256": comparison["reference_netlist_sha256"],
+        "target_netlist": mos_manifest["mos_only_netlist"],
+        "equivalent": comparison["reference_equivalent"],
+        "nets": comparison["nets"],
+        "ambiguous_nets": comparison["ambiguous_nets"],
+        "devices": comparison["devices"],
+    }
+    map_path.write_text(json.dumps(reference_map, indent=2) + "\n", encoding="utf-8")
+    summary = {
+        "schema_version": 1,
+        "kind": "ics55_gds_reference_topology",
+        "input_gds_sha256": str(geometry.get("input_gds_sha256", "")),
+        "geometry_json": str(geometry_path),
+        "reference_netlist": str(Path(reference_netlist).expanduser().resolve()),
+        "reference_netlist_sha256": comparison["reference_netlist_sha256"],
+        "completed": True,
+        "accepted": False,
+        "signoff": False,
+        "mos_only_manifest": mos_manifest["manifest"],
+        "reference_map": str(map_path),
+        "reference_equivalent": comparison["reference_equivalent"],
+        "comparison": comparison["comparison"],
+    }
+    report_path = destination / "topology_b.json"
+    summary["report"] = str(report_path)
+    report_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    return summary
+
+
+def run_gds_topology(gds, reference_netlist, top=None, rcc_netlist=None,
+                    out_dir="topology_run", out=print):
+    """Emit a MOS-only GDS netlist and compare its topology against SPICE."""
+    try:
+        from .gds_pex_geometry import extract_geometry
+        from .gds_pex_topology import check_rc_ideal_wire_invariant, compare_source_netlist
+    except ImportError:
+        from gds_pex_geometry import extract_geometry
+        from gds_pex_topology import check_rc_ideal_wire_invariant, compare_source_netlist
+
+    destination = Path(out_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    geometry = extract_geometry(gds, top)
+    design = str(geometry["design"])
+    if Path(design).name != design or design in (".", ".."):
+        raise OpenSourceError("design must be a safe diagnostic artifact name")
+    geometry_path = destination / "geometry.json"
+    geometry_path.write_text(json.dumps(geometry, indent=2) + "\n", encoding="utf-8")
+    mos_manifest = emit_gds_mos_only(
+        geometry, destination, input_gds=gds, geometry_path=geometry_path)
+    mos_netlist = Path(mos_manifest["mos_only_netlist"])
+
+    invariant_a = None
+    rcc_nodes = None
+    rcc_device_nodes = None
+    if rcc_netlist:
+        invariant_a = check_rc_ideal_wire_invariant(geometry, rcc_netlist)
+        rcc_nodes = invariant_a["nodes_by_logical_net"]
+        rcc_device_nodes = invariant_a["emitted_mos_nodes"]
+    invariant_b = compare_source_netlist(
+        geometry, reference_netlist, rcc_nodes_by_logical=rcc_nodes,
+        rcc_mos_nodes_by_device=rcc_device_nodes)
+    source_path = Path(reference_netlist).expanduser().resolve()
+    source_sha256 = invariant_b["reference_netlist_sha256"]
+    target_netlist = Path(rcc_netlist).expanduser().resolve() if rcc_netlist else mos_netlist
+    target_sha256 = hashlib.sha256(target_netlist.read_bytes()).hexdigest()
+    equivalent = invariant_b["reference_equivalent"] and (
+        invariant_a is None or invariant_a["equivalent"])
+    reference_map = {
+        "schema_version": 1,
+        "input_gds_sha256": geometry["input_gds_sha256"],
+        "netlist_sha256": target_sha256,
+        "reference_netlist_sha256": source_sha256,
+        "target_netlist": str(target_netlist),
+        "equivalent": equivalent,
+        "nets": invariant_b["nets"],
+        "ambiguous_nets": invariant_b["ambiguous_nets"],
+        "devices": invariant_b["devices"],
+    }
+    map_path = destination / "reference_map.json"
+    map_path.write_text(json.dumps(reference_map, indent=2) + "\n", encoding="utf-8")
+    summary = {
+        "schema_version": 1,
+        "kind": "ics55_gds_topology_diagnostic",
+        "design": design,
+        "input_gds": str(Path(gds).expanduser().resolve()),
+        "input_gds_sha256": geometry["input_gds_sha256"],
+        "reference_netlist": str(source_path),
+        "reference_netlist_sha256": source_sha256,
+        "target_netlist": str(target_netlist),
+        "netlist_sha256": target_sha256,
+        "completed": True,
+        "equivalent": equivalent,
+        "signoff": False,
+        "accepted": False,
+        "provenance": "source-free GDS MOS extraction; research/non-signoff only",
+        "mos_only_netlist": str(mos_netlist),
+        "mos_only_netlist_sha256": hashlib.sha256(mos_netlist.read_bytes()).hexdigest(),
+        "geometry_json": str(geometry_path),
+        "mos_only_manifest": mos_manifest["manifest"],
+        "reference_map": str(map_path),
+        "invariants": {"A": _compact_invariant_a(invariant_a), "B": invariant_b},
+    }
+    report_path = destination / "topology.json"
+    report_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    out("GDS topology: {} MOS, {} logical nets; MOS-only {}".format(
+        len(geometry["devices"]), len(geometry["nets"]), mos_netlist))
+    if invariant_a is None:
+        out("Invariant A: not run (provide --rcc-netlist to check emitted R topology)")
+    else:
+        out("Invariant A (all R ideal, C ignored): {}".format(
+            "MATCH" if invariant_a["equivalent"] else "MISMATCH"))
+    out("Invariant B (GDS MOS vs flattened reference): {} ({} device pairs, {} net pairs)".format(
+        "MATCH" if invariant_b["reference_equivalent"] else "MISMATCH",
+        invariant_b["comparison"]["matched_devices"],
+        invariant_b["comparison"]["matched_nets"]))
+    out("Topology report: {}; reference map: {}".format(report_path, map_path))
+    return summary
+
+
 def _main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -388,6 +630,8 @@ def _main(argv=None):
     verify.add_argument("--drc-waivers", default=str(DEFAULT_DRC_WAIVERS), help="exact known leaf marker waiver JSON")
     verify.add_argument("--drc-profile", choices=("macro", "diagnostic"), default="macro",
                         help="macro excludes chip-fill density and provisional antenna; diagnostic includes them")
+    verify.add_argument("--lvs-profile", choices=("generic", "openram-macro"), default="generic",
+                        help="openram-macro retains declared pins and uses strict physical-topology comparison")
     report = subparsers.add_parser("drc-report", help="classify an existing DRC report without rerunning KLayout")
     report.add_argument("report")
     report.add_argument("--drc-waivers", default=str(DEFAULT_DRC_WAIVERS))
@@ -408,7 +652,62 @@ def _main(argv=None):
     gds_pex.add_argument("--corner", action="append")
     gds_pex.add_argument("--process-json")
     gds_pex.add_argument("--mode", choices=("c", "rcc"), default="c")
+    topology = subparsers.add_parser(
+        "gds-topology",
+        help="check GDS MOS topology and emit a source-free, non-signoff MOS-only netlist")
+    topology.add_argument("gds")
+    topology.add_argument("reference_netlist")
+    topology.add_argument("--top")
+    topology.add_argument("--rcc-netlist", help="existing emitted RCC SPICE for invariant A")
+    topology.add_argument("--out-dir", default="gds_topology_run")
+    mos_only = subparsers.add_parser(
+        "gds-mos-only",
+        help="emit source-free MOS-only SPICE and manifest from extracted GDS geometry JSON")
+    mos_only.add_argument("geometry_json")
+    mos_only.add_argument("--out-dir", default="gds_mos_only_run")
+    rc_topology = subparsers.add_parser(
+        "gds-rc-topology",
+        help="check emitted RCC against frozen GDS geometry JSON (all R ideal, C ignored)")
+    rc_topology.add_argument("geometry_json")
+    rc_topology.add_argument("emitted_netlist")
+    rc_topology.add_argument("--out-dir", default="gds_rc_topology_run")
+    reference_topology = subparsers.add_parser(
+        "gds-reference-topology",
+        help="compare frozen extracted GDS MOS graph with source SPICE without re-extracting")
+    reference_topology.add_argument("geometry_json")
+    reference_topology.add_argument("reference_netlist")
+    reference_topology.add_argument("--out-dir", default="gds_reference_topology_run")
+
     args = parser.parse_args(argv)
+    if args.command == "gds-rc-topology":
+        try:
+            summary = run_gds_rc_topology(
+                args.geometry_json, args.emitted_netlist, args.out_dir)
+        except (OpenSourceError, OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print("Invariant A (all R ideal, C ignored): {}".format(
+            "MATCH" if summary["invariant_A"]["equivalent"] else "MISMATCH"))
+        print("Invariant A report: {}".format(summary["report"]))
+        return 0 if summary["invariant_A"]["equivalent"] else 1
+    if args.command == "gds-mos-only":
+        try:
+            summary = run_gds_mos_only(args.geometry_json, args.out_dir)
+        except (OpenSourceError, OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print("GDS MOS-only: {}; manifest: {}".format(
+            summary["mos_only_netlist"], summary["manifest"]))
+        return 0 if summary["completed"] else 1
+    if args.command == "gds-reference-topology":
+        try:
+            summary = run_gds_reference_topology(
+                args.geometry_json, args.reference_netlist, args.out_dir)
+        except (OpenSourceError, OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print("Invariant B (raw/direct GDS graph vs reference): {}".format(
+            "MATCH" if summary["reference_equivalent"] else "MISMATCH"))
+        print("B report: {}; reference map: {}".format(
+            summary["report"], summary["reference_map"]))
+        return 0 if summary["reference_equivalent"] else 1
     if args.command == "drc-report":
         try:
             summary = summarize_drc_report(args.report, args.drc_waivers, args.summary)
@@ -424,8 +723,15 @@ def _main(argv=None):
         results = verify_one(args.gds, args.top, args.netlist, args.pdk_root,
                              args.librelane_root, args.out_dir, args.mode,
                              not args.no_drc, run_lvs, drc_waivers=args.drc_waivers,
-                             drc_profile=args.drc_profile)
+                             drc_profile=args.drc_profile, lvs_profile=args.lvs_profile)
         return 0 if all(results.values()) else 1
+    if args.command == "gds-topology":
+        try:
+            summary = run_gds_topology(
+                args.gds, args.reference_netlist, args.top, args.rcc_netlist, args.out_dir)
+        except (OpenSourceError, OSError, ValueError) as exc:
+            parser.error(str(exc))
+        return 0 if summary["equivalent"] else 1
     if args.command == "gds-pex":
         try:
             summary = run_gds_pex(args.gds, args.top, args.pdk_root, args.out_dir,

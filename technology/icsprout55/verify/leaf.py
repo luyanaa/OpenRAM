@@ -112,7 +112,8 @@ def main():
         checks.extend(opensource.run_many(
             items, pdk_root=a.pdk_root, librelane_root=a.librelane_root,
             out_dir=HERE, run_lvs=not a.no_lvs, quiet=a.quiet,
-            drc_waivers=a.drc_waivers, drc_profile=a.drc_profile).values())
+            drc_waivers=a.drc_waivers, drc_profile=a.drc_profile,
+            lvs_profile="generic").values())
     ok = not generation_failed and bool(items) and all(checks)
     print("ALL CHECKS PASS" if ok else "CHECKS FAILED")
     return 0 if ok else 1

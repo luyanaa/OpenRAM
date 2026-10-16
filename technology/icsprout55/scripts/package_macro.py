@@ -193,7 +193,7 @@ def lef(src, dst, top, gate_in, gate_clk, diff_out):
         if name in RENAME.values():
             return mm.group(0)
         if "DIRECTION INPUT" in body:
-            area = gate_clk if name == "clk0" else gate_in
+            area = gate_clk if re.fullmatch(r"clk\d+", name) else gate_in
             add = "      ANTENNAGATEAREA %.4f LAYER MET4 ;\n" % area
         elif "DIRECTION OUTPUT" in body:
             add = "      ANTENNADIFFAREA %.4f LAYER MET4 ;\n" % diff_out

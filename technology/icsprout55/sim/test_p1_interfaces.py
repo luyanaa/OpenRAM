@@ -114,6 +114,39 @@ def measurement_file(library, roles):
 
 
 class PackageAndLibertyContractTests(unittest.TestCase):
+    def test_lef_uses_clock_antenna_area_for_every_clock(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = os.path.join(temp, "input.lef")
+            output = os.path.join(temp, "output.lef")
+            with open(source, "w") as lef:
+                lef.write("""VERSION 5.4 ;
+DATABASE MICRONS 1 ;
+MACRO mem
+  SIZE 10 BY 20 ;
+   PIN clk0
+      DIRECTION INPUT ;
+      PORT
+      END
+   END clk0
+   PIN clk1
+      DIRECTION INPUT ;
+      PORT
+      END
+   END clk1
+   PIN addr0
+      DIRECTION INPUT ;
+      PORT
+      END
+   END addr0
+END mem
+END LIBRARY
+""")
+            package_macro.lef(source, output, "mem", 0.0318, 0.027, 0.2)
+            with open(output) as lef:
+                text = lef.read()
+            self.assertEqual(text.count("ANTENNAGATEAREA 0.0270 LAYER MET4 ;"), 2)
+            self.assertEqual(text.count("ANTENNAGATEAREA 0.0318 LAYER MET4 ;"), 1)
+
     def test_six_library_and_port_role_combinations(self):
         cases = [(library, roles)
                  for library in LIBRARIES

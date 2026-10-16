@@ -58,6 +58,62 @@ ff 1.32 V 125/-40 C; snfp/fnsp (slow N fast P / fast N slow P) at 1.08 V
 125 C and 1.32 V -40 C.  The foundry corner sections set `scale=0.9`;
 netlists are in drawn microns.
 
+## Local GDS-derived ngspice diagnostics
+
+`ngspice_pex.py` runs locally; it does not invoke the SSH/Spectre wrappers
+above. Keep its input netlist with the matching `pex_summary.json`, or
+`mos_summary.json` for genuine MOS-only. For an established topology map,
+enable targeted probes:
+
+```sh
+python3 technology/icsprout55/sim/ngspice_pex.py macro_typ.pex.sp trace.txt \
+    --pex-summary pex_summary.json --out-dir debug_ss \
+    --period 2.5 --corner ss --vdd 1.08 --temp -40 \
+    --probe-profile debug-readwrite --probe-map probe_map.json \
+    --failure-report previous_run/simulation.json --words-per-row 1
+```
+
+The map must use `schema_version=1`, `equivalent=true`, and match the exact GDS
+and emitted netlist hashes. For RCC this overall verdict requires A and B;
+MOS-only requires B. Regenerate legacy maps without the overall contract.
+Its `nets` associate canonical flattened reference names with `logical_net`
+and actual emitted `nodes`; its `devices` associate reference device names
+with physical `terminals`. Every selected record must have
+`usable_exact_identity=true`. Missing or ambiguous correspondences fail closed.
+The failure report must match the GDS and trace; without one, the profile
+selects the first expected-zero read (or first read) per read port. With one
+it selects a reported failing bit per affected port. Each target is linked to
+its most recent preceding write, including cross-port writes.
+
+`probes.json` records per-port targets, node-map hash, physical nodes and waveform
+columns. It includes actual external inputs, registered controls/address,
+buffered/gated clocks, replica-bitline delay and complement, write-enable
+generator MOS terminals, selected WL, write-driver nodes, target Q/QB,
+BL/BR, sense-latch nodes and local device supply terminals. Global ground is
+the ideal zero reference,
+not a measured local-ground waveform. `simulation.json` adds samples at
+write completion, the read edge and the read sampling point; full saved
+waveforms remain in `waves.dat`.
+Merged MOS terminal points are saved separately as `device:terminal[index]`;
+no arbitrary first member replaces the physical group. Representative long-net
+samples are not claimed to be physical endpoints; local device points are kept.
+
+Functional failures always have `tacc_ns=null` and
+`access_time_status="functional_failure"`. A correct output already at its
+expected level is not a measured zero-delay transition. Raw crossings are
+reported separately as `observed_transition_delay_ns`; they are not valid
+performance measurements for a failing run. Neither a functional pass nor
+normal solver termination makes estimated PEX calibrated or signoff-ready.
+
+Capacitive-only floating metal has no unique DC potential. A failed initial
+operating point is not a functional bit-check result. The frozen-input
+C-only/RCC experiments in `../SIM_RESULTS.md` preserve the default failure
+and separately record an explicit initial-voltage assumption for eight
+parasitic-only components. Those ordinary `.ic` values are released for the
+transient; no shunts, UIC, or MOS/storage/port forcing were used. Do not merge
+such an initialized diagnostic into the default result or interpret initial
+voltage as zero capacitor charge.
+
 ## Measured multi-port Liberty
 
 `tbgen.py` reads the `// Port N: RW|R|W` comments on the generated behavioral

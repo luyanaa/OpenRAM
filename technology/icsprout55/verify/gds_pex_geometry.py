@@ -434,6 +434,30 @@ def extract_geometry(gds: os.PathLike[str] | str, top: str | None = None) -> dic
             _fail(f"terminal does not identify one physical {name} component")
         return hits[0]
 
+    # Keep the physical active-component identity alongside each extracted
+    # device.  The LVS deck uses this grouping boundary for its documented
+    # CDL-guided multi-finger normalization; it is not an electrical alias.
+    active_groups = {}
+    for polarity, region in (("n", nact), ("p", pact)):
+        active_groups[polarity] = [
+            (index, polygon.bbox())
+            for index, polygon in enumerate(_physical_union(region).each())
+        ]
+
+    def active_group_for(device, model):
+        point = device.trans.disp
+        database_point = db.Point(round(point.x / layout.dbu), round(point.y / layout.dbu))
+        hits = [index for index, bbox in active_groups[model[0]]
+                if bbox.contains(database_point)]
+        if len(hits) != 1:
+            _fail(f"{device.device_class().name} at {point.x},{point.y} "
+                  "does not identify one physical active component")
+        return f"{model[0]}:{hits[0]}"
+
+    def origin_um(device):
+        return {"x": device.trans.disp.x, "y": device.trans.disp.y}
+
+
     records = []
     devices = sorted(circuit.each_device(), key=lambda d: (d.trans.disp.x, d.trans.disp.y, d.device_class().name, d.id()))
     emitted_components = set()
@@ -470,7 +494,9 @@ def extract_geometry(gds: os.PathLike[str] | str, top: str | None = None) -> dic
                         "w_um": params["W"], "l_um": params["L"],
                         "as_um2": params["AS"], "ad_um2": params["AD"],
                         "ps_um": params["PS"], "pd_um": params["PD"],
-                        "terminals": terminals, "terminal_components": terminal_components})
+                        "terminals": terminals, "terminal_components": terminal_components,
+                        "active_group": active_group_for(device, model),
+                        "origin_um": origin_um(device)})
     net_records = []
     rectangle_count = via_count = 0
     for cluster, net in sorted(nets.items(), key=lambda item: names[item[0]]):

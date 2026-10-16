@@ -30,6 +30,8 @@ ap.add_argument("--librelane-root")
 pex_input = ap.add_mutually_exclusive_group()
 pex_input.add_argument("--pex-json", help="normalized routed-geometry JSON for interconnect-only RCX")
 pex_input.add_argument("--pex-gds", action="store_true", help="extract transistors and parasitics from the compiled GDS")
+pex_input.add_argument("--pex-mos-only", action="store_true",
+                       help="emit source-free GDS MOS devices on ideal logical nets (research/non-signoff)")
 ap.add_argument("--pex-source", choices=("lef", "starrc", "pdk-estimate"), default="lef")
 ap.add_argument("--pex-mode", choices=("c", "rcc"), default="c")
 ap.add_argument("--pex-process-json")
@@ -60,8 +62,8 @@ decks = [deck.strip() for deck in a.decks.split(",") if deck.strip()]
 unknown = sorted(set(decks) - {"tape", "os", "klayout"})
 if unknown:
     ap.error("unknown deck(s): {}".format(", ".join(unknown)))
-if not decks and not (a.pex_json or a.pex_gds):
-    ap.error("select at least one DRC/LVS deck or a PEX input")
+if not decks and not (a.pex_json or a.pex_gds or a.pex_mos_only):
+    ap.error("select at least one DRC/LVS deck or a PEX/topology input")
 
 items = [dict(gds=os.path.join(out, name + ".gds"), top=name,
               cdl=os.path.join(out, name + ".lvs.sp"), tag="macro_" + name)]
@@ -73,7 +75,8 @@ if "klayout" in decks:
     klayout_results = opensource.run_many(
         items, pdk_root=a.pdk_root, librelane_root=a.librelane_root,
         out_dir=os.path.join(out, "signoff"), mode=a.klayout_mode, quiet=a.quiet,
-        drc_waivers=a.drc_waivers, drc_profile=a.drc_profile)
+        drc_waivers=a.drc_waivers, drc_profile=a.drc_profile,
+        lvs_profile="openram-macro")
     checks.extend(klayout_results.values())
 if a.pex_json:
     pex_ok = opensource.run_rcx(
@@ -90,5 +93,13 @@ if a.pex_gds:
     except (opensource.OpenSourceError, OSError, ValueError) as exc:
         ap.error(str(exc))
     checks.append(pex["accepted"])
+if a.pex_mos_only:
+    try:
+        topology = opensource.run_gds_topology(
+            items[0]["gds"], items[0]["cdl"], name,
+            out_dir=os.path.join(out, "topology"))
+    except (opensource.OpenSourceError, OSError, ValueError) as exc:
+        ap.error(str(exc))
+    checks.append(topology["equivalent"])
 print("ALL CHECKS PASS" if all(checks) else "CHECKS FAILED")
 sys.exit(0 if all(checks) else 1)

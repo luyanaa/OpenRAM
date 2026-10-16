@@ -57,7 +57,9 @@ rejects a missing subcircuit or a CDL terminal order other than
 `CK D Q VDD VSS`. The behavioral model's `// Port N: RW|R|W` comments define
 the package stub and Liberty roles; `--ports`, when supplied, only asserts the
 port indices found there. See [sim/README.md](sim/README.md#measured-multi-port-liberty)
-for the `charz.py`/`mklib.py` measurement metadata and CLI contract.
+for the `charz.py`/`mklib.py` measurement metadata and CLI contract. The
+current validation is fixture-based; it does not claim a measured Liberty,
+Calibre, Genus, or Innovus result.
 
 `scripts/import_stdcells.py` regenerates `gds_lib/` and `sp_lib/` from the
 vendor libraries (see its docstring for the source paths).
@@ -87,6 +89,17 @@ transmission-gate implementation is selected with
 `ics55_column_mux_style = "tgate"`; the
 `ics55_1rw_256x8_mux4_tgate.py` experiment uses N-size 8 and P-size 12.
 It adds a local select inverter and a VDD rail; it does not change the default.
+The TG leaf keeps its inverter-NMOS supply drop below the bitline jogs and
+orients the BR input diffusion toward its bitline rail. Its array promotes VDD
+through an unused M2 window to a raised M3 rail, without an extra M1 landing.
+Pinned KLayout 0.30.7 full-hierarchy macro-profile DRC has zero
+raw/waived/unwaived markers for the repaired leaf, bare pair and eight-column
+array; each also independently matches its generated source in LVS with exact
+model/W/L pairs. The final repaired 256x8 TG macro has full-hierarchy DRC
+0/0/0, but its strict native LVS search timed out after 3600.26 s while writing
+the pre-compare extracted netlist; no verdict was produced. This is
+inconclusive, not an LVS pass or mismatch. These are not foundry-signoff
+results; see [the repair evidence](SIM_RESULTS.md#tg-lvs-独立根因write-driver-电源提升点触碰边缘-bitline).
 
 `ics55_write_driver.py` is the selected write-driver implementation. It drives
 `bl = din` and `br = !din` with complementary NMOS/PMOS paths while enabled,

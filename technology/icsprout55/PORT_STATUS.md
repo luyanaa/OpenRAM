@@ -254,13 +254,14 @@ variants still have separate mismatches and are not accepted as clean.
 * Static precharge now also covers idle cycles (`p_en_bar = gated_clk_bar`).
 * `configs/ics55_1rw_16x32.py`: 212.95 x 83.06 um (33 % smaller than 32x32).
   Post-layout pass on all corners at 8-200 ns.
-* `scripts/package_macro.py` builds a flow-ready directory: VDD/VSS pin
+* `scripts/package_macro.py` provides flow-package generation: VDD/VSS pin
   names, LEF 5.8 / DATABASE 1000 / full MET1-4 OBS / antenna data, CDL with
   the selected `stdcell_library` DFF (validated against its explicit CDL and
   `CK D Q VDD VSS` terminal order), role-correct Liberty from
-  `sim/charz.py`/`sim/mklib.py`, Verilog model + role-correct stub.  Checked:
-  Calibre DRC/LVS (both decks) on the packaged GDS/CDL,
-  Genus (libs + synthesis), Innovus (place, power, route, verify).
+  `sim/charz.py`/`sim/mklib.py`, Verilog model + role-correct stub. The
+  interface contract is covered by deterministic fixture tests; no current
+  packaged GDS/CDL has been run through Calibre, Genus, or Innovus in this
+  validation pass.
 
 ## Open items
 * Column-mux transistor-level cross-corner validation and cross-corner
@@ -278,7 +279,8 @@ The package and characterization flow now requires an explicit standard-cell
 library and CDL, validates the selected DFF subcircuit, and derives Verilog
 stubs and Liberty pins/arcs from per-port RW/R/W roles. Supported DFF mappings
 cover the SC9T/SC9TL/SC9TH and H7CR/H7CL/H7CH families. The deterministic
-contract test `technology/icsprout55/sim/test_p1_interfaces.py` passed 4 tests
-for SC9T and H7CR across 1RW, 1W1R, and 2RW interfaces, plus mapping and
-fail-closed cases. These tests use fixture measurement data; no current
-Spectre-characterized package or measured Liberty artifact was produced.
+contract test `technology/icsprout55/sim/test_p1_interfaces.py` passed 5 tests
+for SC9T and H7CR across 1RW, 1W1R, and 2RW interfaces, mapping and
+fail-closed cases, and multi-clock LEF antenna sizing. These tests use fixture
+measurement data; no current Spectre-characterized package or measured Liberty
+artifact was produced.

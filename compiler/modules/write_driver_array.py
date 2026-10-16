@@ -261,9 +261,9 @@ class write_driver_array(design):
                                 width=self.width)
 
     def route_supplies(self):
-        # Keep the rail on the leaf supply layer so it cannot contact vertical
-        # data pins. Publish endpoints for the parent's power-grid via stacks;
-        # a via at the center of a wide rail can land on internal signal metal.
+        # Keep rails on the leaf supply layer. Parent power vias need an
+        # outboard landing: an enclosure centered on the array boundary can
+        # touch the edge bitline even when its center is outside that signal.
         for name in ("vdd", "gnd"):
             layer = self.local_insts[0].get_pins(name)[0].layer
             self.route_horizontal_pins(name, layer=layer)
@@ -273,6 +273,6 @@ class write_driver_array(design):
             for rail in rails:
                 self.add_layout_pin_rect_ends(name=name,
                                              layer=rail.layer,
-                                             start=vector(0, rail.cy()),
-                                             end=vector(self.width, rail.cy()))
+                                             start=vector(-self.m2_pitch, rail.cy()),
+                                             end=vector(self.width + self.m2_pitch, rail.cy()))
 

@@ -55,10 +55,12 @@ class ics55_column_mux_tgate(g.ics55_gen):
         inv_x = self.snap(pass_x - 0.90)
 
         y_gnd = 0.45
-        n0_y = y_gnd + 0.55
+        # Keep the inverter beside GND: a supply drop across the pass-device
+        # rows would short their horizontal M1 input-bitline jogs.
+        inv_n_y = y_gnd + 0.55
+        n0_y = inv_n_y + self.inv_n_width + 0.60
         n1_y = n0_y + self.pass_n_width + 0.60
-        inv_n_y = n1_y + self.pass_n_width + 0.60
-        y_vdd = inv_n_y + self.inv_n_width + 0.60
+        y_vdd = n1_y + self.pass_n_width + 0.60
         inv_p_y = y_vdd + 0.60
         p0_y = inv_p_y + self.inv_p_width + 0.60
         p1_y = p0_y + self.pass_p_width + 0.60
@@ -75,11 +77,12 @@ class ics55_column_mux_tgate(g.ics55_gen):
         # NMOS and PMOS pass devices form parallel switches on each differential leg.
         self.add_strip(pass_x, n0_y, self.pass_n_width, ["bl", "bl_out"],
                        ["sel"], "nmos", "top", "mux")
-        self.add_strip(br_pass_x, n1_y, self.pass_n_width, ["br", "br_out"],
+        # BR faces the right rail; its M1 input jog must not cross the output diffusion.
+        self.add_strip(br_pass_x, n1_y, self.pass_n_width, ["br_out", "br"],
                        ["sel"], "nmos", "top", "mux")
         self.add_strip(pass_x, p0_y, self.pass_p_width, ["bl", "bl_out"],
                        ["sel_b"], "pmos", "bottom", "mux")
-        self.add_strip(br_pass_x, p1_y, self.pass_p_width, ["br", "br_out"],
+        self.add_strip(br_pass_x, p1_y, self.pass_p_width, ["br_out", "br"],
                        ["sel_b"], "pmos", "bottom", "mux")
 
         # Full-CMOS local inverter: its output drives the two PMOS pass gates.
@@ -90,7 +93,20 @@ class ics55_column_mux_tgate(g.ics55_gen):
         if OPTS.netlist_only:
             return
 
+        # Keep the inverter PMOS supply drop away from its adjacent select pad.
+        vdd_pin = next(pin for pin in self.net_pins["mux"]
+                       if pin["net"] == "vdd" and pin["rect"] is not None)
+        self.net_pins["mux"].remove(vdd_pin)
         self.fix_special_pins({"gnd": {"mux": y_gnd}, "vdd": {"mux": y_vdd}})
+        x0, y0, x1, y1 = vdd_pin["rect"]
+        pin_y = 0.5 * (y0 + y1)
+        strap_x = self.snap(x1 + 0.24)
+        strap_width = x1 - x0
+        self.add_rect(layer="m1", offset=vector(x0, y0),
+                      width=strap_x + 0.5 * strap_width - x0, height=y1 - y0)
+        strap_lo, strap_hi = sorted((pin_y, y_vdd))
+        self.add_rect(layer="m1", offset=vector(strap_x - 0.5 * strap_width, strap_lo),
+                      width=strap_width, height=strap_hi - strap_lo)
         m4_xs = [self.snap(pass_x + 0.10 + 0.24 * index) for index in range(4)]
         self.plan_m4("mux", m4_xs)
         y_track_lo = 0.70
@@ -134,8 +150,10 @@ class ics55_column_mux_tgate(g.ics55_gen):
         for net, x in zip(("bl_out", "br_out"), output_x):
             y = low_tracks[net]
             signal_xs = [pin["x"] for pin in self.net_pins["mux"] if pin["net"] == net]
-            track_lo = min([x] + signal_xs)
-            track_hi = max([x] + signal_xs)
+            # Match route_channel's M3 cover past both via2 endpoints.
+            via_overhang = 0.5 * g.CT + 0.045
+            track_lo = min([x] + signal_xs) - via_overhang
+            track_hi = max([x] + signal_xs) + via_overhang
             self.add_rect(layer="m3", offset=vector(track_lo, y - 0.05),
                           width=track_hi - track_lo, height=0.10)
             self.add_rect_center(layer="via2", offset=vector(x, y), width=0.09, height=0.09)

@@ -13,7 +13,8 @@ from simenv import MODEL, VM
 
 
 def subckt_pins(spfile, name):
-    txt = open(spfile).read()
+    with open(spfile, encoding="utf-8") as stream:
+        txt = stream.read()
     m = re.search(r"^\.SUBCKT\s+%s\b(.*?)\n(?!\+)" % re.escape(name), txt, re.M | re.S | re.I)
     body = m.group(1).replace("\n+", " ")
     return body.split()
@@ -25,15 +26,16 @@ def nd(p):
 
 def read_trace(tr):
     cyc, exp = {}, {}
-    for line in open(tr):
-        t = line.split()
-        if not t:
-            continue
-        if t[0] == "C":
-            cyc[int(t[1])] = dict(x.split("=") for x in t[2:])
-        elif t[0] == "E":
-            k, v = t[2].split("=")
-            exp.setdefault(int(t[1]), {})[k] = v
+    with open(tr, encoding="utf-8") as stream:
+        for line in stream:
+            t = line.split()
+            if not t:
+                continue
+            if t[0] == "C":
+                cyc[int(t[1])] = dict(x.split("=") for x in t[2:])
+            elif t[0] == "E":
+                k, v = t[2].split("=")
+                exp.setdefault(int(t[1]), {})[k] = v
     return cyc, exp
 
 
