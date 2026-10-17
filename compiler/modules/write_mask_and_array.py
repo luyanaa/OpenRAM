@@ -10,6 +10,7 @@ from openram import debug
 from openram.base import design
 from openram.base import vector
 from openram.sram_factory import factory
+from openram.modules.write_driver_array import write_driver_strength_kwargs
 from openram import OPTS
 
 
@@ -19,7 +20,10 @@ class write_mask_and_array(design):
     The write mask AND array goes between the write driver array and the sense amp array.
     """
 
-    def __init__(self, name, columns, word_size, write_size, offsets=None, column_offset=0):
+    def __init__(self, name, columns, word_size, write_size, offsets=None, column_offset=0,
+                 write_driver_strength=1.0):
+        self.driver_kwargs = write_driver_strength_kwargs(write_driver_strength)
+        self.write_driver_strength = write_driver_strength
         super().__init__(name)
         debug.info(1, "Creating {0}".format(self.name))
         self.add_comment("columns: {0}".format(columns))
@@ -81,7 +85,7 @@ class write_mask_and_array(design):
 
         # This is just used for measurements, so don't add the module
         self.bitcell = factory.create(module_type=OPTS.bitcell)
-        self.driver = factory.create(module_type="write_driver")
+        self.driver = factory.create(module_type="write_driver", **self.driver_kwargs)
         if self.bitcell.width > self.driver.width:
             self.driver_spacing = self.bitcell.width
         else:

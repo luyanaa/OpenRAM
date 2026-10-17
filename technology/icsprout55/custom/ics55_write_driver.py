@@ -32,7 +32,12 @@ from openram import OPTS
 
 class ics55_write_driver(g.ics55_gen):
 
-    def __init__(self, name="write_driver", **kwargs):
+    def __init__(self, name="write_driver", write_driver_strength=1.0):
+        if (isinstance(write_driver_strength, bool)
+                or not isinstance(write_driver_strength, (int, float))
+                or write_driver_strength not in (0.75, 1.0)):
+            raise ValueError("write_driver_strength must be exactly 0.75 or 1.0")
+        self.write_driver_strength = write_driver_strength
         # 0.58 um gate pitch leaves 0.12 um M1 clearance around supply straps.
         super().__init__(name, source_drain_spacing=0.52)
         self.add_pin_list(["din", "bl", "br", "en", "vdd", "gnd"],
@@ -48,20 +53,21 @@ class ics55_write_driver(g.ics55_gen):
         x4 = self.snap(cx - 0.5 * self.strip_length(4))
         x2 = self.snap(cx - 0.5 * self.strip_length(2))
 
-        wN = 0.60
-        wP = 0.60
+        # Only the eight output MOS scale; four local inverter MOS stay fixed.
+        wN = wP = 0.60
+        wout = {1.0: 0.60, 0.75: 0.45}[self.write_driver_strength]
         y_en = 0.10
         y_gnd = 3.55
-        n_out_y = 1.10
+        n_out_y = 1.10 + (0.60 - wout) / 2
         n_inv_y = 5.25
-        p_out_y = 6.30
+        p_out_y = 6.30 + (0.60 - wout) / 2
         y_vdd = 8.65
         p_inv_y = 11.00
         self.height = self.snap(p_inv_y + wP + 0.75)
 
         self.add_rail("gnd", y_gnd)
         self.add_rail("vdd", y_vdd)
-        self.nwell(p_out_y - 0.25, self.height - 0.20)
+        self.nwell(6.30 - 0.25, self.height - 0.20)
         for x in (xl, xr):
             self.add_tap(x, y_gnd, "p")
             self.add_tap(x, y_vdd, "n")
@@ -74,10 +80,10 @@ class ics55_write_driver(g.ics55_gen):
 
         # Two series devices per output make each side actively pull to either
         # rail only while enabled; the center diffusion contacts the supply.
-        self.add_strip(x4, n_out_y, wN, ["bl", "n1", "gnd", "n2", "br"],
+        self.add_strip(x4, n_out_y, wout, ["bl", "n1", "gnd", "n2", "br"],
                        ["dinb", "en", "en", "din"], "nmos", "top", "A",
                        nocontact=("n1", "n2"))
-        self.add_strip(x4, p_out_y, wP, ["bl", "p1", "vdd", "p2", "br"],
+        self.add_strip(x4, p_out_y, wout, ["bl", "p1", "vdd", "p2", "br"],
                        ["dinb", "enb", "enb", "din"], "pmos", "top", "B",
                        nocontact=("p1", "p2"))
 

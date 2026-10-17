@@ -57,9 +57,9 @@ rejects a missing subcircuit or a CDL terminal order other than
 `CK D Q VDD VSS`. The behavioral model's `// Port N: RW|R|W` comments define
 the package stub and Liberty roles; `--ports`, when supplied, only asserts the
 port indices found there. See [sim/README.md](sim/README.md#measured-multi-port-liberty)
-for the `charz.py`/`mklib.py` measurement metadata and CLI contract. The
-current validation is fixture-based; it does not claim a measured Liberty,
-Calibre, Genus, or Innovus result.
+for native `characterize.py` and `mklib.py` measurement/replay contracts.
+Packaging requires `--diagnostic-table-only`; its `dont_use` tables are not
+complete STA Liberty or a Calibre, Genus, or Innovus result.
 
 `scripts/import_stdcells.py` regenerates `gds_lib/` and `sp_lib/` from the
 vendor libraries (see its docstring for the source paths).
@@ -114,12 +114,15 @@ the driver is disabled while data changes and active only in the low-phase
 write window. External use of the leaf driver must hold `din` stable for the
 entire `en` interval.
 
-Decoder, replica-delay and periphery sizing use the existing OpenRAM
-`control_logic` architecture: word-size-based `pand3` drive, the
-`pdriver_max_size` ceiling, replica-bitline delay, and the technology's
-`static_precharge` option. A capability-gated timing search is available through
-`python -m compiler.architecture`; it does not add an unvalidated sizing API or
-replace measured Liberty characterization.
+Decoder and replica timing reuse OpenRAM's `control_logic`, word-size-based
+`pand3` drive, the `pdriver_max_size` ceiling and `static_precharge` option.
+The bounded sizing path uses existing `delay_chain_stages`/`delay_chain_fanout`
+and explicit `write_driver_strength`:1 keeps the original geometry; .75
+narrows only eight output MOS per ICsprout55 driver from.60 to.45um, preserving
+four local inversion MOS, pins, footprint and full-rail topology. Unsupported
+strengths/technologies reject; factory caching and write-mask measurement
+geometry distinguish the strength. Sizing admission still requires each exact
+tuple's own GDS, RCC netlist and equivalent topology/probe map.
 
 When two write ports have overlapping write-enable windows to the same
 physical row (which can include distinct logical addresses in a column-muxed
@@ -130,24 +133,30 @@ stubs document it. The guard does not arbitrate writes.
 Transistor simulation uses model files from the separately supplied
 `icsprout55-pdk` (override with `ICSPROUT55_PDK_ROOT` or `SPICE_MODEL_DIR`).
 The foundry model files are vendor-licensed and are not redistributed by
-OpenRAM. Default compiled Liberty remains analytical unless measured
-characterization is explicitly generated with `sim/charz.py` and
-`sim/mklib.py`; those tables are valid only at their recorded load/slew axes.
+OpenRAM. Default compiled Liberty remains analytical. Native two-load
+characterization can produce measured diagnostic tables at the exact recorded
+PVT/load/slew/period, but `mklib.py` requires `--diagnostic-table-only` and marks
+them `dont_use`. Macro-boundary setup/hold/pulse/Tmin and measured input/clock
+loading are missing; no complete-STA export is available.
 
 Strict macro LVS records the validated PDK capability and frozen LVS-deck hash
-manifest in each output directory before KLayout starts. A missing or drifted
-strict capability fails closed; generic standalone-cell LVS remains separate.
-This validates the local open-source contract only and does not claim Calibre
-equivalence or foundry signoff.
+manifest before KLayout starts. Nix discovery resolves the installed KLayout
+executable and runs it directly, so runtime evidence binds the actual tool,
+not the Nix launcher. Missing/drifted capability fails closed; inconclusive
+hierarchy correspondence stays unknown, not mismatch or pass. Generic cell
+LVS remains separate. This is not Calibre equivalence or foundry signoff.
 
 ## Capability-gated architecture timing search
 
-The first admitted implementation is the frozen 32x8, one-bank, mux-1 SC9T
-2RW baseline. Its decoder, replica, delay-chain and write-driver settings are
-fixed by an exact implementation tuple in `architecture_capabilities.json`.
-Individually legal parameter values do not imply a supported combination.
-TG, other cell/port families, new drive strengths and unvalidated generator
-variants are rejected rather than silently falling back to the baseline.
+The registry admits exact 32x8, one-bank, mux-1 SC9T 2RW tuples
+`(delay_chain_stages, delay_chain_fanout, write_driver_strength)`:
+`(9,4,1)`, `(9,4,.75)` and `(9,3,1)`. The original tuple retains its frozen
+GDS and observation bindings; both new variants have their own generated
+GDS/config/reference, RCC netlist and equivalent topology/probe map.
+Individually legal values do not imply a supported combination: `(9,3,.75)`
+is rejected. TG, other cell/port families and unvalidated variants never fall
+back to the baseline. Only `(9,4,.75)` has the explicit F4 diagnostic model;
+registration authorizes measurement attempts, not physical/STA acceptance.
 
 Run from the repository root with the local Python environment:
 
@@ -160,6 +169,21 @@ python -m compiler.architecture search \
     technology/icsprout55/configs/ics55_2rw_control_timing_search.json \
     --out-dir ics55_work/runs/architecture_timing_search
 ```
+
+The sizing request screens the three registered tuples at one operating point:
+
+```sh
+python -m compiler.architecture search \
+    technology/icsprout55/architecture_capabilities.json \
+    technology/icsprout55/configs/ics55_2rw_sizing_search.json \
+    --out-dir ics55_work/runs/architecture_sizing_replay
+python technology/icsprout55/scripts/sizing_variants.py \
+    --out-dir ics55_work/runs/new_sizing --generate
+```
+
+Generation is serial and refuses conflicting output directories; it does not
+auto-admit new outputs or claim DRC/LVS/extraction success. See
+[verify/README.md](verify/README.md) for the per-variant evidence contract.
 
 Search defaults to replaying hash-bound local observations. Missing licensed
 PDK files or work-directory evidence fail admission; these inputs are not
@@ -183,14 +207,26 @@ feasibility; estimated PEX is never accepted physical/signoff evidence.
 The generic engine can stage a request across multiple admitted fidelities,
 filtering failures and dominated points before higher-cost evaluation; missing
 intermediate evidence prevents promotion, including cached higher-stage reuse.
-An explicit single-F3 study does not assert prior F0/F1/F2 passes. This technology
-currently registers F3 only; its generic engine is not an F4 physical adapter.
+An explicit single-F3 study does not assert prior F0/F1/F2 passes. Native F4
+diagnostics additionally validate exact-load characterization and physical
+evidence, but always leave macro characterization closure unknown. The current
+new layouts have verified macro-profile DRC; strict flat LVS mismatches and
+estimated/unaccepted RC keep their physical gates failed.
 
 
-The supplied trace exercises both ports together and has no isolated
-per-port supply-current windows. Read/write energy and a full PPA frontier
-therefore remain unavailable. This is a control-timing experiment loop, not
-completed transistor sizing, memory-family support or signoff optimization.
+Actual width075 runs at5/50fF each pass96/96 bit checks and supply isolated
+read/write energies; the falling-clock read tables cover only output falls.
+Missing rise tables stay unknown and are omitted from the diagnostic Liberty,
+not inferred from correct logical0/1 reads. Exact values and evidence are in
+[SIM_RESULTS.md](SIM_RESULTS.md#width75-双负载原生-f4-诊断表征).
+
+The original concurrent-port trace has no isolated supply-current windows and
+remains the comparable F3 timing workload. F4 uses a separate26-cycle held-input
+trace with isolated read/write and clock-active-idle windows. Signed energy is
+whole-macro energy including clocks/load charging, not intrinsic pin power or
+static leakage. Missing macro setup/hold/pulse/Tmin, input/clock loading and
+accepted physical evidence prevent complete STA/full-PPA closure; later memory
+families remain unsupported.
 See [the execution plan](../../MEMORY_ARCHITECTURE_OPTIMIZER_PLAN.md) for the
 remaining capability and characterization gates.
 

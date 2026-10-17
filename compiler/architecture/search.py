@@ -24,7 +24,7 @@ _METRICS = {
     "bl_diff_v": ("V", "read"),
     "write_recovery_ns": ("ns", "write"),
 }
-_CHECKS = ("functional", "topology", "drc", "lvs", "pex_accepted")
+_CHECKS = ("functional", "topology", "drc", "lvs", "pex_accepted", "characterization")
 _MARGIN_ORDER = ("wen_pulse_ns", "sa_setup_ns", "bl_diff_v", "write_recovery_ns")
 
 
@@ -182,6 +182,8 @@ def _assessment(candidate, evaluation, request):
                                   reason="final physical feasibility requires F4"),
                       _constraint("drc", checks["drc"]), _constraint("lvs", checks["lvs"]),
                       _constraint("pex_accepted", checks["pex_accepted"]),
+                      _constraint("characterization", checks["characterization"],
+                                  reason="F4 requires verified macro constraints and input/clock loading"),
                       _constraint("not_estimated", not evaluation["estimated"],
                                   reason="estimated results cannot establish physical feasibility")]
     physical = screening + physical_gates

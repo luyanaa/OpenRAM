@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SIM = Path(__file__).resolve().parent
 REPO = SIM.parents[2]
@@ -143,6 +144,22 @@ class DependencyTest(unittest.TestCase):
             leaf.write_text('.param x=2\n')
             self.assertNotEqual(first, adapter._dependencies(top))
 
+    def test_changed_transitive_raw_evidence_cannot_reuse_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            raw = root / "raw.csv"
+            observation = root / "observation.json"
+            manifest = root / "physical.json"
+            raw.write_text("layer,value,unit\nM1,1.2,ohm\n")
+            observation.write_text(json.dumps({"source": adapter._ref(raw)}))
+            manifest.write_text(json.dumps({"observations": [adapter._ref(observation)]}))
+            admission = {"artifacts": {"physical": manifest}}
+            initial = adapter.fingerprint(admission)
+            self.assertEqual(initial["dependencies"][str(raw)], adapter._digest(raw))
+            raw.write_text("layer,value,unit\nM1,2.4,ohm\n")
+            with self.assertRaisesRegex(ValueError, "transitive evidence changed"):
+                adapter.fingerprint(admission)
+
     def test_initialization_component_cannot_touch_mos_or_port(self):
         with tempfile.TemporaryDirectory() as directory:
             netlist = Path(directory) / 'macro.sp'
@@ -193,6 +210,7 @@ class ObservationModelTest(unittest.TestCase):
             'model_dependencies': adapter._dependencies(self.paths['model']),
             'bindings': adapter._observation_bindings(self.paths, self.bundle),
             'execution': {'model_capture': 'before-launch', 'post_execution_unchanged': True,
+                          'returncode': 0,
                           'tool': {'version': 'synthetic-unit-only', 'sha256': '0' * 64}}}
         self.bundle['models'] = self.root / 'models.json'
         self.save()
@@ -221,6 +239,94 @@ class ObservationModelTest(unittest.TestCase):
         self.save()
         with self.assertRaisesRegex(ValueError, 'execution-time model/tool'):
             adapter._validate_model_manifest(self.bundle, self.paths)
+
+    def test_nonzero_launcher_cannot_be_replayed_as_success(self):
+        self.manifest['execution']['returncode'] = 17
+        self.save()
+        with self.assertRaises(ValueError):
+            adapter._validate_model_manifest(self.bundle, self.paths)
+
+
+class LauncherFailureTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.launcher = self.root / 'launcher'
+        self.launcher.mkdir()
+        self.output = self.root / 'output'
+        self.output.mkdir()
+        self.paths = {name: self.root / (name + '.dat')
+                      for name in ('gds', 'netlist', 'trace', 'probe_map', 'topology', 'extraction')}
+        self.paths['gds'].write_text('synthetic GDS input')
+        self.paths['netlist'].write_text('synthetic SPICE input')
+        self.paths['trace'].write_text('synthetic trace input')
+        gds_hash = adapter._digest(self.paths['gds'])
+        netlist_hash = adapter._digest(self.paths['netlist'])
+        binding = dict(input_gds_sha256=gds_hash, netlist_sha256=netlist_hash,
+                       completed=True, equivalent=True)
+        for name in ('probe_map', 'topology'):
+            self.paths[name].write_text(json.dumps(binding))
+        self.paths['extraction'].write_text(json.dumps(dict(
+            input_gds_sha256=gds_hash, completed=True, accepted=False,
+            corners=[dict(netlist=str(self.paths['netlist']), netlist_sha256=netlist_hash)])))
+        model = self.root / 'pdk/libs.tech/spice/foundry/ngspice/ICsprout_55LLULP1225_V1p1_hsp.lib'
+        model.parent.mkdir(parents=True)
+        model.write_text('.model unit_fixture nmos\n')
+        self.paths['model'] = model
+        self.candidate = dict(
+            parameters={'words_per_row': 1}, access_contract={'ports': ['RW', 'RW']},
+            environment=dict(corner='snfp', voltage_v=1.08, temperature_c=125, period_ns=7.5,
+                             cload_ff=5, slew_ns=.03, skew1=0, initialization='zero-voltage',
+                             fidelity='F3'))
+        self.outputs = {
+            'simulation.json': json.dumps(dict(passed=True, reads=6, bit_checks=48)),
+            'waves.dat': 'time v(dout0)\n0 0\n1e-9 1.08\n',
+            'probes.json': json.dumps(dict(signals=[], targets=[])),
+            'initialization_plan.json': json.dumps(dict(policy='zero-voltage')),
+            'transient.sp': '* synthetic unit fixture, not a simulator result\n.end\n'}
+
+    def write_launcher(self, returncode, outputs):
+        (self.launcher / 'ngspice_pex.py').write_text(
+            'from pathlib import Path\nimport sys\n'
+            'out = Path(sys.argv[sys.argv.index("--out-dir") + 1])\n'
+            'outputs = ' + repr(outputs) + '\n'
+            'for name, text in outputs.items():\n'
+            '    (out / name).write_text(text)\n'
+            'print("unit fixture: outputs written; launcher termination follows", flush=True)\n'
+            'sys.exit(' + str(returncode) + ')\n')
+
+    def test_successful_looking_outputs_do_not_override_nonzero_exit(self):
+        self.write_launcher(17, self.outputs)
+        admission = dict(candidate=self.candidate, artifacts=self.paths,
+                         model={'artifacts': {name: adapter._ref(path)
+                                              for name, path in self.paths.items()}})
+        with patch.object(adapter, 'SIM', self.launcher):
+            result = adapter.evaluate(admission, self.output, execute=True,
+                                      ngspice=sys.executable, timeout=10)
+        self.assertIsNone(result['checks']['functional'])
+        self.assertTrue(all(item['value'] is None for item in result['measurements']))
+        self.assertIn('17', result['details']['error'])
+        run_dir, = self.output.iterdir()
+        self.assertTrue(json.loads((run_dir / 'simulation.json').read_text())['passed'])
+        self.assertIn('outputs written', (run_dir / 'adapter-launch.log').read_text())
+        self.assertFalse((run_dir / 'observation-manifest.json').exists())
+
+    def test_successful_exit_requires_every_nonempty_output(self):
+        for filename in self.outputs:
+            for empty in (False, True):
+                with self.subTest(filename=filename, empty=empty):
+                    outputs = dict(self.outputs)
+                    if empty:
+                        outputs[filename] = ''
+                    else:
+                        del outputs[filename]
+                    self.write_launcher(0, outputs)
+                    with patch.object(adapter, 'SIM', self.launcher), self.assertRaises(ValueError):
+                        adapter._execute(self.paths, self.candidate, self.output, sys.executable, 10)
+        for run_dir in self.output.iterdir():
+            self.assertTrue((run_dir / 'adapter-launch.log').is_file())
+            self.assertFalse((run_dir / 'observation-manifest.json').exists())
 
 
 

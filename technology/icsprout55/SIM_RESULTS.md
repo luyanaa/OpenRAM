@@ -1,5 +1,10 @@
 # ICsprout55 OpenRAM macros — Spectre timing / functional results
 
+> Historical Spectre and packaged-table results below are retained, not upgraded
+> to current full-STA evidence. The native sizing/characterization continuation
+> is documented at the end of this file. Current export is explicitly diagnostic
+> (`dont_use`): macro-boundary constraints and input/clock loading are not closed.
+
 Transistor-level simulation of generated macros (SC9T, `pbitcell`) with the
 foundry Spectre models (`icsprout_55llulp1225_v1p1_spe.lib`) on all nine
 corners.  Harness: `sim/` (README there).  Each run applies a
@@ -817,7 +822,7 @@ PDK deck 的默认宽度公差未改。完整 TG 宏的严格 native verdict 仍
 
 新增本地入口 `python -m compiler.architecture`，由
 `architecture_capabilities.json` 和
-`configs/ics55_2rw_control_timing_search.json` 驱动。当前只登记冻结的
+`configs/ics55_2rw_control_timing_search.json` 驱动。首次执行时只登记冻结的
 32x8、单 bank、mux-1、SC9T、NMOS column-mux 2RW tuple；没有把 TG、
 H7C 或未验证的 decoder/replica/driver sizing 当成已支持搜索变量。
 操作周期搜索不等于晶体管尺寸优化，也没有生成新的 memory-family backend。
@@ -910,3 +915,194 @@ SNFP observation；full-PPA 请求即使7.5 ns control screening 通过，也因
 Eread/Ewrite 为 null 保持空 frontier。对应最终报告为
 `optimizer_execution/sscold_search_final/` 和
 `optimizer_execution/full_ppa_search_final/`。
+
+## Launcher 完整性与真实离散 sizing：续执行
+
+`sim/architecture.py::_execute` 现在先保存 `adapter-launch.log`，再检查
+launcher exit status；非零退出不能因为 `simulation.json` 看似成功而成为
+有效观测。run/waves/probes/init/deck/extraction 必须均为非空文件，
+replay manifest 还要求严格整数 `returncode=0`。负回归实际启动 Python
+子进程：写齐成功样式 JSON/输出后退出17，结果保持 unknown、指标为 null，
+日志和原始 JSON 留存，不生成有效 observation manifest。另覆盖缺失/空输出。
+
+真实生成使用 `scripts/sizing_variants.py --generate`，不是复制 baseline
+响应或只修改 candidate JSON。三次独立编译均 returncode0；每个 GDS 都完成
+source-free RCC 提取和 A+B topology equivalence：
+
+| stages / fanout / write strength | GDS SHA256 前缀 | 抽取 MOS / nets | 实际变化 |
+|---|---|---:|---|
+| 9 / 4 / 1 | `7187eae65a528fae` | 6042 / 2531 | 独立生成的结构比较 baseline |
+| 9 / 4 / .75 | `ddfe66c5396a2ff0` | 6042 / 2531 | 128个输出 MOS 从.60缩至.45um，其余不变 |
+| 9 / 3 / 1 | `0e92a36499c1f278` | 6006 / 2513 | delay-chain 实际减少36个 MOS |
+
+三者 GDS bounding box 均为155.01×185.28um，面积28720.2528um²；
+缩小 driver 不等于缩小宏 footprint。完整输入、compiler 输出和 hashes 在
+`ics55_work/runs/optimizer_sizing_characterization/sizing/sizing_variants.json`，
+结构差异在同目录 `geometry_comparison.json`。独立生成的 baseline 与原来
+冻结 GDS 是不同身份；没有把冻结 baseline 的旧波形贴到新 GDS 上。
+源 registry 继续保留冻结 baseline 的原始绑定。
+
+两个新布局的 full-hierarchy、macro-profile DRC 原始结果均为0 raw /
+0 unwaived；macro profile 明确不含 density/antenna。严格 hierarchical
+LVS 给出 INCONCLUSIVE：layout-only contact circuits 导致 hierarchy
+correspondence 未建立，不是完成的 mismatch 或 PASS。没有放宽 W/L、
+pin correspondence、net-join 或 strict-topology 规则来消除这个结果。
+
+真实工具运行发现 Nix runtime 身份记录错误：记录的是 nix-shell 而非实际
+KLayout，因此旧记录不能支持 DRC/LVS acceptance。修复后先在 Nix 中解析
+工具绝对路径，再直接执行并捕获它；width.75 的真实全层级 DRC 已通过
+evidence validator。实际 KLayout0.30.7 binary SHA256：
+`4a253e9dafd467e3c3257d2735678334ad6547158676bc38ae05f3cebf2bb850`。
+证据为 `optimizer_sizing_characterization/klayout_identity_smoke.json`；
+旧 runtime/报告未被追补工具身份或改写。
+
+F4 诊断实现新增 typed `i(vdd)`、真实双负载 replay、分 polarity read
+delay/transition、signed whole-macro operation energy 和独立
+`characterization` closure gate。能耗窗口要求另一端口稳定 idle，且本端口
+下一周期 DIN/address/mask/enable 保持，避免把下一次输入准备算入当前操作。
+替代26-cycle held-input trace 安排96个 read-bit checks、每端口逻辑0/1
+读取及 isolated read/write/clock-active-idle 窗口。逻辑0/1均通过不代表
+实际输出在 falling-clock read 窗口内两个方向都产生了时序边沿。
+
+复审删除了仅凭 JSON pass/fail brackets 宣称完整 Liberty 的路径。
+`mklib.py` 和 packager 只支持显式 `--diagnostic-table-only`，输出
+`dont_use:true`；不补造 setup/hold/pulse/Tmin、input/clock capacitance、
+静态 leakage 或 intrinsic pin power。编译器原生 `.lib` 仍为 analytical，
+历史 Liberty 报告不因此获得新的完整性证明。RC 仍为估算且未被独立定量
+校准；诊断时序/能耗不能关闭物理或 full-STA/F4 gate。
+
+随后另行运行完整 strict flat LVS，保留原有精确 W/L、pin 和
+strict-topology/no-join 约束，而非跳过 helper cells 或放宽比较：
+两个新布局均得到 `ICS55_LVS_COMPARE=FAIL` / `netlists do not match`。
+严格调用完成且原生 verdict 为 FAIL，登记 `lvs=false`，而非 PASS。
+新 manifest 同时给出 `drc=true`、`pex_accepted=false`。
+实际证据为 `sizing/physical_summary_registered.json` 及各变体
+`physical_strict_flat/`。Source-free A+B topology PASS 与这个独立 KLayout
+严格检查的失败分别保留，不相互替代。
+只读原始 width.75 `.lvsdb` 的 native cross-reference 又显示：
+126个 layout-only circuit pairs 为 Mismatch，macro root 为 Skipped。
+因此这个失败不能被表述为“根电路晶体管差异已被定位”，也不构成完整
+root verification；严格 LVS 的 hierarchy/flattening correspondence 仍需
+解决。未再次运行或修改比较来确认/消除失败。解析记录在
+`sizing/strict_lvs_structure_diagnostic.json`。
+
+
+源 registry 的三种 F3 tuple 已真实枚举准入，未生成的 `(9,3,.75)` 被拒绝。
+width.75 的5/50fF F4 诊断负载各自独立准入，不共享 load 观测。冻结 baseline
+implementation 与扩展前快照逐字段相等，原始 GDS/网表/波形绑定没有迁移。
+该阶段11模块回归共161项通过；随后增加缺失 polarity 的诊断导出边界
+回归，最终163项通过。F3 使用原并发 trace，F4 另用 held-input trace。
+
+### 真实 sizing 电气观测：同一7.5ns筛选点
+
+`sizing_native/report.json` 完成两个新 tuple 的真实 serial ngspice
+运行；冻结 `(9,4,1)` 使用已有的闭包完整观测，没有再次启动 baseline。
+域均为 SNFP/125 C、1.08V、5fF、30ps slew、zero-voltage、F3，
+使用相同的原并发 trace。三者均为6次 read /48个 bit checks 通过：
+
+| stages / fanout / strength | trace tacc (ns) | W_EN pulse (ns) | SA setup (ns) | signed BL diff (V) | write recovery (ns) |
+|---|---:|---:|---:|---:|---:|
+| 9 / 4 / 1（冻结观测 replay） | 5.192932 | 1.498925 | 1.327104 | 1.002522 | 1.449517 |
+| 9 / 4 / .75（新运行） | 5.190708 | 1.499222 | 1.327198 | 1.003885 | 1.462912 |
+| 9 / 3 / 1（新运行） | 5.192909 | 1.370232 | 1.200218 | 0.970333 | 1.579694 |
+
+四个研究阈值仍为0.1ns /0ns /0.05V /0.01ns，未为新 tuple 放宽。
+这里 trace tacc 沿用原读周期参考，包含半周期 launch 等待，不是独立
+falling-clock-to-output 延迟。两个新模拟分别耗时1281.717s（width.75）和
+1098.481s（fanout3）；每个 observation manifest 都保存26文件的启动前
+model closure、真实工具身份、整数 exit0 和自身 GDS/输入输出绑定。
+不共享冻结 baseline 的波形。完整精度和 raw refs 在
+`optimizer_sizing_characterization/sizing_measurements.json`。
+
+三者在本次 `cycle_time_ns + area_um2` 目标上相同，均进入 screening
+frontier；physical frontier 为空。fanout3 缩短了观察到的控制窗，
+但没有证明更短可行周期；width.75 的约2.2ps trace-tacc 差异也不是已校准的
+性能收益。没有宏面积改善、Tmin 或完整 PPA 最优性结论。
+
+用独立 replay registry 登记新 raw bundles，避免修改正在 characterization
+中使用的源 registry。真实 CLI 带 `--ngspice /must-not-execute` 重放三个
+tuple 成功；再以 `--max-evaluations 0` 运行，得到3个 cache hits、
+`evaluations_performed=0`，仍保留相同 screening/空 physical frontiers。
+报告为 `optimizer_sizing_characterization/sizing_replay/report.json`。
+
+### width.75 双负载原生 F4 诊断表征
+
+真实 serial ngspice 双负载运行完成，总耗时9525.24s；不是 fixture 或
+复制 baseline 波形。固定 `(stages=9, fanout=4, strength=.75)`，
+SNFP/125 C、1.08V、7.5ns、30ps slew、zero skew、zero-voltage，
+每个输出分别接5fF/50fF。每个负载都通过12次 read /96个 bit checks，
+四个原研究控制阈值也均通过。两个 launch 均为整数 exit0，各自保留
+26文件的启动前 model closure 和对应的完整 raw bundle。
+
+下表延迟以**实际 falling clock 的50% crossing**为参考，输出转换用
+90→10%；各值为该端口已观测样本最大值。读写能量是本端口真实 held-input
+操作下，另一端口稳定 idle 时的 signed whole-macro supply integral，
+包含背景时钟与输出负载充电，不是 intrinsic pin power：
+
+| load (fF) | port | cell_fall (ns) | fall_transition (ns) | read energy (pJ) | write energy (pJ) |
+|---:|---:|---:|---:|---:|---:|
+| 5 | 0 | 1.332708 | 0.208096 | 1.530757 | 2.201780 |
+| 5 | 1 | 1.424184 | 0.203494 | 1.593252 | 2.159799 |
+| 50 | 0 | 1.548733 | 0.590190 | 1.950030 | 2.621854 |
+| 50 | 1 | 1.640762 | 0.591691 | 2.012487 | 2.579908 |
+
+每端口/负载各有3个 isolated read、2个 isolated write 和2个
+settled clock-active-idle 窗口。最小观测 idle energy 为0.439968pJ /
+0.439970pJ（5/50fF），不是静态 leakage。每种操作取所有 eligible
+端口的最大能量作为搜索观测：5fF 为 read1.593252/write2.201780pJ，
+50fF 为 read2.012487/write2.621854pJ。并发 F3 trace 与这里的能耗域
+不同，不能直接据此比较 sizing 能耗收益。
+
+实际波形纠正了预期覆盖假设：逻辑0/1都读对，但每个输出在 falling-clock
+read 窗口内只有完整下降沿，没有上升沿。因此 `cell_rise` 和
+`rise_transition` 保持 null，不能补零或复制 fall 表。5fF 两端口 bit0
+的实际输出上升沿发生于其 clock rise 后、clock fall 前，未被错误纳入
+falling-edge read arc。未把这个阶段的动态输出行为包装成完整 SRAM
+时序接口保证。`mklib.py --diagnostic-table-only` 只导出每个 bit、
+两个负载都有完整 delay/transition 的 polarity；本次实际 `.lib` 只有
+`cell_fall`/`fall_transition`，显式说明 rise tables omitted，并保留
+`dont_use:true`。默认完整 STA 导出实际 exit2，且未创建输出目录。
+
+原始证据在 `optimizer_sizing_characterization/characterization_native/`。
+只读 raw bundle 重放得到
+`characterization_replay/characterization.json`，domain、数值、能量、
+margin 和 functional verdict 与真实运行逐项相同；它记录当前诊断导出
+代码的 source hash，原始 manifest/attempt/log 未被改写。源 registry
+已登记该重放 manifest 以及两个负载各自的 run/waves/probes/init/deck/
+models，另已登记两个新 F3 tuple 的原始观测。完整精度、raw refs、
+clock-phase 诊断和实际 Liberty surface 在
+`optimizer_sizing_characterization/characterization_summary.json`。
+
+真实架构 CLI 使用源 registry 和 `--ngspice /must-not-execute`，两个负载
+均取得完整的四目标数值，但检查仍是 `functional=true, topology=true,
+drc=true, lvs=false, pex_accepted=false, characterization=null`。
+`f4_registered/report.json` 的 screening/physical frontier 均为空，
+CLI exit1 是这些门禁拒绝的实际结果，不是数值模拟失败。
+报告的 `objective_scope=full-ppa` 只描述请求了四种目标，**不代表**
+完整 PPA 可行或 F4/STA/物理闭环通过。
+
+最终源 registry 的集成验证（均禁止 simulator execution）：
+
+- `sizing_registered/report.json` 重放三个准入 tuple；cache-only 再运行
+  得到3个 hit、0次 evaluation，保留三个 timing-screen 点、空 physical
+  frontier，未生成的 `(9,3,.75)` 仍拒绝。
+- `f4_registered/report.json` cache-only 重用两个负载，2个 hit、0次
+  evaluation；原有 failed/unknown 物理与 characterization 门禁不变。
+- `f4_wrong_period/report.json` 在8ns请求上明确报告
+  `characterization candidate/domain mismatch`，所有目标为 null，
+  没有把7.5ns波形改标。
+- `staged_width075/report.json` 使用两个已完整的 F3 目标，仍以
+  `F4 promotion requires non-estimated, accepted extraction` 拒绝晋级。
+  另将源 registry 当前有效的真实 F4 cache 原样预置到独立实验目录，
+  `staged_cached_width075/report.json` 仍为 `not_promoted`，没有消费或
+  改写该 higher-stage cache。缓存不能绕过 predecessor gate。
+
+源 registry 扩展后再次与预先保存的 baseline implementation 比较，
+冻结条目完全相等。最终163项回归及上述实际运行的 hash-bound 汇总为
+`optimizer_sizing_characterization/integration_evidence.json`。
+代码/数值执行门已完成；物理和完整 STA 门**未关闭**：需要真实完整的
+strict-LVS root correspondence、独立定量且有量纲的 RC 校准、
+waveform-verified macro setup/hold/pulse/Tmin、input/clock capacitance，
+以及与实际动态输出行为一致的完整边沿/条件覆盖。未用 DFF常数、
+自声明 JSON、估算 RC、放宽 LVS 或诊断 `.lib` 替代这些证据。
+

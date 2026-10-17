@@ -2,16 +2,20 @@
 """Package an OpenRAM ICsprout55 macro for a Cadence/Calibre ASIC flow.
 
   package_macro.py OUTDIR MACRO DEST --stdcell-library LIB --stdcell-cdl CDL
-                   --meas MEAS.json --words N --bits B [--ports 0,1]
+                   --meas MEAS.json --words N --bits B --diagnostic-table-only
+                   [--ports 0,1]
 
 OUTDIR is the OpenRAM output directory of MACRO.  Writes into DEST:
   gds/MACRO.gds        supply labels renamed vdd->VDD, gnd->VSS (top cell)
   lef/MACRO.lef        flow-ready LEF
   cdl/MACRO.cdl        LVS netlist using the selected foundry DFF
   spice/MACRO.sp       self-contained simulation netlist (VDD/VSS ports)
-  lib/MACRO_<corner>.lib   role-aware Liberty from Spectre measurements
+  lib/MACRO_<corner>.lib   incomplete role-aware dont_use diagnostic tables
   verilog/MACRO.v      behavioural model (OpenRAM)
   verilog/MACRO_stub.v black box with behavioral-model port roles
+
+Complete STA Liberty is unavailable without verified macro boundaries and
+measured input/clock loading. Packaging does not supply those missing inputs.
 """
 import argparse, os, re, subprocess, sys
 
@@ -257,6 +261,8 @@ def main():
                     help="ICsprout55 library key from tech.py (for example SC9T or H7CR)")
     ap.add_argument("--stdcell-cdl", required=True)
     ap.add_argument("--meas", required=True)
+    ap.add_argument("--diagnostic-table-only", action="store_true",
+                    help="explicitly package incomplete, dont_use Liberty; not STA/F4")
     ap.add_argument("--words", type=int, required=True)
     ap.add_argument("--bits", type=int, required=True)
     ap.add_argument("--ports", type=parse_ports_argument,
@@ -265,6 +271,8 @@ def main():
     ap.add_argument("--gate-clk", type=float, default=0.027, help="um2, clock buffer input")
     ap.add_argument("--diff-out", type=float, default=0.2, help="um2, sense-amp output driver")
     a = ap.parse_args()
+    if not a.diagnostic_table_only:
+        ap.error("only explicit --diagnostic-table-only packaging is supported; complete STA is unavailable")
     try:
         library = normalize_stdcell_library(a.stdcell_library)
         _, model_address_width, model_data_width, ports = behavioral_ports(
@@ -308,6 +316,7 @@ def main():
         "--port-roles", port_roles_argument(ports),
         "--stdcell-library", library,
         "--power-pins", "VDD,VSS",
+        "--diagnostic-table-only",
     ], check=True)
 
 

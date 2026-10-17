@@ -72,6 +72,10 @@ def measurement_metrics(role, port, load):
         values.update({
             "dout_fall": 0.60 + port * 0.10 + load / 1000.0,
             "dout_tran": 0.10 + port * 0.02 + load / 1000.0,
+            "cell_rise": 0.60 + port * 0.10 + load / 1000.0,
+            "cell_fall": 0.65 + port * 0.10 + load / 1000.0,
+            "rise_transition": 0.10 + port * 0.02 + load / 1000.0,
+            "fall_transition": 0.12 + port * 0.02 + load / 1000.0,
             "dout_hold_after_rise": 0.30,
             "e_read_pj": 0.40 + port * 0.10,
         })
@@ -87,6 +91,8 @@ def measurement_file(library, roles):
     def sample(load):
         return {
             "stdcell_library": library,
+            "schema_version": 3,
+            "functional": True,
             "domain": {
                 "load_ff": load,
                 "input_slew_ns": 0.03,
@@ -105,8 +111,7 @@ def measurement_file(library, roles):
         "tt": {
             "m5": sample(5.0),
             "m50": sample(50.0),
-            "dff_setup": {str(port): 0.08 + port * 0.01 for port in roles},
-            "dff_hold": {str(port): 0.02 + port * 0.01 for port in roles},
+            "complete_sta": False,
             "vdd": 1.20,
             "temp": 25,
         }
@@ -227,6 +232,7 @@ END LIBRARY
                     json.dump(measurement_file(library, roles), output)
                 with mock.patch.object(sys, "argv", [
                     "mklib.py", measurement, macro, temp,
+                    "--diagnostic-table-only",
                     "--words", "16", "--bits", "8", "--area", "42",
                     "--stdcell-library", library,
                     "--port-roles", ",".join(
@@ -250,11 +256,9 @@ END LIBRARY
                     if role == "RW":
                         self.assertIn("direction : input", braced_group(
                             liberty, "pin (web{})".format(port)))
-                        self.assertIn('when : "!csb{} & web{}"'.format(port, port), clock)
-                        self.assertIn('when : "!csb{} & !web{}"'.format(port, port), clock)
                     else:
                         self.assertNotIn("web{}".format(port), liberty)
-                        self.assertIn('when : "!csb{}"'.format(port), clock)
+                        self.assertNotIn("internal_power", clock)
                     if role in ("RW", "W"):
                         data_in = braced_group(liberty, "bus (din{})".format(port))
                         self.assertIn("direction : input", data_in)
@@ -292,6 +296,7 @@ END LIBRARY
                 "mklib.py", measurement, "mem", temp,
                 "--words", "16", "--bits", "8", "--area", "42",
                 "--stdcell-library", "H7CR", "--port-roles", "0:RW",
+                "--diagnostic-table-only",
             ]):
                 with self.assertRaisesRegex(ValueError, "sample uses SC9T, requested H7CR"):
                     mklib.main()

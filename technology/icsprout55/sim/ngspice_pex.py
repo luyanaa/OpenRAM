@@ -25,7 +25,11 @@ REPO = Path(__file__).resolve().parents[3]
 
 def build_deck(netlist, trace, name, model, destination, period, voltage,
                temperature, corner, skew1, cload, rise, probe_profile=None,
-               initialization="uninitialized", parasitics_metadata=None):
+               initialization="uninitialized", parasitics_metadata=None, *, capture_current=False):
+    if type(capture_current) is not bool:
+        raise ValueError("capture_current must be boolean")
+    if capture_current and probe_profile is None:
+        raise ValueError("supply-current capture requires a typed probe profile")
     if initialization not in ("uninitialized", "zero-voltage"):
         raise ValueError("initialization must be 'uninitialized' or 'zero-voltage'")
     metadata = parasitics_metadata if isinstance(parasitics_metadata, dict) else {}
@@ -146,6 +150,10 @@ def build_deck(netlist, trace, name, model, destination, period, voltage,
                 vectors.append(vector)
             signal.update(vector=vector, column=vectors.index(vector))
         probe_profile.update(signals=signals, vectors=vectors)
+        if capture_current:
+            probe_profile["supply_current"] = dict(
+                vector="i(vdd)", column=len(vectors), unit="A", positive_direction="into_source")
+            vectors.append("i(vdd)")
         (destination / "probes.json").write_text(
             json.dumps(probe_profile, indent=2) + "\n", encoding="utf-8")
     wavefile = destination / "waves.dat"
@@ -282,6 +290,8 @@ def main(argv=None):
     parser.add_argument("--initialization", choices=("uninitialized", "zero-voltage"), default="uninitialized",
                         help="floating-conductor initialization policy")
     parser.add_argument("--probe-profile", choices=("debug-readwrite",))
+    parser.add_argument("--capture-current", action="store_true",
+                        help="save typed VDD source current for isolated-operation characterization")
     parser.add_argument("--probe-map", type=Path,
                         help="hashed semantic-to-physical correspondence from topology comparison")
     parser.add_argument("--failure-report", type=Path,
@@ -357,12 +367,12 @@ def main(argv=None):
                                  netlist_sha256=digest, probe_map=str(args.probe_map.resolve()),
                                  probe_map_sha256=hashlib.sha256(args.probe_map.read_bytes()).hexdigest(),
                                  topology_equivalent=mapping["equivalent"])
-        elif args.probe_map or args.failure_report:
-            raise ValueError("--probe-map/--failure-report require --probe-profile")
+        elif args.probe_map or args.failure_report or args.capture_current:
+            raise ValueError("--probe-map/--failure-report/--capture-current require --probe-profile")
         deck, wavefile, outputs, expected, probe_profile = build_deck(
             netlist, trace, extraction["design"], model, destination,
             args.period, args.vdd, args.temp, args.corner, args.skew1, args.cload, args.tr,
-            probe_profile, args.initialization, selected[0])
+            probe_profile, args.initialization, selected[0], capture_current=args.capture_current)
         if wavefile.exists():
             wavefile.unlink()
         command = [executable, "-n", "-D", "ngbehavior=hsa", "-b", str(deck)]
@@ -383,7 +393,7 @@ def main(argv=None):
                        extraction_summary_sha256=hashlib.sha256(summary_path.read_bytes()).hexdigest(),
                        signoff=False, model=str(model), corner=args.corner, voltage_v=args.vdd,
                        temperature_c=args.temp, period_ns=args.period, cload_ff=args.cload,
-                       seconds=round(time.monotonic() - start, 3),
+                       seconds=round(time.monotonic() - start, 3), capture_current=args.capture_current,
                        initialization_policy=args.initialization,
                        initialization_plan=str((destination / "initialization_plan.json").resolve()))
     except subprocess.TimeoutExpired as exc:

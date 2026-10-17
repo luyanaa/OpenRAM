@@ -80,6 +80,23 @@ def _tool_identity(ngspice):
             "version": result.stdout.strip(), "mode": "execution-enabled"}
 
 
+def _referenced_paths(value, base):
+    """Follow artifact refs, not historical tool-identity metadata."""
+    if isinstance(value, dict):
+        if set(value) in ({"path", "sha256"}, {"path", "sha256", "size_bytes"}):
+            if not isinstance(value["path"], str) or not isinstance(value["sha256"], str):
+                raise ValueError("invalid transitive evidence reference")
+            path = (base / value["path"]).resolve()
+            if _digest(path) != value["sha256"]:
+                raise ValueError("transitive evidence changed: " + str(path))
+            yield path
+        for child in value.values():
+            yield from _referenced_paths(child, base)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _referenced_paths(child, base)
+
+
 def fingerprint(admissions_or_registry, *, ngspice="ngspice", replay_only=True, timeout=3600):
     """Identity of implementation, tool (when executing), and all input bytes."""
     obj = admissions_or_registry
@@ -95,16 +112,26 @@ def fingerprint(admissions_or_registry, *, ngspice="ngspice", replay_only=True, 
         admissions = [obj] if isinstance(obj, dict) else obj
         for admission in admissions:
             paths.update(Path(path).resolve() for path in admission["artifacts"].values())
-    dependencies = {}
-    for path in sorted(paths):
+    dependencies, visited = {}, set()
+    pending = list(sorted(paths))
+    while pending:
+        path = pending.pop()
+        if path in visited:
+            continue
+        visited.add(path)
         if path.suffix.lower() in (".lib", ".sp", ".spi", ".inc"):
             _dependencies(path, dependencies)
         else:
             dependencies[str(path)] = _digest(path)
+        if path.suffix.lower() == ".json":
+            pending.extend(_referenced_paths(_json(path), path.parent))
     sources = [SIM / name for name in ("architecture.py", "check.py", "mkscs.py",
-                                       "ngspice_pex.py", "pex_debug.py")]
+                                       "ngspice_pex.py", "pex_debug.py", "charz.py", "tanalyze.py",
+                                       "characterize.py", "mklib.py", "physical_evidence.py")]
     sources.extend(SIM.parents[2] / ("compiler/architecture/" + name)
                    for name in ("contracts.py", "search.py"))
+    sources.extend(SIM.parent / "verify" / name for name in
+                   ("opensource.py", "gds_pex_rc.py", "gds_pex_geometry.py", "gds_pex_topology.py"))
     tool = {"requested": ngspice, "version": None, "mode": "replay-only"}
     if not replay_only:
         tool = _tool_identity(ngspice)
@@ -140,6 +167,8 @@ def _validate_model_manifest(bundle, paths):
             or not isinstance(execution.get("tool"), dict)
             or not execution["tool"].get("version") or not execution["tool"].get("sha256")):
         raise ValueError("observation has no complete execution-time model/tool identity")
+    if type(execution.get("returncode")) is not int or execution["returncode"] != 0:
+        raise ValueError("observation simulator launcher did not exit successfully")
     return manifest
 
 
@@ -251,6 +280,9 @@ def _canonical_deck(text):
 def _validate_bundle(bundle, paths, hashes, extraction, mapping, candidate):
     _validate_model_manifest(bundle, paths)
     run, probes, plan = (_json(bundle[name]) for name in ("run", "probes", "init"))
+    capture_current = run.get("capture_current", False)
+    if type(capture_current) is not bool:
+        raise ValueError("observation current-capture mode must be boolean")
     env = candidate["environment"]
     for key in ("corner", "voltage_v", "temperature_c", "period_ns", "cload_ff"):
         if run.get(key) != env[key]:
@@ -327,11 +359,13 @@ def _validate_bundle(bundle, paths, hashes, extraction, mapping, candidate):
             paths["netlist"], paths["trace"], extraction["design"], paths["model"], Path(directory),
             env["period_ns"], env["voltage_v"], env["temperature_c"], env["corner"], env["skew1"],
             env["cload_ff"], env["slew_ns"], profile, env["initialization"],
-            {"floating_conductors": [{"nodes": nodes}]})
+            {"floating_conductors": [{"nodes": nodes}]}, capture_current=capture_current)
         if _canonical_deck(deck.read_text()) != _canonical_deck(Path(bundle["deck"]).read_text()):
             raise ValueError("executed deck differs from exact candidate inputs/options/initialization")
         if generated["vectors"] != probes["vectors"]:
             raise ValueError("probe vectors differ from executed deck")
+        if generated.get("supply_current") != probes.get("supply_current"):
+            raise ValueError("typed supply-current identity mismatch")
         generated_signals = {item["name"]: item for item in generated["signals"]}
         for signal in probes["signals"]:
             actual = generated_signals[signal["name"]]
@@ -540,7 +574,7 @@ def _target_metrics(times, columns, probes, target, env, threshold, mapping, cyc
             "bl_probe_pairs": [[left["name"], right["name"]] for left in bl for right in br]}
 
 
-def _execute(paths, candidate, out_dir, ngspice, timeout):
+def _execute(paths, candidate, out_dir, ngspice, timeout, *, capture_current=False):
     destination = Path(tempfile.mkdtemp(prefix="ngspice-", dir=out_dir))
     env = candidate["environment"]
     extraction = paths.get("execution_extraction", paths["extraction"])
@@ -560,6 +594,8 @@ def _execute(paths, candidate, out_dir, ngspice, timeout):
                "--pdk-root", str(pdk_root), "--probe-profile", "debug-readwrite",
                "--probe-map", str(paths["probe_map"]), "--words-per-row", str(candidate["parameters"]["words_per_row"]),
                "--ngspice", ngspice, "--timeout", str(timeout), "--initialization", env["initialization"]]
+    if capture_current:
+        command.append("--capture-current")
     for key, flag in (("period_ns", "period"), ("corner", "corner"), ("voltage_v", "vdd"),
                       ("temperature_c", "temp"), ("skew1", "skew1"), ("cload_ff", "cload"), ("slew_ns", "tr")):
         command.extend(("--"+flag, str(env[key])))
@@ -568,16 +604,25 @@ def _execute(paths, candidate, out_dir, ngspice, timeout):
         json.dumps(before, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, timeout=timeout+30, check=False)
-    (destination / "adapter-launch.log").write_text(result.stdout, encoding="utf-8")
+    launch_log = destination / "adapter-launch.log"
+    launch_log.write_text(result.stdout, encoding="utf-8")
+    if result.returncode != 0:
+        raise ValueError("simulator launcher exited with status {}; log: {}".format(
+            result.returncode, launch_log))
     if (_dependencies(model) != before["model_dependencies"]
             or _digest(before["tool"]["path"]) != before["tool"]["sha256"]):
         raise ValueError("model dependencies or simulator binary changed during execution")
-    run = destination / "simulation.json"
-    if not run.is_file() or _json(run).get("error"):
-        raise ValueError("simulator execution unavailable: " + str(_json(run).get("error") if run.is_file() else result.returncode))
-    bundle = {"run": run, "waves": destination / "waves.dat", "probes": destination / "probes.json",
-              "init": destination / "initialization_plan.json", "deck": destination / "transient.sp",
-              "extraction": extraction}
+    bundle = {"run": destination / "simulation.json", "waves": destination / "waves.dat",
+              "probes": destination / "probes.json", "init": destination / "initialization_plan.json",
+              "deck": destination / "transient.sp", "extraction": extraction}
+    incomplete = [name for name, path in bundle.items()
+                  if not path.is_file() or path.stat().st_size == 0]
+    if incomplete:
+        raise ValueError("simulator output bundle is incomplete ({}); log: {}".format(
+            ", ".join(incomplete), launch_log))
+    if _json(bundle["run"]).get("error"):
+        raise ValueError("simulator execution unavailable: {}; log: {}".format(
+            _json(bundle["run"])["error"], launch_log))
     manifest = {"schema": "openram-ngspice-observation/1",
                 "model_dependencies": before["model_dependencies"],
                 "bindings": _observation_bindings(paths, bundle),
@@ -594,10 +639,11 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     result = {"measurements": [], "checks": {name: None for name in
-              ("functional", "topology", "drc", "lvs", "pex_accepted")},
+              ("functional", "topology", "drc", "lvs", "pex_accepted", "characterization")},
               "artifacts": {}, "estimated": True, "signoff": False,
               "details": {"scope": "sampled cells/ports/cycles only; not full-array stability",
                           "energy_status": "unknown: no isolated-operation supply-current evidence",
+                          "characterization_status": "unknown: macro boundary and input/clock loading evidence missing",
                           "constraints": "explicit research thresholds, not characterized SA specifications"}}
     result["details"]["coverage"] = {
         "sampled_cells": [], "ports": [], "cycles": [], "status": "not yet measured",
@@ -608,66 +654,90 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
         candidate, env = admission["candidate"], admission["candidate"]["environment"]
         evidence = [_ref(path) for path in paths.values()]
         result["artifacts"] = {name: _ref(path) for name, path in paths.items()}
-        result["checks"].update(topology=True, pex_accepted=extraction.get("accepted") is True)
-        bundle, rejected = None, []
-        for name in sorted(paths):
-            if not name.startswith("run__"):
-                continue
-            suffix = name[5:]
-            proposed = {kind: paths.get(kind+"__"+suffix) for kind in ("run", "waves", "probes", "init", "deck")}
-            proposed["extraction"] = paths.get("extraction__" + suffix, paths["extraction"])
-            proposed["models"] = paths.get("models__" + suffix)
-            if any(path is None for kind, path in proposed.items() if kind != "models"):
-                rejected.append({"observation": suffix, "reason": "incomplete registered observation bundle"})
-                continue
-            try:
-                probes, outputs, expected = _validate_bundle(proposed, paths, hashes, extraction, mapping, candidate)
-            except (ValueError, KeyError, TypeError, OSError) as exc:
-                rejected.append({"observation": suffix, "reason": str(exc)})
-                continue
-            bundle = proposed
-            result["details"]["observation"] = suffix
-            break
-        result["details"]["rejected_observations"] = rejected
-        if bundle is None:
-            if not execute:
-                raise ValueError("no exact hash-bound observation; local ngspice execution not authorized")
-            bundle = _execute(paths, candidate, out_dir, ngspice, timeout)
-            actual_extraction = _json(bundle["extraction"])
-            if actual_extraction.get("input_gds_sha256") != hashes["gds"] or not any(
-                    item.get("netlist_sha256") == hashes["netlist"] for item in actual_extraction.get("corners", [])):
-                raise ValueError("execution extraction does not bind registered GDS/netlist")
-            probes, outputs, expected = _validate_bundle(bundle, paths, hashes, extraction, mapping, candidate)
-            result["details"]["observation"] = "fresh-local-ngspice"
-        result["details"]["observation_model_identity"] = _validate_model_manifest(bundle, paths)["execution"]
-        for name, path in bundle.items():
-            result["artifacts"]["observation_"+name] = _ref(path)
-        evidence.extend(_ref(path) for path in bundle.values())
-        times, columns = _waveforms(bundle["waves"], probes)
-        checked = check_waveforms(bundle["waves"], outputs, expected, env["period_ns"], env["voltage_v"], env["skew1"], probes)
-        result["checks"]["functional"] = checked["passed"]
-        result["details"]["functional"] = checked
-        threshold = None if required_margins is None else required_margins.get("bl_diff_v")
-        cycles, _ = read_trace(paths["trace"])
-        targets = [_target_metrics(times, columns, probes, target, env, threshold, mapping, cycles)
-                   for target in probes["targets"]]
-        result["details"]["targets"] = targets
-        result["details"]["coverage"] = {
-            "sampled_cells": [{"row": item["target"]["row"], "column": item["target"]["column"],
-                               "bit": item["target"]["bit"]} for item in targets],
-            "ports": sorted({item["target"][key] for item in targets for key in ("read_port", "write_port")}),
-            "cycles": [{"write": item["target"]["write_cycle"], "read": item["target"]["read_cycle"]}
-                       for item in targets],
-            "scope": "sampled physical cells and trace operations, not full-array stability",
-            "observed": ["output valid levels/transition delay", "local write-driver EN pulse/release",
-                         "local SA tail-gate ordering", "signed BL differential at SA",
-                         "selected WL gates", "replica control", "sampled Q completion"],
-            "unmeasured": dict.fromkeys(UNMEASURED)}
+        from physical_evidence import validate_physical_evidence
+        physical = validate_physical_evidence(paths.get("physical"), paths, extraction)
+        result["checks"].update(topology=True, **physical["checks"])
+        result["estimated"] = physical["estimated"]
+        result["artifacts"].update(physical["artifacts"])
+        result["details"]["physical_evidence"] = physical["reasons"]
+        evidence.extend(physical["artifacts"].values())
+        energies = {"read_energy_pj": None, "write_energy_pj": None}
+        sample = None
+        if "characterization" in paths:
+            from characterize import load_characterization
+            characterized = load_characterization(paths["characterization"], admission, required_margins)
+            result["checks"]["functional"] = characterized["functional"]
+            result["details"].update(characterized["details"])
+            result["details"]["observation"] = "exact-load-characterization"
+            result["details"]["energy_status"] = (
+                "signed whole-macro supply energy; includes background clocks and load charging")
+            result["artifacts"].update(("characterization_" + name, ref)
+                                       for name, ref in characterized["artifacts"].items())
+            evidence.extend(characterized["evidence"])
+            targets, aggregate = characterized["details"]["targets"], characterized["margins"]
+            energies, sample = characterized["energy"], characterized["sample"]
+            result["details"]["coverage"]["unmeasured"] = {
+                name: None for name in UNMEASURED if name not in energies or energies[name] is None}
+        else:
+            bundle, rejected = None, []
+            for name in sorted(paths):
+                if not name.startswith("run__"):
+                    continue
+                suffix = name[5:]
+                proposed = {kind: paths.get(kind+"__"+suffix) for kind in ("run", "waves", "probes", "init", "deck")}
+                proposed["extraction"] = paths.get("extraction__" + suffix, paths["extraction"])
+                proposed["models"] = paths.get("models__" + suffix)
+                if any(path is None for kind, path in proposed.items() if kind != "models"):
+                    rejected.append({"observation": suffix, "reason": "incomplete registered observation bundle"})
+                    continue
+                try:
+                    probes, outputs, expected = _validate_bundle(proposed, paths, hashes, extraction, mapping, candidate)
+                except (ValueError, KeyError, TypeError, OSError) as exc:
+                    rejected.append({"observation": suffix, "reason": str(exc)})
+                    continue
+                bundle = proposed
+                result["details"]["observation"] = suffix
+                break
+            result["details"]["rejected_observations"] = rejected
+            if bundle is None:
+                if not execute:
+                    raise ValueError("no exact hash-bound observation; local ngspice execution not authorized")
+                bundle = _execute(paths, candidate, out_dir, ngspice, timeout)
+                actual_extraction = _json(bundle["extraction"])
+                if actual_extraction.get("input_gds_sha256") != hashes["gds"] or not any(
+                        item.get("netlist_sha256") == hashes["netlist"] for item in actual_extraction.get("corners", [])):
+                    raise ValueError("execution extraction does not bind registered GDS/netlist")
+                probes, outputs, expected = _validate_bundle(bundle, paths, hashes, extraction, mapping, candidate)
+                result["details"]["observation"] = "fresh-local-ngspice"
+            result["details"]["observation_model_identity"] = _validate_model_manifest(bundle, paths)["execution"]
+            for name, path in bundle.items():
+                result["artifacts"]["observation_"+name] = _ref(path)
+            evidence.extend(_ref(path) for path in bundle.values())
+            times, columns = _waveforms(bundle["waves"], probes)
+            checked = check_waveforms(bundle["waves"], outputs, expected, env["period_ns"], env["voltage_v"], env["skew1"], probes)
+            result["checks"]["functional"] = checked["passed"]
+            result["details"]["functional"] = checked
+            threshold = None if required_margins is None else required_margins.get("bl_diff_v")
+            cycles, _ = read_trace(paths["trace"])
+            targets = [_target_metrics(times, columns, probes, target, env, threshold, mapping, cycles)
+                       for target in probes["targets"]]
+            aggregate = _aggregate_margins(targets, candidate["access_contract"]["ports"])
+            result["details"]["targets"] = targets
+            result["details"]["coverage"] = {
+                "sampled_cells": [{"row": item["target"]["row"], "column": item["target"]["column"],
+                                   "bit": item["target"]["bit"]} for item in targets],
+                "ports": sorted({item["target"][key] for item in targets for key in ("read_port", "write_port")}),
+                "cycles": [{"write": item["target"]["write_cycle"], "read": item["target"]["read_cycle"]}
+                           for item in targets],
+                "scope": "sampled physical cells and trace operations, not full-array stability",
+                "observed": ["output valid levels/transition delay", "local write-driver EN pulse/release",
+                             "local SA tail-gate ordering", "signed BL differential at SA",
+                             "selected WL gates", "replica control", "sampled Q completion"],
+                "unmeasured": dict.fromkeys(UNMEASURED)}
         def measurement(name, value, unit, operation, port=None):
             record = dict(name=name, value=value, unit=unit, operation=operation, port=port,
                           domain=deepcopy(env), fidelity=env["fidelity"], evidence=evidence)
             result["measurements"].append(validate_measurement(record))
-        aggregate = _aggregate_margins(targets, candidate["access_contract"]["ports"])
         for name, (unit, operation) in MARGINS.items():
             measurement(name, aggregate[name], unit, operation)
         for index, target in enumerate(targets):
@@ -675,8 +745,17 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
                 port = target["target"]["read_port" if operation == "read" else "write_port"]
                 measurement("target{}_{}".format(index, name), target[name], unit, operation, port)
         measurement("cycle_time_ns", env["period_ns"], "ns", "macro")
-        measurement("read_energy_pj", None, "pJ", "read")
-        measurement("write_energy_pj", None, "pJ", "write")
+        measurement("read_energy_pj", energies["read_energy_pj"], "pJ", "read")
+        measurement("write_energy_pj", energies["write_energy_pj"], "pJ", "write")
+        if sample is not None:
+            for port, metrics in sample["ports"].items():
+                role = candidate["access_contract"]["ports"][int(port)]
+                for operation in ("read", "write", "idle"):
+                    if (operation == "read" and role not in ("R", "RW")
+                            or operation == "write" and role not in ("W", "RW")):
+                        continue
+                    measurement("port{}_{}_energy_pj".format(port, operation),
+                                metrics["e_{}_pj".format(operation)], "pJ", operation, int(port))
         try:
             import klayout.db as kdb
             layout = kdb.Layout()

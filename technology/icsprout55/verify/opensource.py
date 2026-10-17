@@ -97,13 +97,22 @@ def _select_klayout(librelane_root):
         raise OpenSourceError("KLayout is not on PATH and nix-shell is unavailable")
     if not (Path(librelane_root) / "shell.nix").is_file():
         raise OpenSourceError("LibreLane shell.nix not found: {}".format(librelane_root))
-    return ("nix-shell", nix_shell, str(librelane_root))
+    # Resolve inside the shell, then launch that executable directly. Recording
+    # nix-shell's identity does not identify the KLayout that produced a report.
+    try:
+        result = subprocess.run(
+            [nix_shell, str(librelane_root), "--run", "command -v klayout"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        raise OpenSourceError("cannot resolve Nix KLayout: {}".format(exc)) from exc
+    executable = Path(result.stdout.strip())
+    if result.returncode != 0 or not executable.is_absolute() or not executable.is_file():
+        raise OpenSourceError("cannot resolve an installed KLayout executable from Nix")
+    return ("executable", str(executable.resolve()))
 
 
 def _klayout_command(selection, args):
-    if selection[0] == "executable":
-        return [selection[1]] + list(args)
-    return [selection[1], selection[2], "--run", shlex.join(["klayout"] + list(args))]
+    return [selection[1]] + list(args)
 
 
 def _query_klayout_version(selection):
@@ -208,17 +217,106 @@ def _validate_strict_capability(pdk_root):
     }
 
 
+def _artifact_ref(path):
+    path = Path(path).resolve()
+    try:
+        return {"path": str(path), "sha256": _sha256(path)}
+    except OSError as exc:
+        raise OpenSourceError("cannot capture artifact identity: {}".format(path)) from exc
+
+
+def _deck_sources(deck):
+    """Freeze the local deck tree, including data tables and Ruby modules."""
+    deck = Path(deck).resolve()
+    paths = {deck}
+    paths.update(path.resolve() for path in deck.parent.rglob("*")
+                 if path.is_file() and "__pycache__" not in path.parts
+                 and not any(part.startswith(".") for part in path.relative_to(deck.parent).parts))
+    capability = deck.parent / STRICT_CAPABILITY_NAME
+    if capability.is_file():
+        data = json.loads(capability.read_text(encoding="utf-8"))
+        if isinstance(data.get("hash_manifest"), str):
+            paths.add((capability.parent / data["hash_manifest"]).resolve())
+    return [_artifact_ref(path) for path in sorted(paths)]
+
+
+def _spice_sources(path):
+    """Capture literal transitive SPICE includes, without evaluating a deck."""
+    pending, seen = [Path(path).resolve()], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for line in current.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"^\s*\.(?:include|inc|lib)\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))",
+                             line, re.IGNORECASE)
+            if match:
+                name = next(value for value in match.groups() if value is not None)
+                dependency = (current.parent / name).resolve()
+                # A one-argument .lib declaration is a section, not a file.
+                if line.lstrip().lower().startswith(".lib") and not dependency.is_file() \
+                        and len(shlex.split(line)) == 2:
+                    continue
+                if not dependency.is_file():
+                    raise OpenSourceError("SPICE dependency not found: {}".format(dependency))
+                pending.append(dependency)
+    return [_artifact_ref(item) for item in sorted(seen)]
+
+
+def _write_evidence(path, payload):
+    Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _stage_runtime(log_path):
+    path = Path(str(log_path) + ".runtime.json")
+    return _artifact_ref(path) if path.is_file() else None
+
+
 def _run_klayout(args, librelane_root, log_path, selection=None):
     if selection is None:
         selection = _select_klayout(librelane_root)
     command = _klayout_command(selection, args)
+    parameters = dict(item.split("=", 1) for index, item in enumerate(args)
+                      if index and args[index - 1] == "-rd" and "=" in item)
+    deck = Path(args[args.index("-r") + 1]).resolve() if "-r" in args else None
+    sources = _deck_sources(deck) if deck else []
+    inputs = {name: _artifact_ref(parameters[name]) for name in ("input", "schematic")
+              if name in parameters}
+    if "schematic" in parameters:
+        sources.extend(_spice_sources(parameters["schematic"]))
+    tool_path = shutil.which(selection[1]) or selection[1]
+    tool = {"selection": list(selection), "version": _query_klayout_version(selection),
+            "executable": _artifact_ref(tool_path)}
+    runtime = {"schema": "ics55-klayout-runtime/1", "command": command, "args": list(args),
+               "parameters": parameters, "tool": tool, "sources": sources,
+               "producer": _artifact_ref(__file__),
+               "inputs": inputs, "deck": _artifact_ref(deck) if deck else None,
+               "started_ns": time.time_ns(), "signoff": False}
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, check=False)
     except OSError as exc:
+        Path(log_path).write_text(str(exc) + "\n", encoding="utf-8")
+        runtime.update(ended_ns=time.time_ns(), returncode=None, error=str(exc),
+                       log=_artifact_ref(log_path), outputs={}, inputs_unchanged=False)
+        _write_evidence(str(log_path) + ".runtime.json", runtime)
         raise OpenSourceError("cannot start KLayout: {}".format(exc)) from exc
     Path(log_path).write_text(result.stdout, encoding="utf-8", errors="replace")
+    outputs = {}
+    for name in ("report", "target_netlist", "output"):
+        if name in parameters:
+            path = Path(parameters[name])
+            if path.is_file():
+                outputs[name] = dict(_artifact_ref(path),
+                                     fresh=path.stat().st_mtime_ns >= runtime["started_ns"])
+    unchanged = all(Path(ref["path"]).is_file() and _sha256(ref["path"]) == ref["sha256"]
+                    for ref in sources + list(inputs.values()) + [tool["executable"]])
+    unchanged = unchanged and _artifact_ref(__file__) == runtime["producer"]
+    runtime.update(ended_ns=time.time_ns(), returncode=result.returncode,
+                   log=_artifact_ref(log_path), outputs=outputs, inputs_unchanged=unchanged)
+    _write_evidence(str(log_path) + ".runtime.json", runtime)
     return result.returncode, result.stdout
 
 
@@ -301,6 +399,8 @@ def _run_drc(gds, top, pdk_root, librelane_root, out_dir, mode, waiver_file, pro
     gds = Path(gds).resolve()
     if not gds.is_file():
         raise OpenSourceError("layout not found: {}".format(gds))
+    waiver_file = Path(waiver_file).resolve() if waiver_file is not None else None
+    waiver_ref = _artifact_ref(waiver_file) if waiver_file is not None else None
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     report = out_dir / "drc.lyrdb"
@@ -328,7 +428,18 @@ def _run_drc(gds, top, pdk_root, librelane_root, out_dir, mode, waiver_file, pro
     rc, _ = _run_klayout(args, librelane_root, out_dir / "drc.log")
     if rc != 0:
         raise OpenSourceError("KLayout DRC exited {} (see {})".format(rc, out_dir / "drc.log"))
-    return summarize_drc_report(report, waiver_file, out_dir / "drc_summary.json", out=lambda _: None), report
+    summary_path = out_dir / "drc_summary.json"
+    summary = summarize_drc_report(report, waiver_file, summary_path, out=lambda _: None)
+    if waiver_ref is not None and _artifact_ref(waiver_file) != waiver_ref:
+        raise OpenSourceError("DRC waivers changed during execution")
+    _write_evidence(out_dir / "drc.evidence.json", {
+        "schema": "ics55-drc-evidence/1", "signoff": False, "top": top,
+        "mode": mode, "profile": profile,
+        "runtime": _stage_runtime(out_dir / "drc.log"),
+        "report": _artifact_ref(report), "summary": _artifact_ref(summary_path),
+        "waivers": waiver_ref,
+    })
+    return summary, report
 
 
 def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
@@ -376,15 +487,25 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
             args, librelane_root, out_dir / "lvs.log", selection=selection)
     if rc != 0:
         raise OpenSourceError("KLayout LVS exited {} (see {})".format(rc, out_dir / "lvs.log"))
-    if "CONGRATULATIONS! Netlists match." not in output:
-        if "ICS55_LVS_COMPARE=INCONCLUSIVE" in output:
-            verdict = "inconclusive"
-        elif "ERROR: netlists do not match." in output:
-            verdict = "mismatch"
-        else:
-            verdict = "no LVS verdict"
-        return False, verdict, report
-    return True, "matched", report
+    if "ICS55_LVS_COMPARE=INCONCLUSIVE" in output:
+        verdict = "inconclusive"
+    elif "ERROR: netlists do not match." in output:
+        verdict = "mismatch"
+    elif "CONGRATULATIONS! Netlists match." in output:
+        verdict = "matched"
+    else:
+        verdict = "no LVS verdict"
+    # A mocked/failed runner cannot manufacture report provenance. Retain the
+    # existing tuple API; acceptance validates the captured runtime separately.
+    _write_evidence(out_dir / "lvs.evidence.json", {
+        "schema": "ics55-lvs-evidence/1", "signoff": False, "top": top,
+        "profile": lvs_profile, "mode": lvs_mode, "verdict": verdict,
+        "runtime": _stage_runtime(out_dir / "lvs.log"),
+        "report": _artifact_ref(report) if report.is_file() else None,
+        "capability": _artifact_ref(out_dir / "strict_capability.json")
+        if lvs_profile == "openram-macro" else None,
+    })
+    return verdict == "matched", verdict, report
 
 
 def verify_one(gds, top, netlist=None, pdk_root=None, librelane_root=None,
@@ -509,6 +630,8 @@ def run_gds_pex(gds, top=None, pdk_root=None, out_dir="pex", source="lef",
     ``completed`` means the artifacts were produced. ``accepted`` requires
     explicit coupling models; estimated/seed-only runs never pass that gate.
     Even an accepted screening run is not foundry signoff.
+    That flag is not quantitative RC calibration or final physical acceptance;
+    the architecture physical-evidence validator checks those independently.
     """
     try:
         from .gds_pex_geometry import extract_geometry
@@ -517,13 +640,29 @@ def run_gds_pex(gds, top=None, pdk_root=None, out_dir="pex", source="lef",
         from gds_pex_geometry import extract_geometry
         from gds_pex_rc import build_process, extract_parasitics, write_spice
 
+    if isinstance(process_json, (str, os.PathLike)):
+        process_json = Path(process_json).expanduser().resolve()
     pdk, _ = _resolve_roots(pdk_root, None)
     destination = Path(out_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
+    started_ns = time.time_ns()
+    sources = _deck_sources(pdk / "libs.tech/pex/config_gen.py")
+    sources.extend(_artifact_ref(sys.modules[name].__file__) for name in
+                   {__name__, extract_geometry.__module__, extract_parasitics.__module__})
+    sources.append(_artifact_ref(sys.executable))
+    sources.extend(_artifact_ref(module.__file__) for name, module in tuple(sys.modules.items())
+                   if (name == "pya" or name.startswith("klayout."))
+                   and getattr(module, "__file__", None)
+                   and Path(module.__file__).is_file())
+    if isinstance(process_json, (str, os.PathLike)):
+        sources.append(_artifact_ref(process_json))
+    input_ref = _artifact_ref(gds)
+    output_refs = {}
     geometry = extract_geometry(gds, top)
     (destination / "geometry.json").write_text(
         json.dumps(geometry, indent=2) + "\n", encoding="utf-8")
+    output_refs["geometry"] = _artifact_ref(destination / "geometry.json")
     out("GDS PEX: {} MOS, {} nets, {} ports".format(
         len(geometry["devices"]), len(geometry["nets"]), len(geometry["ports"])))
     results = []
@@ -539,6 +678,11 @@ def run_gds_pex(gds, top=None, pdk_root=None, out_dir="pex", source="lef",
             json.dumps(process, indent=2) + "\n", encoding="utf-8")
         (destination / (tag + ".parasitics.json")).write_text(
             json.dumps(parasitics, indent=2) + "\n", encoding="utf-8")
+        output_refs[corner] = {
+            "netlist": _artifact_ref(netlist),
+            "process": _artifact_ref(destination / (tag + ".process.json")),
+            "parasitics": _artifact_ref(destination / (tag + ".parasitics.json")),
+        }
         result = {key: value for key, value in parasitics.items()
                   if key not in ("capacitors", "resistors", "terminal_nodes", "port_nodes")}
         result.update(corner=corner, netlist=str(netlist),
@@ -552,6 +696,17 @@ def run_gds_pex(gds, top=None, pdk_root=None, out_dir="pex", source="lef",
                    accepted=all(result["accepted"] for result in results), signoff=False,
                    geometry=geometry["summary"], corners=results,
                    seconds=round(time.monotonic() - start, 3))
+    evidence_path = destination / "pex.evidence.json"
+    _write_evidence(evidence_path, {
+        "schema": "ics55-gds-pex-evidence/1", "signoff": False,
+        "started_ns": started_ns, "ended_ns": time.time_ns(), "top": geometry["design"],
+        "source": source, "mode": mode, "input": input_ref, "sources": sources,
+        "outputs": output_refs,
+        "inputs_unchanged": all(Path(ref["path"]).is_file()
+                                and _sha256(ref["path"]) == ref["sha256"]
+                                for ref in sources + [input_ref]),
+    })
+    summary["evidence"] = _artifact_ref(evidence_path)
     (destination / "pex_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     if not summary["accepted"]:

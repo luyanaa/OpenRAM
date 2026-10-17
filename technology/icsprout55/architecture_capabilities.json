@@ -70,12 +70,14 @@
         },
         "delay_chain_fanout": {
           "values": [
-            4
+            4,
+            3
           ]
         },
         "write_driver_strength": {
           "values": [
-            1
+            1,
+            0.75
           ]
         }
       },
@@ -101,7 +103,8 @@
         },
         "cload_ff": {
           "values": [
-            5.0
+            5.0,
+            50.0
           ]
         },
         "slew_ns": {
@@ -121,7 +124,8 @@
         },
         "fidelity": {
           "values": [
-            "F3"
+            "F3",
+            "F4"
           ]
         }
       },
@@ -288,6 +292,311 @@
                 "models__snfp_7p5ns": {
                   "path": "../../ics55_work/runs/optimizer_execution/snfp_7p5ns_execution/73fc0e69b68eb2ee74cceef26257b6670cab024def6b30208daa245460a75af7/runs/847462036b91c9db18b67ba6f81f429804e80c5b5bffc159e2ff824b1d2d3c26/attempt-0001/ngspice-nmmunt48/observation-manifest.json",
                   "sha256": "97906c8324789294c93fb12b5685cd99e59c5cc2d71cf2cafffc4fe14c46e489"
+                }
+              },
+              "basic_checks": [
+                {
+                  "artifact": "topology",
+                  "pointer": "/completed",
+                  "equals": true
+                },
+                {
+                  "artifact": "topology",
+                  "pointer": "/equivalent",
+                  "equals": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "parameters": {
+            "word_size": 8,
+            "num_words": 32,
+            "words_per_row": 1,
+            "num_banks": 1,
+            "stdcell_library": "SC9T",
+            "column_mux": "nmos",
+            "decoder_strategy": "baseline",
+            "replica_strategy": "baseline",
+            "delay_chain_stages": 9,
+            "delay_chain_fanout": 4,
+            "write_driver_strength": 0.75
+          },
+          "models": {
+            "F3": {
+              "adapter": "ics55-ngspice",
+              "artifacts": {
+                "config": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/configs/ics55_2rw_32x8_d9_f4_w075.py",
+                  "sha256": "47662e974ba1af74f4cd25a2b3f57955cd7504ad9249f26f0b78cf190c5fe178"
+                },
+                "gds": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/ics55_2rw_32x8_d9_f4_w075.gds",
+                  "sha256": "ddfe66c5396a2ff0fbfc1c1f27de7252ebd83d61e099ef863e33b49e848bb827"
+                },
+                "netlist": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/pex_final/ics55_2rw_32x8_d9_f4_w075_typ.pex.sp",
+                  "sha256": "cafc6a520bab8c7b95e239f31dc3e1b5bebaa41402cbba17b0c633559ba60687"
+                },
+                "extraction": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/pex_final/pex_summary.json",
+                  "sha256": "e799bcdd8a350903a688c628c82c72779bbef36fac9e3e7ad943f8ec0719d7d3"
+                },
+                "reference": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/ics55_2rw_32x8_d9_f4_w075.lvs.sp",
+                  "sha256": "ff622adc331b48146e4f6eac441df893a5f8bbd4858d1c97069fb02f11777ca2"
+                },
+                "topology": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/topology/topology.json",
+                  "sha256": "9a2cb4b3c68403b0a6713c1fc4e5865727b1e8f167746a2663b7772915960922"
+                },
+                "probe_map": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/topology/reference_map.json",
+                  "sha256": "44bab4c45ced4591d30e77efeaefb112bca40e6aefefcc75708715a039a77ca9"
+                },
+                "model": {
+                  "path": "../../../icsprout55-pdk/libs.tech/spice/foundry/ngspice/ICsprout_55LLULP1225_V1p1_hsp.lib",
+                  "sha256": "538dc00d2da055c26facc672c2daf42209fd2252161bbd96bed8f690e5b9f430"
+                },
+                "trace": {
+                  "path": "../../ics55_work/runs/full_swing_2rw_sscold_snfp_write.trace",
+                  "sha256": "76d76708f450a1321b9c3eafdbcc5759aefd3c7cecc580165460feb6b9c3f26d"
+                },
+                "physical": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/physical_strict_flat/physical_evidence.json",
+                  "sha256": "31532a5e25fc0012318b05ff18642c564c26919af06601ff6144ea1c79857fa3"
+                },
+                "run__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/simulation.json",
+                  "sha256": "82a87014a6b74490976a8da86495302667562fc2b2f4ab54efce2ddbe034e6ed"
+                },
+                "waves__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/waves.dat",
+                  "sha256": "7595164596b2097ac627b20f7604f735cd4e5a7d95a9384c26294174372e1d74"
+                },
+                "probes__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/probes.json",
+                  "sha256": "f92347dfab77388cd5202616905e534810ef31dcab037cc8a68944c090fb4e3e"
+                },
+                "init__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/initialization_plan.json",
+                  "sha256": "7a9e8ac79ef81acb24db721833e3ae706b7aeb8577f6c647f720759637e1362e"
+                },
+                "deck__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/transient.sp",
+                  "sha256": "ab77d713ede5ffa57e605d7aca15a1b2d991b10d9cb5d844ce4e398cb26a1ea9"
+                },
+                "models__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/observation-manifest.json",
+                  "sha256": "2c50b40f5bbc084bcd690336d715df7721b18ca85093cbb7e57793f8ceabc8b2"
+                }
+              },
+              "basic_checks": [
+                {
+                  "artifact": "topology",
+                  "pointer": "/completed",
+                  "equals": true
+                },
+                {
+                  "artifact": "topology",
+                  "pointer": "/equivalent",
+                  "equals": true
+                }
+              ]
+            },
+            "F4": {
+              "adapter": "ics55-ngspice",
+              "artifacts": {
+                "config": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/configs/ics55_2rw_32x8_d9_f4_w075.py",
+                  "sha256": "47662e974ba1af74f4cd25a2b3f57955cd7504ad9249f26f0b78cf190c5fe178"
+                },
+                "gds": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/ics55_2rw_32x8_d9_f4_w075.gds",
+                  "sha256": "ddfe66c5396a2ff0fbfc1c1f27de7252ebd83d61e099ef863e33b49e848bb827"
+                },
+                "netlist": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/pex_final/ics55_2rw_32x8_d9_f4_w075_typ.pex.sp",
+                  "sha256": "cafc6a520bab8c7b95e239f31dc3e1b5bebaa41402cbba17b0c633559ba60687"
+                },
+                "extraction": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/pex_final/pex_summary.json",
+                  "sha256": "e799bcdd8a350903a688c628c82c72779bbef36fac9e3e7ad943f8ec0719d7d3"
+                },
+                "reference": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/ics55_2rw_32x8_d9_f4_w075.lvs.sp",
+                  "sha256": "ff622adc331b48146e4f6eac441df893a5f8bbd4858d1c97069fb02f11777ca2"
+                },
+                "topology": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/topology/topology.json",
+                  "sha256": "9a2cb4b3c68403b0a6713c1fc4e5865727b1e8f167746a2663b7772915960922"
+                },
+                "probe_map": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/topology/reference_map.json",
+                  "sha256": "44bab4c45ced4591d30e77efeaefb112bca40e6aefefcc75708715a039a77ca9"
+                },
+                "model": {
+                  "path": "../../../icsprout55-pdk/libs.tech/spice/foundry/ngspice/ICsprout_55LLULP1225_V1p1_hsp.lib",
+                  "sha256": "538dc00d2da055c26facc672c2daf42209fd2252161bbd96bed8f690e5b9f430"
+                },
+                "trace": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/held_2rw_32x8_characterization.trace",
+                  "sha256": "3f9ffa063e71effd9c615dd09e822ebee25913adef996540d3c585ee03f26952"
+                },
+                "physical": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/physical_strict_flat/physical_evidence.json",
+                  "sha256": "31532a5e25fc0012318b05ff18642c564c26919af06601ff6144ea1c79857fa3"
+                },
+                "run__snfp_7p5ns_5ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/simulation.json",
+                  "sha256": "593d2a879eb19839aea020cd7735d52ea5a488b7fbff374429a4cc5d822b5c3b"
+                },
+                "waves__snfp_7p5ns_5ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/waves.dat",
+                  "sha256": "950f64bfa0c7e682c0780c0b5ccbd97a28c9b2892e1397c67dfa812916123afb"
+                },
+                "probes__snfp_7p5ns_5ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/probes.json",
+                  "sha256": "a62092eba90955addf2610f5004581ca9916eb93925a7486e9672041e55708c5"
+                },
+                "init__snfp_7p5ns_5ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/initialization_plan.json",
+                  "sha256": "7a9e8ac79ef81acb24db721833e3ae706b7aeb8577f6c647f720759637e1362e"
+                },
+                "deck__snfp_7p5ns_5ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/transient.sp",
+                  "sha256": "f52a6abd7b3184fe206e8c14cd3f4b70809eeed68b042cfa8a770f2f5e572b18"
+                },
+                "models__snfp_7p5ns_5ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/observation-manifest.json",
+                  "sha256": "a2e9829048defe2f600d859ddb45d3f0b2b4c2b4af376a62928c35750f57cb6d"
+                },
+                "run__snfp_7p5ns_50ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-u2uteb97/simulation.json",
+                  "sha256": "e79397c580cb5d3c864b3877622406e7a5c40fabb459def0fad17a5db311ddd3"
+                },
+                "waves__snfp_7p5ns_50ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-u2uteb97/waves.dat",
+                  "sha256": "a3b8aebf95dc86a5a7b69add284106d69de96a33720e793893842bef0d092c05"
+                },
+                "probes__snfp_7p5ns_50ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-u2uteb97/probes.json",
+                  "sha256": "a62092eba90955addf2610f5004581ca9916eb93925a7486e9672041e55708c5"
+                },
+                "init__snfp_7p5ns_50ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-u2uteb97/initialization_plan.json",
+                  "sha256": "7a9e8ac79ef81acb24db721833e3ae706b7aeb8577f6c647f720759637e1362e"
+                },
+                "deck__snfp_7p5ns_50ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-u2uteb97/transient.sp",
+                  "sha256": "82a61509fcad48c202d5f9e4b029353c1aea3254552c343a865bf3731ef4875f"
+                },
+                "models__snfp_7p5ns_50ff_held": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-u2uteb97/observation-manifest.json",
+                  "sha256": "7cd79c82bba554474ec43c760d0ea47dc7dc2b23adbb8bffa1b381d9390b48a9"
+                },
+                "characterization": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_replay/characterization.json",
+                  "sha256": "5316bab19f8e4e8ac2bf991cfaf7cff5e2cf8b7f0c6b77c28ef910ea8cb1ed95"
+                }
+              },
+              "basic_checks": [
+                {
+                  "artifact": "topology",
+                  "pointer": "/completed",
+                  "equals": true
+                },
+                {
+                  "artifact": "topology",
+                  "pointer": "/equivalent",
+                  "equals": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "parameters": {
+            "word_size": 8,
+            "num_words": 32,
+            "words_per_row": 1,
+            "num_banks": 1,
+            "stdcell_library": "SC9T",
+            "column_mux": "nmos",
+            "decoder_strategy": "baseline",
+            "replica_strategy": "baseline",
+            "delay_chain_stages": 9,
+            "delay_chain_fanout": 3,
+            "write_driver_strength": 1
+          },
+          "models": {
+            "F3": {
+              "adapter": "ics55-ngspice",
+              "artifacts": {
+                "config": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/configs/ics55_2rw_32x8_d9_f3_w100.py",
+                  "sha256": "869e633b39ce61c0991d1f9660185a4463384d2739014e17c9380290eb890a49"
+                },
+                "gds": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/ics55_2rw_32x8_d9_f3_w100.gds",
+                  "sha256": "0e92a36499c1f278653366b9e646cc9ab7682f4d5008e67322c38c867bab114b"
+                },
+                "netlist": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/pex_final/ics55_2rw_32x8_d9_f3_w100_typ.pex.sp",
+                  "sha256": "4006ebfae2d7c426654e391f5680ccf31fb8b6d1034f579bb0dbb62042d5227e"
+                },
+                "extraction": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/pex_final/pex_summary.json",
+                  "sha256": "3d2960120c49dc7a141f7b22e416f744562f42b16d7d9f80d57ade8aeaf531f9"
+                },
+                "reference": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/ics55_2rw_32x8_d9_f3_w100.lvs.sp",
+                  "sha256": "35f58e17a147fb277c8d9e9fd56cc96e98d9b2e963616664846276a6e9fe7203"
+                },
+                "topology": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/topology/topology.json",
+                  "sha256": "8c88f1c8f2199fe6e2ec8a56eee2fdf1b8f8de639d3160e171d9d10e7ff805a1"
+                },
+                "probe_map": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/topology/reference_map.json",
+                  "sha256": "0fbed0c46e6b8814fd3267bbada515beb8be64a1bb06dddd42b34596c431d99a"
+                },
+                "model": {
+                  "path": "../../../icsprout55-pdk/libs.tech/spice/foundry/ngspice/ICsprout_55LLULP1225_V1p1_hsp.lib",
+                  "sha256": "538dc00d2da055c26facc672c2daf42209fd2252161bbd96bed8f690e5b9f430"
+                },
+                "trace": {
+                  "path": "../../ics55_work/runs/full_swing_2rw_sscold_snfp_write.trace",
+                  "sha256": "76d76708f450a1321b9c3eafdbcc5759aefd3c7cecc580165460feb6b9c3f26d"
+                },
+                "physical": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/physical_strict_flat/physical_evidence.json",
+                  "sha256": "f07dcdd93c31a3df4ad0c78e3f61a5f20779545c8d925c35d0e259be4c0ce3f8"
+                },
+                "run__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/simulation.json",
+                  "sha256": "7d36207c1cac39fc0c145d7aad87c9f47efe0949a4928766627395a8086823e8"
+                },
+                "waves__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/waves.dat",
+                  "sha256": "72a7b7a3ad070fd839ee3581761f2153b48608c68d1b7020ee2251cb9a8df9a8"
+                },
+                "probes__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/probes.json",
+                  "sha256": "bd989e059420f17e3604261f787d8d6d3548630380f9768f513fe8361fb29d5a"
+                },
+                "init__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/initialization_plan.json",
+                  "sha256": "761fda85dc08e5e763ffa1180071de9a7abb58127cf5161fc94206261646d533"
+                },
+                "deck__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/transient.sp",
+                  "sha256": "dc4723d78fd0930e10ac5bc8839149c8d772669985b9ae88b3a9557fac0aa420"
+                },
+                "models__snfp_7p5ns": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/observation-manifest.json",
+                  "sha256": "4a250c91c9ac0e46e1067180a2509aeead8fe982f836e8802dd3f1462adc63ab"
                 }
               },
               "basic_checks": [

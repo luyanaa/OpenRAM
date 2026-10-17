@@ -180,54 +180,73 @@ Existing `trace.txt` readers remain the source of simulation inputs and continue
 to accept traces without the sidecar. Re-generate traces with `tbgen.py` before
 characterizing a pure R or W port.
 
-`charz.py` records per-port timing and energy from a `--diag` run. `--diag`
-also saves each `XSRAM.XcontrolN.rbl_bl_delay` replica net. Use separate sweep
-tags for the two output loads; each run otherwise reuses the same trace and
-corner. Supply the selected standard-cell library so the measurement carries
-the DFF-library provenance used for setup/hold:
+`charz.py` computes polarity-specific read delay/10–90% transition, signed
+whole-macro supply energy and clock-active idle energy. Stable outputs do not
+become zero-delay observations. Every output bit must exhibit both directions
+before a complete rise/fall table is available. Standalone Spectre extraction
+reports `functional: null`; it does not manufacture a passing waveform verdict.
+
+The local, provenance-bound path uses the native ngspice checker and admits
+both loads independently:
 
 ```sh
-S=technology/icsprout55/sim
-STDCELL_LIBRARY=SC9T     # use the same value selected by the macro config
-python3 $S/sweep.py ics55_2rw_32x8 --periods 8 --corners ss_1p08_m40 \
-    --cycles 24 --tag char_m5 --cload 5 --tr 0.03 --diag
-python3 $S/sweep.py ics55_2rw_32x8 --periods 8 --corners ss_1p08_m40 \
-    --cycles 24 --tag char_m50 --cload 50 --tr 0.03 --diag
-python3 $S/charz.py $ICS55_WORK/sim/char_m5/ss_1p08_m40_T8p0.raw \
-    $ICS55_WORK/sim/char_m5/trace.txt --period 8 --vdd 1.08 --temp -40 \
-    --corner ss --stdcell-library "$STDCELL_LIBRARY" --ports 0,1 \
-    --load-ff 5 --input-slew-ns 0.03 > m5.json
-python3 $S/charz.py $ICS55_WORK/sim/char_m50/ss_1p08_m40_T8p0.raw \
-    $ICS55_WORK/sim/char_m50/trace.txt --period 8 --vdd 1.08 --temp -40 \
-    --corner ss --stdcell-library "$STDCELL_LIBRARY" --ports 0,1 \
-    --load-ff 50 --input-slew-ns 0.03 > m50.json
+python3 technology/icsprout55/sim/characterize.py \
+    technology/icsprout55/architecture_capabilities.json \
+    technology/icsprout55/configs/ics55_2rw_characterization.json \
+    --out-dir ics55_work/runs/new_characterization --execute --timeout 18000
 ```
 
-Assemble those samples under `m5` and `m50` in the `mklib.py` input schema,
-with per-port `dff_setup` and `dff_hold` in ns and the corner's `vdd`/`temp`.
-Keep each `charz.py` sample's root `stdcell_library` field and each port's
-`role`; `mklib.py` rejects missing or mismatched library/role metadata. For a
-2RW macro the port roles are `0:RW,1:RW`; a 1W+1R macro uses `0:W,1:R` when
-those are the behavioral-model port indices.
+The request selects one exact sizing tuple, PVT, period, slew, initialization
+and fidelity. `--loads-ff 5 50` is the default pair; neither load substitutes for
+the other. Native jobs run serially. Without `--execute`, only exact registered
+current-capture bundles can be replayed. A nonzero launcher exit or incomplete
+bundle is never accepted, even if `simulation.json` looks successful; failed
+attempts and `adapter-launch.log` remain in the output directory.
+
+`characterization.json` binds each candidate/load to the raw run, waves, typed
+probes, deck, initialization, extraction, execution-time model closure and
+measurement source hashes. `measurements.json` contains schema-3 `m5`/`m50`
+samples for the exporter. Replay recomputes the selected-load numeric sample
+and validates the other load's references; changing tuple, load, PVT, period,
+slew, initialization or fidelity cannot relabel an observation.
+
+An operation-energy window runs from its rising clock edge to the next rising
+edge. Other ports must stay deselected with stable electrical inputs across
+the previous/current/next cycles; the measured port's next-cycle electrical
+inputs must equal its current inputs. That next half-period update lies inside
+the integral. Use real held-input operation cycles, including masks/spare
+enables, rather than attributing preparation of the next operation to this one.
+Read/write aggregates require every eligible port; unsupported operations are
+not published on pure R/W ports. Energy includes background clocks and output
+load charging; it is not intrinsic pin power. Idle is whole-macro clock-active
+idle, not static leakage. Functional failure clears objective timing/energy.
+
+Only an explicit **incomplete diagnostic** Liberty table export is supported:
 
 ```sh
-python3 $S/mklib.py measurements.json ics55_2rw_32x8 out/lib \
-    --words 32 --bits 8 --area "$AREA_UM2" --stdcell-library "$STDCELL_LIBRARY" \
-    --port-roles 0:RW,1:RW --ports 0,1 --power-pins VDD,VSS
+python3 technology/icsprout55/sim/mklib.py measurements.json \
+    ics55_2rw_32x8_d9_f4_w075 out/diagnostic_lib \
+    --words 32 --bits 8 --area "$AREA_UM2" --stdcell-library SC9T \
+    --port-roles 0:RW,1:RW --ports 0,1 --power-pins VDD,VSS \
+    --diagnostic-table-only
 ```
 
-The Liberty pins and memory descriptions follow those port roles: RW exposes
-read and write pins, R exposes only read pins/arcs, and W exposes only write
-pins/arcs. Per-port setup/hold, read delay, write-enable, and energy metrics
-remain separate; unavailable operations do not receive fallback RW arcs.
-The Liberty tables contain only the two measured loads and one measured input
-slew; no interpolation or extrapolation is generated. `max_capacitance` is
-the largest measured load. Use the library only inside the recorded slew/load
-domain. `dff_setup`/`dff_hold` must come from the selected DFF's characterized
-timing data, not the order-of-magnitude analytical estimates in `tech.py`.
-The Liberty encodes measured clock high/low pulse minima, minimum period,
-input setup/hold, and falling-edge read access. OpenRAM has no separate PPA
-optimizer API; these standard Liberty constraints are the available handoff.
+The tables retain the two measured loads and one measured slew/PVT. A polarity
+is emitted only when its delay and transition are measured on every output bit
+at both loads; otherwise both tables for that direction are explicitly omitted,
+never filled with zero or copied from the other polarity. A read port with no
+complete measured polarity rejects export. The current native run observes
+falling-clock `cell_fall`/`fall_transition`, but no post-fall output rise; its
+`cell_rise`/`rise_transition` remain unknown. See `../SIM_RESULTS.md`.
+All diagnostic tables set `dont_use: true`; they are not usable STA/F4 closure.
+`package_macro.py` likewise requires explicit `--diagnostic-table-only`.
+No guessed DFF setup/hold, clock pulse minima, minimum period, input/clock
+capacitance, static leakage or intrinsic pin power is emitted. A passing tested
+period is not Tmin. Complete export remains unavailable without waveform-
+verified macro boundary measurements, measured input/clock loading and accepted
+nonestimated physical evidence. Self-declared JSON brackets are not proof.
+The optimizer has an independent `characterization` gate; diagnostic samples
+leave it unknown even if DRC/LVS/PEX later pass.
 
 Concurrent writes to the same physical row have undefined data and no
 priority, even when column-muxed logical addresses differ. The reference

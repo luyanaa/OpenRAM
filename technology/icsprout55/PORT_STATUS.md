@@ -263,6 +263,27 @@ variants still have separate mismatches and are not accepted as clean.
   packaged GDS/CDL has been run through Calibre, Genus, or Innovus in this
   validation pass.
 
+### Native sizing/characterization continuation
+
+* The registry admits exact 32x8 SC9T 2RW tuples `(9,4,1)`, `(9,4,.75)` and
+  `(9,3,1)` for delay stages/fanout/write strength; ungenerated combinations
+  reject. Both new layouts complete their own GDS/RCC/topology and actual
+  SNFP125,7.5ns native screening with48/48 bit checks.
+* Real width075 characterization at5/50fF passes96/96 bit checks per load
+  and measures isolated whole-macro signed read/write energy. Both ports have
+  measured falling-clock output-fall tables; output-rise tables are unknown.
+  The actual diagnostic Liberty omits missing polarity pairs and remains
+  `dont_use`; no complete F4/STA interface is inferred from passing reads.
+* Packaging/export now requires explicit `--diagnostic-table-only` and emits
+  incomplete `dont_use` tables. Historical role-correct table generation and
+  fixture coverage do not prove macro setup/hold/pulse/Tmin or input/clock
+  loading. Complete STA Liberty remains unavailable.
+* Native F4 diagnostics and strict physical evidence ingestion are implemented;
+  DRC evidence passes, strict native LVS fails and RC is estimated/unaccepted.
+  The independent characterization closure gate remains unknown. See
+  [SIM_RESULTS.md](SIM_RESULTS.md) for exact measured domains and raw evidence.
+
+
 ## Open items
 * Column-mux transistor-level cross-corner validation and cross-corner
   re-characterization of the full-swing 2RW write driver remain open; see
@@ -281,6 +302,7 @@ stubs and Liberty pins/arcs from per-port RW/R/W roles. Supported DFF mappings
 cover the SC9T/SC9TL/SC9TH and H7CR/H7CL/H7CH families. The deterministic
 contract test `technology/icsprout55/sim/test_p1_interfaces.py` passed 5 tests
 for SC9T and H7CR across 1RW, 1W1R, and 2RW interfaces, mapping and
-fail-closed cases, and multi-clock LEF antenna sizing. These tests use fixture
-measurement data; no current Spectre-characterized package or measured Liberty
-artifact was produced.
+fail-closed cases, and multi-clock LEF antenna sizing. Those tests use fixture
+measurement data, not a Spectre-characterized package. The subsequent native
+ngspice continuation above produces measured, incomplete diagnostic fall tables
+only; neither result is a complete measured STA Liberty artifact.

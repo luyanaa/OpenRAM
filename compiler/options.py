@@ -88,6 +88,10 @@ class options(optparse.Values):
     # fanout per stage for any control logic
     delay_chain_fanout_per_stage = 4
 
+    # ICsprout55 output-stage-only sizing; local control inverters stay fixed.
+    # Nonbaseline strengths require an explicitly supported write-driver cell.
+    write_driver_strength = 1.0
+
     accuracy_requirement = 0.75
 
     ###################

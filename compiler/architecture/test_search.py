@@ -79,7 +79,7 @@ class SearchTest(unittest.TestCase):
                                 domain=deepcopy(candidate["environment"]),
                                 fidelity=candidate["environment"]["fidelity"], evidence=[deepcopy(evidence)]))
         return dict(measurements=records, checks=dict(functional=True, topology=True, drc=True,
-                    lvs=True, pex_accepted=True), artifacts={"synthetic_observation": evidence},
+                    lvs=True, pex_accepted=True, characterization=True), artifacts={"synthetic_observation": evidence},
                     estimated=False, signoff=False, details={"scope": "synthetic unit test only"})
 
     def run_search(self, evaluator=None, request=None, **kwargs):
@@ -597,6 +597,7 @@ class SearchTest(unittest.TestCase):
         self.request["objectives"] = ["area_um2", "read_energy_pj", "write_energy_pj", "cycle_time_ns"]
         cases = [(None, None, None), ("drc", False, None), ("lvs", None, None),
                  ("pex_accepted", False, None), ("topology", False, None),
+                 ("characterization", None, None), ("characterization", False, None),
                  (None, None, "estimated"), (None, None, "missing-energy")]
         for index, (check, value, change) in enumerate(cases):
             def evaluate(admission, directory):

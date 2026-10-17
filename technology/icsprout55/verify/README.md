@@ -355,3 +355,77 @@ GDS topology CLI also passes A and B at `ics55_work/runs/topology_repair_strict_
 Calibre was skipped as optional for this pass; this local environment has no
 Calibre executable, local decks, or configured license. No Calibre DRC/LVS
 result is claimed for either candidate.
+
+### Real bounded sizing variants
+
+```sh
+python3 technology/icsprout55/scripts/sizing_variants.py \
+    --out-dir ics55_work/runs/new_sizing_experiment --generate
+```
+
+Without `--generate`, the script materializes inputs only. The explicit
+generation mode runs a fresh compiler subprocess for each exact
+`(delay_chain_stages, delay_chain_fanout, write_driver_strength)` tuple:
+`(9,4,1)`, `(9,4,0.75)`, `(9,3,1)`. It refuses conflicting or unowned outputs.
+The manifest records config/source/tool/output hashes and actual return codes;
+`generated` is not electrical or physical PASS. Default compiler Liberty is
+still analytical. In a name such as `d9_f4_w075`, `f4` means fanout four,
+not optimizer fidelity F4.
+
+`write_driver_strength` is output-only: eight MOS per driver use 0.60 um at
+1 or 0.45 um at 0.75; four local inversion MOS stay 0.60 um. Narrowed strips
+keep the original diffusion centers, footprint, pins, rails and control tracks.
+Nonbaseline strengths are rejected outside the supported ICsprout55 generated
+driver. The matching measurement leaf and factory identity use the same explicit
+strength. The fanout knob maps to `delay_chain_fanout_per_stage` and changes real
+load devices, not just a reported scalar.
+
+Admission requires each tuple's own finalized GDS, source netlist, source-free
+RCC, topology A+B and exact probe map. Individually allowed values do not admit
+the ungenerated `(9,3,0.75)` combination. Reusing a topology map after a fresh
+extraction requires identical GDS and RCC SHA-256 values, not merely equal
+configuration options. See [SIM_RESULTS.md](../SIM_RESULTS.md) for actual local
+measurements and preserved raw evidence.
+
+### Physical evidence consumed by F4
+
+The native architecture model's optional `physical` artifact points to an
+`ics55-physical-evidence/1` manifest. It binds exact `gds`, `netlist`,
+`reference` and `extraction` hash references, top name and `signoff: false`;
+`drc` and `lvs` reference fresh stage evidence, while `pex` references the
+corner, geometry, process, parasitics and quantitative calibration evidence.
+References are resolved relative to their containing JSON document.
+
+New KLayout runs retain `*.runtime.json` and `drc.evidence.json`/
+`lvs.evidence.json`: actual tool identity, prelaunch rule/include/input hashes,
+execution interval/status, raw log and freshly produced report hashes. Nix is
+used to resolve the installed KLayout executable; the resolved tool runs
+directly, rather than recording Nix as the producing tool.
+Full-hierarchy DRC and bounded exact leaf waivers are required. LVS uses the
+pinned strict capability/deck, exact device dimensions and declared pins.
+Full strict flat or hierarchical comparison is allowed; skipped cells,
+generic profiles and joining/tolerance relaxations cannot satisfy the gate.
+Nonzero/tool-error/inconclusive execution is unknown; a completed strict
+mismatch is false. Historical log text cannot reconstruct missing tool state.
+
+`pex.evidence.json` records actual source-free generation inputs, sources and
+outputs. Relative `--process-json` inputs are expanded/resolved before both
+capture and process construction. Changing captured producer/input bytes
+invalidates evidence; retain immutable inputs or regenerate rather than
+relabeling old results.
+
+The physical consumer independently recomputes calibration coupons and checks
+dimensioned raw measurement/independent-field-solver observations, finite error
+bounds, units/corner, all used metal resistance/ground/lateral capacitance,
+used cross-layer pairs and via resistance. It preserves the extractor's native
+idealizations. `accepted`, `calibrated`, explicit coupling, ratio-only CAPTAB
+tables or hand-entered coefficients alone are insufficient; estimated process
+ancestry cannot clear `estimated`. Missing calibration keeps PEX unaccepted.
+These checks are research evidence, never foundry signoff.
+
+Physical PASS is also not complete characterization. F4 additionally requires
+the independent `characterization` check; two-load numeric diagnostics leave it
+unknown until macro boundary and input/clock loading evidence can be verified.
+See [sim/README.md](../sim/README.md#measured-multi-port-liberty) for the
+diagnostic-only export boundary.
+

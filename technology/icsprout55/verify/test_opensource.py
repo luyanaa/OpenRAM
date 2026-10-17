@@ -150,5 +150,90 @@ class LvsProfileTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class RuntimeProvenanceTests(unittest.TestCase):
+    """Exercise the real producer at its subprocess boundary, without EDA."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.deck = self.root / "deck" / "ics55.lvs"
+        self.deck.parent.mkdir()
+        self.deck.write_text("# SYNTHETIC unit deck\n")
+        self.gds = self.root / "macro.gds"
+        self.gds.write_text("SYNTHETIC layout identity\n")
+        self.reference = self.root / "source.sp"
+        self.child = self.root / "included.sp"
+        self.reference.write_text('.include "included.sp"\n.subckt macro a b\n.ends\n')
+        self.child.write_text("* SYNTHETIC include\n")
+        self.tool = self.root / "synthetic-tool"
+        self.tool.write_text("SYNTHETIC binary identity, not executed\n")
+        self.report = self.root / "run" / "report.lvsdb"
+        self.log = self.root / "run" / "lvs.log"
+        self.args = ["-b", "-r", str(self.deck), "-rd", "input=" + str(self.gds),
+                     "-rd", "schematic=" + str(self.reference), "-rd", "report=" + str(self.report)]
+
+    def invoke(self, result):
+        with patch.object(opensource, "_query_klayout_version", return_value="0.30.7"):
+            with patch.object(opensource.subprocess, "run", side_effect=result):
+                return opensource._run_klayout(
+                    self.args, self.root, self.log, selection=("executable", str(self.tool)))
+
+    def runtime(self):
+        return json.loads(Path(str(self.log) + ".runtime.json").read_text())
+
+    def test_real_runner_captures_prelaunch_inputs_tool_and_transitive_include(self):
+        def child(_command, **_kwargs):
+            self.report.write_text("SYNTHETIC fresh report\n")
+            return SimpleNamespace(returncode=0, stdout="CONGRATULATIONS! Netlists match.\n")
+        code, _ = self.invoke(child)
+        self.assertEqual(code, 0)
+        runtime = self.runtime()
+        self.assertEqual(runtime["schema"], "ics55-klayout-runtime/1")
+        self.assertEqual(runtime["inputs"]["input"], opensource._artifact_ref(self.gds))
+        self.assertEqual(runtime["tool"]["executable"], opensource._artifact_ref(self.tool))
+        self.assertIn(opensource._artifact_ref(self.child), runtime["sources"])
+        self.assertTrue(runtime["inputs_unchanged"])
+        self.assertTrue(runtime["outputs"]["report"]["fresh"])
+        self.assertEqual(runtime["log"], opensource._artifact_ref(self.log))
+        self.assertFalse(runtime["signoff"])
+
+    def test_failed_launcher_keeps_returncode_and_success_looking_stdout(self):
+        code, _ = self.invoke(lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=17, stdout="CONGRATULATIONS! Netlists match.\n"))
+        self.assertEqual(code, 17)
+        self.assertEqual(self.runtime()["returncode"], 17)
+        self.assertIn("CONGRATULATIONS", self.log.read_text())
+        self.assertEqual(self.runtime()["outputs"], {})
+
+    def test_changed_input_during_execution_retains_original_hash_and_rejects_integrity(self):
+        original = opensource._artifact_ref(self.child)
+        def child(*_args, **_kwargs):
+            self.child.write_text("* changed by synthetic child\n")
+            return SimpleNamespace(returncode=0, stdout="finished\n")
+        self.invoke(child)
+        runtime = self.runtime()
+        self.assertFalse(runtime["inputs_unchanged"])
+        self.assertIn(original, runtime["sources"])
+        self.assertNotEqual(original, opensource._artifact_ref(self.child))
+
+    def test_preexisting_report_is_not_recorded_as_fresh_output(self):
+        self.report.parent.mkdir()
+        self.report.write_text("SYNTHETIC old report\n")
+        start = self.report.stat().st_mtime_ns + 1
+        with patch.object(opensource.time, "time_ns", return_value=start):
+            self.invoke(lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="finished\n"))
+        self.assertFalse(self.runtime()["outputs"]["report"]["fresh"])
+
+    def test_spawn_error_keeps_unknown_returncode_and_diagnostic(self):
+        def fail(*_args, **_kwargs):
+            raise OSError("synthetic spawn failure")
+        with self.assertRaisesRegex(opensource.OpenSourceError, "cannot start"):
+            self.invoke(fail)
+        runtime = self.runtime()
+        self.assertIsNone(runtime["returncode"])
+        self.assertFalse(runtime["inputs_unchanged"])
+        self.assertIn("synthetic spawn failure", self.log.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

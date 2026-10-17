@@ -9,14 +9,14 @@ Usage: charz.py RAWDIR TRACE --period NS --vdd V --stdcell-library LIB
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check import crossings, read_psf
+from check import read_psf
 from mklib import normalize_stdcell_library, ports_argument
-from tanalyze import _dir
 
 
 def trace_cycles(path):
@@ -65,6 +65,11 @@ def port_access_cycles(cycles, port):
         if (operation == "I") == selected:
             raise ValueError("trace op{} and {} disagree on cycle {}".format(
                 port, csb_pin, cycle))
+        if role == "RW" and selected:
+            if values.get(web_pin) not in ("0", "1"):
+                raise ValueError("selected RW operation requires an electrical " + web_pin)
+            if operation != ("W" if values[web_pin] == "0" else "R"):
+                raise ValueError("trace operation disagrees with electrical " + web_pin)
         if operation == "R":
             if role not in ("RW", "R"):
                 raise ValueError("trace reads from write-only port {}".format(port))
@@ -93,10 +98,33 @@ def port_control_signals(data, name, port, explicit=None):
     raise ValueError("ambiguous {} nets for port {}; pass --replica-net".format(name, port))
 
 
+def directed_crossings(times, values, threshold):
+    """PWL crossings, including exact-threshold samples but excluding touches."""
+    crossing_times, directions = [], []
+    previous = None
+    plateau = None
+    for index, value in enumerate(values):
+        sign = 1 if value > threshold else -1 if value < threshold else 0
+        if sign == 0:
+            if previous is not None and plateau is None:
+                plateau = times[index]
+            continue
+        if previous is not None and sign != previous[1]:
+            prior_index = previous[0]
+            time = (plateau if plateau is not None else times[prior_index] +
+                    (threshold - values[prior_index]) / (value - values[prior_index]) *
+                    (times[index] - times[prior_index]))
+            crossing_times.append(time)
+            directions.append(sign)
+        previous = (index, sign)
+        plateau = None
+    return crossing_times, directions
+
+
 def transitions(times, data, names, threshold, direction=None):
     result = []
     for name in names:
-        crossing_times, signs = _dir(times, data[name], threshold)
+        crossing_times, signs = directed_crossings(times, data[name], threshold)
         result.extend(t for t, sign in zip(crossing_times, signs)
                       if direction is None or sign == direction)
     return sorted(result)
@@ -107,8 +135,50 @@ def maximum(values):
     return max(values) if values else None
 
 
+def validate_waveforms(times, data):
+    """Reject partial/ambiguous PWL data before measuring any quantity."""
+    if (len(times) < 2 or any(type(t) not in (int, float) or not math.isfinite(t) for t in times)
+            or any(right <= left for left, right in zip(times, times[1:]))):
+        raise ValueError("waveform times must be finite and strictly increasing")
+    for name, values in data.items():
+        if len(values) != len(times) or any(
+                type(value) not in (int, float) or not math.isfinite(value) for value in values):
+            raise ValueError("incomplete/nonfinite waveform: " + name)
+
+
+def stable_idle(cycles, cycle, ports):
+    """Full-cycle support includes the NEXT half-period input update."""
+    records = [cycles.get(k) for k in (cycle - 1, cycle, cycle + 1)]
+    if any(record is None for record in records):
+        return False
+    for port in ports:
+        if any(record.get("csb{}".format(port)) != "1" for record in records):
+            return False
+        pins = {name for record in records for name in record
+                if re.fullmatch(r"(?:csb|web|addr|din|wmask|spare_wen){}".format(port), name)}
+        if any(len({record.get(pin) for record in records}) != 1 for pin in pins):
+            return False
+    return True
+
+
+def next_inputs_held(cycles, cycle, port):
+    """Exclude preparation of the next operation inside this full-cycle integral."""
+    records = [cycles.get(cycle), cycles.get(cycle + 1)]
+    if any(record is None for record in records):
+        return False
+    pins = {name for record in records for name in record
+            if re.fullmatch(r"(?:csb|web|addr|din|wmask|spare_wen){}".format(port), name)}
+    return all(records[0].get(pin) == records[1].get(pin) for pin in pins)
+
+
 def measure_port(times, data, cycles, port, period, voltage, power_current,
-                 replica_net=None):
+                 replica_net=None, *, skew1=0):
+    validate_waveforms(times, data)
+    if (type(period) not in (int, float) or not math.isfinite(period) or period <= 0
+            or type(voltage) not in (int, float) or not math.isfinite(voltage) or voltage <= 0):
+        raise ValueError("period and supply voltage must be finite and positive")
+    if type(skew1) not in (int, float) or skew1 != 0:
+        raise ValueError("measurement windows require explicitly zero port skew")
     period_s = period * 1e-9
     threshold = voltage / 2
     ports = sorted({int(name[3:]) for values in cycles.values() for name in values
@@ -121,6 +191,7 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
     if not clock:
         raise ValueError("missing clk{} waveform".format(port))
     clock_edges = transitions(times, data, clock, threshold, direction=1)
+    clock_falls = transitions(times, data, clock, threshold, direction=-1)
     clock_buffers = matching_signals(data, "clk_buf{}".format(port))
     buffer_edges = transitions(times, data, clock_buffers, threshold, direction=1)
     insertion = maximum(min(edge for edge in buffer_edges if edge > edge_in) - edge_in
@@ -137,22 +208,41 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
 
     access = []
     transitions_10_90 = []
+    directional = {name: [] for name in ("cell_rise", "cell_fall", "rise_transition", "fall_transition")}
+    raw_timing = []
     hold_after_rise = []
     for cycle in read_cycles:
         read_end = rise(cycle) + period_s
+        if fall(cycle) < times[0] or read_end > times[-1]:
+            raise ValueError("read timing window outside waveform support")
+        references = [edge for edge in clock_falls if fall(cycle) - period_s / 4 <= edge < fall(cycle) + period_s / 4]
+        if len(references) != 1:
+            continue
+        reference = references[0]
         for name in outputs:
-            mids, signs = _dir(times, data[name], threshold)
-            phase_crossings = [time for time in mids if fall(cycle) <= time < read_end]
-            if phase_crossings:
-                access.append(phase_crossings[-1] - fall(cycle))
-            low = crossings(times, data[name], 0.1 * voltage)
-            high = crossings(times, data[name], 0.9 * voltage)
-            for crossing in phase_crossings:
-                near_low = [time for time in low if abs(time - crossing) < period_s / 4]
-                near_high = [time for time in high if abs(time - crossing) < period_s / 4]
-                if near_low and near_high:
-                    transitions_10_90.append(abs(min(near_high, key=lambda x: abs(x - crossing)) -
-                                                 min(near_low, key=lambda x: abs(x - crossing))))
+            mids, signs = directed_crossings(times, data[name], threshold)
+            for crossing, sign in zip(mids, signs):
+                if not reference <= crossing < read_end:
+                    continue
+                delay = crossing - reference
+                access.append(delay)
+                delay_key = "cell_rise" if sign == 1 else "cell_fall"
+                transition_key = "rise_transition" if sign == 1 else "fall_transition"
+                directional[delay_key].append(delay * 1e9)
+                first_threshold, last_threshold = ((0.1, 0.9) if sign == 1 else (0.9, 0.1))
+                first = transitions(times, data, [name], first_threshold * voltage, sign)
+                last = transitions(times, data, [name], last_threshold * voltage, sign)
+                before = [t for t in first if reference <= t <= crossing]
+                after = [t for t in last if crossing <= t < read_end]
+                transition = None
+                if before and after:
+                    transition = (min(after) - max(before)) * 1e9
+                    transitions_10_90.append(transition * 1e-9)
+                    directional[transition_key].append(transition)
+                raw_timing.append({"cycle": cycle, "signal": name,
+                                   "direction": "rise" if sign == 1 else "fall",
+                                   "clock_fall_s": reference,
+                                   "delay_ns": delay * 1e9, "transition_ns": transition})
             after = [time for time in mids if read_end <= time < read_end + period_s / 2]
             if after:
                 hold_after_rise.append(min(after) - read_end)
@@ -181,6 +271,8 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
     current = data[power_current]
 
     def energy(start, end):
+        if start < times[0] or end > times[-1] or end <= start:
+            raise ValueError("energy window outside complete waveform support")
         total = 0.0
         for i in range(1, len(times)):
             left = max(start, times[i - 1])
@@ -195,19 +287,19 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
             total -= 0.5 * (current_left + current_right) * voltage * (right - left)
         return total
 
-    def other_ports_idle(cycle):
-        values = cycles[cycle]
-        return all(values.get("csb{}".format(other)) == "1"
-                   for other in ports if other != port)
-
-    all_idle = [k for k, values in cycles.items()
-                if k >= 3 and all(values.get("csb{}".format(p)) == "1" for p in ports)]
-    idle_windows = [k for k in all_idle
-                    if all(cycles.get(k - 1, {}).get("csb{}".format(p)) == "1" for p in ports)]
-    read_energy = [energy(rise(k), rise(k) + period_s)
-                   for k in read_cycles if other_ports_idle(k)]
-    write_energy = [energy(rise(k), rise(k) + period_s)
-                    for k in write_cycles if other_ports_idle(k)]
+    other_ports = [other for other in ports if other != port]
+    idle_windows = [k for k in sorted(cycles) if k >= 3 and stable_idle(cycles, k, ports)]
+    read_windows = [k for k in read_cycles if stable_idle(cycles, k, other_ports)
+                    and next_inputs_held(cycles, k, port)]
+    write_windows = [k for k in write_cycles if stable_idle(cycles, k, other_ports)
+                     and next_inputs_held(cycles, k, port)]
+    raw_energy = {operation: [{"cycle": k, "start_s": rise(k), "end_s": rise(k) + period_s,
+                              "energy_pj": energy(rise(k), rise(k) + period_s) * 1e12}
+                             for k in windows]
+                  for operation, windows in (("read", read_windows), ("write", write_windows),
+                                             ("idle", idle_windows))}
+    read_energy = [item["energy_pj"] for item in raw_energy["read"]]
+    write_energy = [item["energy_pj"] for item in raw_energy["write"]]
     result = {
         "role": role,
         "ins_rise": None if insertion is None else insertion * 1e9,
@@ -216,16 +308,33 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
         "wen_end": None if enable_end is None else enable_end * 1e9,
         "chain_reset": None if not reset else max(reset) * 1e9,
         "dout_hold_after_rise": None if not hold_after_rise else min(hold_after_rise) * 1e9,
-        "leak_mw": energy(rise(0) + 0.6 * period_s, rise(0) + 0.95 * period_s) /
-                   (0.35 * period_s) * 1e3,
-        "e_idle_pj": None if not idle_windows else min(
-            energy(rise(k), rise(k) + period_s) for k in idle_windows) * 1e12,
-        "e_read_pj": None if not read_energy else max(read_energy) * 1e12,
-        "e_write_pj": None if not write_energy else max(write_energy) * 1e12,
+        "leak_mw": None,
+        "e_idle_pj": minimum_energy(raw_energy["idle"]),
+        "e_read_pj": None if not read_energy else max(read_energy),
+        "e_write_pj": None if not write_energy else max(write_energy),
+        "raw_timing": raw_timing,
+        "raw_energy": raw_energy,
+        "energy_scope": "whole-macro signed supply energy; includes background clocks and output loads",
+        "idle_scope": "settled clock-active idle, not static leakage",
+        "polarity_coverage": {name: len(values) for name, values in directional.items()},
         "read_cycles": len(read_cycles),
         "write_cycles": len(write_cycles),
     }
+    result.update({name: maximum(values) for name, values in directional.items()})
+    result["output_coverage"] = {
+        name: {direction: sum(item["signal"] == name and item["direction"] == direction
+                              and item["transition_ns"] is not None for item in raw_timing)
+               for direction in ("rise", "fall")}
+        for name in outputs}
+    for direction, keys in (("rise", ("cell_rise", "rise_transition")),
+                            ("fall", ("cell_fall", "fall_transition"))):
+        if not outputs or any(result["output_coverage"][name][direction] == 0 for name in outputs):
+            result.update(dict.fromkeys(keys))
     return result
+
+
+def minimum_energy(samples):
+    return min(item["energy_pj"] for item in samples) if samples else None
 
 
 def main():
@@ -281,6 +390,7 @@ def main():
     else:
         result = {"schema_version": 3, "ports": per_port, "domain": domain}
     result["stdcell_library"] = stdcell_library
+    result.update(functional=None, complete_sta=False, signoff=False)
     print(json.dumps(result, sort_keys=True))
 
 

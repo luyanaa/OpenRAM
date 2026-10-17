@@ -9,6 +9,7 @@ from openram import debug
 from openram.base import design
 from openram.base import vector
 from openram.sram_factory import factory
+from openram.modules.write_driver_array import write_driver_strength_kwargs
 from openram.tech import drc
 from openram.tech import cell_properties
 from openram.tech import layer_properties as layer_props
@@ -244,20 +245,23 @@ class port_data(design):
             self.column_mux_array = None
 
         if self.port in self.write_ports:
+            driver_kwargs = write_driver_strength_kwargs(OPTS.write_driver_strength)
             # RBLs dont get a write driver
             self.write_driver_array = factory.create(module_type="write_driver_array",
                                                      columns=self.num_cols,
                                                      word_size=self.word_size,
                                                      offsets=self.bit_offsets,
                                                      write_size=self.write_size,
-                                                     num_spare_cols=self.num_spare_cols)
+                                                     num_spare_cols=self.num_spare_cols,
+                                                     **driver_kwargs)
             if self.write_size != self.word_size:
                 # RBLs don't get a write mask
                 self.write_mask_and_array = factory.create(module_type="write_mask_and_array",
                                                            columns=self.num_cols,
                                                            offsets=self.bit_offsets,
                                                            word_size=self.word_size,
-                                                           write_size=self.write_size)
+                                                           write_size=self.write_size,
+                                                           **driver_kwargs)
             else:
                 self.write_mask_and_array = None
 

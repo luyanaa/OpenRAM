@@ -14,13 +14,33 @@ from openram.tech import drc
 from openram import OPTS
 
 
+def write_driver_strength_kwargs(strength):
+    """Keep baseline library calls unchanged; gate the finite custom sizing API."""
+    if (isinstance(strength, bool) or not isinstance(strength, (int, float))
+            or strength not in (0.75, 1.0)):
+        raise ValueError("write_driver_strength must be exactly 0.75 or 1.0")
+    if strength == 1.0:
+        return {}
+    tech_type, tech_override = factory.get_techmodule_type("write_driver")
+    user_type, user_override = factory.get_usermodule_type("write_driver")
+    driver_type = user_type if user_override or not tech_override else tech_type
+    if driver_type != "ics55_write_driver":
+        raise ValueError("write_driver_strength 0.75 requires ics55_write_driver, not {}"
+                         .format(driver_type))
+    return {"write_driver_strength": strength}
+
+
 class write_driver_array(design):
     """
     Array of tristate drivers to write to the bitlines through the column mux.
     Dynamically generated write driver array of all bitlines.
     """
 
-    def __init__(self, name, columns, word_size, offsets=None, num_spare_cols=None, write_size=None, column_offset=0):
+    def __init__(self, name, columns, word_size, offsets=None, num_spare_cols=None, write_size=None, column_offset=0,
+                 write_driver_strength=1.0):
+
+        self.driver_kwargs = write_driver_strength_kwargs(write_driver_strength)
+        self.write_driver_strength = write_driver_strength
 
         super().__init__(name)
         debug.info(1, "Creating {0}".format(self.name))
@@ -99,7 +119,7 @@ class write_driver_array(design):
         self.add_pin("gnd", "GROUND")
 
     def add_modules(self):
-        self.driver = factory.create(module_type="write_driver")
+        self.driver = factory.create(module_type="write_driver", **self.driver_kwargs)
 
         # This is just used for measurements,
         # so don't add the module
