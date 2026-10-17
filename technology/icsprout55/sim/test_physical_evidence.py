@@ -1,8 +1,8 @@
-"""Isolated physical-evidence fixtures; no real calibration or EDA acceptance.
+"""Isolated physical-evidence fixtures; no real calibration or EDA execution.
 
-The accepted fixture deliberately uses synthetic tool reports and independently
-specified dimensional coupon values. It is an executable schema example ONLY.
-No fixture is a production record, PDK coefficient, or historical provenance.
+The accepted fixture uses a real serialized KLayout LVS database and synthetic
+dimensional coupon values. It is an executable schema example ONLY. No fixture
+is a production record, PDK coefficient, or historical provenance.
 """
 import csv
 from copy import deepcopy
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from physical_evidence import validate_physical_evidence, opensource
+from physical_evidence import validate_physical_evidence, opensource, lvs_report
 from gds_pex_rc import extract_parasitics, write_spice
 
 
@@ -21,6 +21,10 @@ def json_file(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
     return path
+
+# Native report/source fixtures need neither the private PDK nor an EDA child.
+NATIVE_FIXTURES = Path(opensource.__file__).with_name("fixtures")
+NATIVE_LVSDB = (NATIVE_FIXTURES / "strict_two_mos.lvsdb").read_text()
 
 
 def rect(layer, x0=0, y0=0, x1=10, y1=1):
@@ -79,7 +83,12 @@ class PhysicalEvidenceTests(unittest.TestCase):
             "gds": "macro.gds", "reference": "macro.lvs.sp", "netlist": "macro.pex.sp",
             "extraction": "pex_summary.json"}.items()}
         self.paths["gds"].write_text("SYNTHETIC GDS IDENTITY ONLY\n")
-        self.paths["reference"].write_text(".subckt macro a b\n.ends macro\n")
+        self.paths["reference"].write_text(
+            "* Native body connectivity probe\n"
+            ".SUBCKT macro gnd vdd out_n out_p in_n in_p\n"
+            "MN out_n in_n gnd gnd nm1p2_svt_lp W=20u L=10u\n"
+            "MP out_p in_p vdd vdd pm1p2_svt_lp W=20u L=10u\n"
+            ".ENDS macro\n")
         self.tool = self.root / "synthetic-klayout"
         self.tool.write_text("SYNTHETIC unit-test binary identity, never run\n")
         self.waivers = json_file(self.root / "waivers.json", {"version": 1, "waivers": []})
@@ -92,9 +101,9 @@ class PhysicalEvidenceTests(unittest.TestCase):
                           if index and command[index - 1] == "-rd")
             report = Path(params["report"])
             if "schematic" in params:
-                report.write_text("SYNTHETIC LVS report database\n")
-                Path(params["target_netlist"]).write_text(".subckt macro a b\n.ends macro\n")
-                output = "CONGRATULATIONS! Netlists match.\n"
+                report.write_text(NATIVE_LVSDB.replace("body_probe", "macro"))
+                Path(params["target_netlist"]).write_text(self.paths["reference"].read_text())
+                output = "CONGRATULATIONS! Netlists match.\nICS55_LVS_COMPARE=PASS\n"
             else:
                 report.write_text("<report-database><top-cell>macro</top-cell><items/></report-database>\n")
                 output = "SYNTHETIC DRC complete\n"
@@ -330,6 +339,66 @@ class PhysicalEvidenceTests(unittest.TestCase):
         self.edit_runtime("lvs", lambda runtime: self._rewrite_log(runtime, "ERROR: netlists do not match.\n"))
         self.edit_stage("lvs", lambda stage: stage.update(verdict="mismatch"))
         self.assertIs(self.validate()["checks"]["lvs"], False)
+
+    def test_changed_native_report_invalidates_cache_and_physical_verdict(self):
+        from technology.icsprout55.sim import architecture as native_adapter
+
+        admission = {"artifacts": {"physical": self.manifest_path}}
+        initial = native_adapter.fingerprint(admission)
+        self.assertIs(self.validate()["checks"]["lvs"], True)
+        report = Path(self.read(self.stage_paths["lvs"])["report"]["path"])
+        report.write_text(report.read_text().replace("   D(2 2 1)\n", "", 1))
+        changed = native_adapter.fingerprint(admission)
+        self.assertNotEqual(initial, changed)
+        self.assertEqual(changed["dependencies"][str(report)], native_adapter._digest(report))
+        self.assertIsNone(self.validate()["checks"]["lvs"])
+
+    def rewrite_native_report(self, edit):
+        """Fault-inject native data while retaining valid synthetic hash refs."""
+        report = Path(self.read(self.stage_paths["lvs"])["report"]["path"])
+        report.write_text(edit(report.read_text()))
+        current = self.ref(report)
+        self.edit_runtime("lvs", lambda runtime: runtime["outputs"]["report"].update(current))
+        self.edit_stage("lvs", lambda stage: stage.update(report=current))
+
+    def test_success_log_and_claim_cannot_bless_a_skipped_native_root(self):
+        skipped = (NATIVE_FIXTURES / "strict_skipped_root.lvsdb").read_text().replace("body_probe", "macro")
+        self.rewrite_native_report(lambda _text: skipped)
+        self.assertIsNone(self.validate()["checks"]["lvs"])
+
+    def test_success_log_and_claim_cannot_hide_an_unpaired_native_device(self):
+        self.rewrite_native_report(lambda text: text.replace("   D(2 2 1)\n", "", 1))
+        self.assertIsNone(self.validate()["checks"]["lvs"])
+
+    def test_original_source_boundary_is_required_even_with_complete_native_pairs(self):
+        source = self.paths["reference"]
+        source.write_text(source.read_text().replace("out_n out_p in_n in_p", "out_n in_n in_p", 1))
+        current = self.ref(source)
+        self.manifest["bindings"]["reference"] = current
+        self.save()
+        def refresh(runtime):
+            runtime["inputs"]["schematic"] = current
+            runtime["sources"] = [self.ref(item["path"]) for item in runtime["sources"]]
+        self.edit_runtime("lvs", refresh)
+        result = self.validate()
+        self.assertIs(result["checks"]["drc"], True)
+        self.assertIsNone(result["checks"]["lvs"])
+
+    def test_old_schematic_only_flat_arguments_cannot_claim_a_strict_match(self):
+        def remove_physical_flat(runtime):
+            args = runtime["args"]
+            index = args.index("run_mode=flat")
+            del args[index - 1:index + 1]
+            runtime["parameters"].pop("run_mode")
+            runtime["command"] = opensource._klayout_command(runtime["tool"]["selection"], args)
+        self.edit_runtime("lvs", remove_physical_flat)
+        self.assertIsNone(self.validate()["checks"]["lvs"])
+
+    def test_native_match_cannot_name_an_unrelated_comparison_reader(self):
+        unrelated = self.root / "other-reader.py"
+        unrelated.write_text("# Not the captured native comparison implementation\n")
+        self.edit_stage("lvs", lambda stage: stage.update(comparison_reader=self.ref(unrelated)))
+        self.assertIsNone(self.validate()["checks"]["lvs"])
 
     def test_stale_report_and_deck_are_unknown(self):
         report = Path(self.read(self.stage_paths["drc"])["report"]["path"])

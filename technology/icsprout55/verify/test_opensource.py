@@ -150,6 +150,39 @@ class LvsProfileTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+    def test_success_text_without_native_comparison_is_inconclusive(self):
+        def text_only(_args, _root, log_path, selection=None):
+            output = "ICS55_LVS_COMPARE=PASS\nCONGRATULATIONS! Netlists match.\n"
+            Path(log_path).write_text(output)
+            return 0, output
+        with patch.object(opensource, "_select_klayout", return_value=("executable", "klayout")):
+            with patch.object(opensource, "_query_klayout_version", return_value="0.30.7"):
+                with patch.object(opensource, "_run_klayout", text_only):
+                    result = opensource._run_lvs(
+                        self.gds, "TOP", self.netlist, self.pdk, self.librelane,
+                        self.out_dir, "openram-macro", "flat")
+        self.assertEqual(result[:2], (False, "inconclusive"))
+
+    def test_stale_matching_native_outputs_cannot_be_reused_after_zero_exit(self):
+        fixtures = Path(__file__).with_name("fixtures")
+        self.netlist.write_text((fixtures / "strict_two_mos.sp").read_text().replace("body_probe", "TOP"))
+        self.out_dir.mkdir()
+        (self.out_dir / "lvs.lvsdb").write_text(
+            (fixtures / "strict_two_mos.lvsdb").read_text().replace("body_probe", "TOP"))
+        (self.out_dir / "extracted.spice").write_text(self.netlist.read_text())
+        tool = self.out_dir / "synthetic-tool"
+        tool.write_text("SYNTHETIC unit tool identity, never executed\n")
+        output = "ICS55_LVS_COMPARE=PASS\nCONGRATULATIONS! Netlists match.\n"
+        with patch.object(opensource, "_select_klayout", return_value=("executable", str(tool))):
+            with patch.object(opensource, "_query_klayout_version", return_value="0.30.7"):
+                with patch.object(opensource.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=output)):
+                    result = opensource._run_lvs(
+                        self.gds, "TOP", self.netlist, self.pdk, self.librelane,
+                        self.out_dir, "openram-macro", "flat")
+        self.assertEqual(result[:2], (False, "inconclusive"))
+
+
 class RuntimeProvenanceTests(unittest.TestCase):
     """Exercise the real producer at its subprocess boundary, without EDA."""
     def setUp(self):

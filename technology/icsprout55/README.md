@@ -142,9 +142,14 @@ loading are missing; no complete-STA export is available.
 Strict macro LVS records the validated PDK capability and frozen LVS-deck hash
 manifest before KLayout starts. Nix discovery resolves the installed KLayout
 executable and runs it directly, so runtime evidence binds the actual tool,
-not the Nix launcher. Missing/drifted capability fails closed; inconclusive
-hierarchy correspondence stays unknown, not mismatch or pass. Generic cell
-LVS remains separate. This is not Calibre equivalence or foundry signoff.
+not the Nix launcher. Strict flat mode selects physical-flat extraction as well
+as a flat reference. The native report must contain a genuinely matched root,
+complete object/incidence correspondence and the exact original source ports;
+log text or JSON assertions alone cannot pass. Missing/drifted capability,
+skipped root or incomplete proof stays unknown. Generic cell LVS remains
+separate. Local LVS repair uses KLayout and the supplied rule sources, without
+Calibre or a new PEX/CAPTAB flow; the existing StarRC-corrected PEX is preserved.
+This is not Calibre equivalence or foundry signoff.
 
 ## Capability-gated architecture timing search
 
@@ -210,8 +215,11 @@ intermediate evidence prevents promotion, including cached higher-stage reuse.
 An explicit single-F3 study does not assert prior F0/F1/F2 passes. Native F4
 diagnostics additionally validate exact-load characterization and physical
 evidence, but always leave macro characterization closure unknown. The current
-new layouts have verified macro-profile DRC; strict flat LVS mismatches and
-estimated/unaccepted RC keep their physical gates failed.
+new width075/fanout3 layouts have verified full-hierarchy macro DRC and complete
+strict physical-flat native LVS, including their actual root comparison and
+all50 declared ports. Existing extraction acceptance metadata and incomplete
+macro characterization still prevent physical/full-STA closure. The existing
+StarRC-corrected PEX is preserved, not recalibrated as an LVS prerequisite.
 
 
 Actual width075 runs at5/50fF each pass96/96 bit checks and supply isolated

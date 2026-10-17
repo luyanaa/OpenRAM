@@ -104,6 +104,36 @@ no valid DRC result, and no current Calibre or Assura signoff is available.
 1RW array passes strict local LVS at 27 pins; spare-column and write-mask
 variants still have separate mismatches and are not accepted as clean.
 
+## Current sizing strict-LVS repair
+
+The exact `(9,4,.75)` and `(9,3,1)` 2RW32x8 sizing variants now pass actual
+KLayout0.30.7 strict physical-flat LVS against their own unchanged references.
+The former invocation flattened only the reference; explicitly selecting
+physical `run_mode=flat` removes that hierarchy mismatch without altering the
+released/private deck or its strict rules.
+
+| Variant | Native root | Matched MOS | Active nets | Declared ports | Terminal incidences | Fresh full-hierarchy DRC |
+|---|---|---:|---:|---:|---:|---|
+| `ics55_2rw_32x8_d9_f4_w075` | Match | 5884 | 2522 | 50 | 23536 | 0 raw/waived/unwaived |
+| `ics55_2rw_32x8_d9_f3_w100` | Match | 5848 | 2504 | 50 | 23392 | 0 raw/waived/unwaived |
+
+Every electrically incident net, device, pin and edge has a complete native
+correspondence. Zero-incidence bookkeeping nets are disclosed, not electrically
+joined or purged. Native net ambiguity warnings are retained and accepted only
+with the full selected mapping/incidence proof. W/L, named ports, fixed G/B
+and allowed S/D symmetry are unchanged; W/body/gate/port negatives still fail.
+The production physical consumer independently accepts DRC/LVS for both.
+
+Evidence is under `ics55_work/runs/klayout_lvs_repair/`, especially
+`native_macro_results.json` and `physical_validation.json`; original failed
+reports are retained. This closes local strict LVS for these two exact variants,
+not all TG/spare/mask configurations or foundry signoff. A separate hierarchical
+smoke remains inconclusive on an unnamed `mos_leaf` boundary pin; no port was
+renamed or relaxed to force a pass. No Calibre execution/license was used.
+The user's best-available StarRC-corrected PEX, GDS, netlists and waves remain
+unchanged; no calibration, native CAPTAB or new PEX flow was required.
+
+
 ## Key design decisions
 
 1. **Bitcell**: no foundry SRAM bitcell/device kit is delivered (the LVS deck

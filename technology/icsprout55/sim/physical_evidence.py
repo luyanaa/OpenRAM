@@ -41,6 +41,7 @@ import xml.etree.ElementTree as ET
 VERIFY = Path(__file__).resolve().parents[1] / "verify"
 if str(VERIFY) not in sys.path:
     sys.path.insert(0, str(VERIFY))
+import lvs_report
 import opensource
 
 
@@ -225,13 +226,17 @@ def _lvs(value, base, refs, paths, top):
                 "schematic": str(Path(paths["reference"]).resolve()), "report": str(report),
                 "target_netlist": parameters.get("target_netlist"),
                 "no_well_ties": "true", "strict_topology": "true"}
-    if mode == "hierarchical":
+    if mode == "flat":
+        expected["run_mode"] = "flat"
+    else:
         expected["strict_hierarchy"] = "true"
     _require(parameters == expected, "LVS settings are not the exact strict comparison")
     args = ["-b", "-r", str(deck), "-rd", "input=" + expected["input"], "-rd", "top=" + top,
             "-rd", "schematic=" + expected["schematic"], "-rd", "report=" + str(report),
             "-rd", "target_netlist=" + str(expected["target_netlist"])]
-    if mode == "hierarchical":
+    if mode == "flat":
+        args.extend(["-rd", "run_mode=flat"])
+    else:
         args.extend(["-rd", "strict_hierarchy=true"])
     args.extend(["-rd", "no_well_ties=true", "-rd", "strict_topology=true"])
     _require(runtime["args"] == args, "LVS command differs from the verifier producer")
@@ -248,8 +253,33 @@ def _lvs(value, base, refs, paths, top):
     if "ERROR: netlists do not match." in output:
         _require(stage.get("verdict") == "mismatch", "LVS recorded verdict differs from report")
         return False
-    _require("CONGRATULATIONS! Netlists match." in output and stage.get("verdict") == "matched",
+    _require("CONGRATULATIONS! Netlists match." in output.splitlines()
+             and stage.get("verdict") == "matched"
+             and "ICS55_LVS_COMPARE=PASS" in output.splitlines(),
              "LVS has no genuine matched verdict")
+    refs.exact(stage.get("comparison_reader"), base, lvs_report.__file__, "LVS comparison reader")
+    comparison = lvs_report.inspect_report(report, top, mode, Path(paths["reference"]).resolve())
+    _require(comparison.get("schema") == "ics55-native-lvs-comparison/1"
+             and comparison.get("complete") is True
+             and comparison.get("root_status") == "Match"
+             and comparison.get("errors") == [],
+             "native LVS correspondence is incomplete")
+    counts = comparison.get("counts")
+    _require(isinstance(counts, dict), "native LVS correspondence counts are missing")
+    for category in ("circuits", "devices", "nets", "pins", "subcircuits"):
+        sides = counts.get(category)
+        _require(isinstance(sides, dict)
+                 and all(type(sides.get(side)) is int for side in ("layout", "reference", "paired"))
+                 and sides["layout"] == sides["reference"] == sides["paired"],
+                 "native LVS " + category + " correspondence is not a full bijection")
+    if mode == "flat":
+        _require(all(counts["subcircuits"][side] == 0 for side in ("layout", "reference", "paired")),
+                 "flat LVS report retains subcircuits")
+    claimed = stage.get("comparison")
+    _require(isinstance(claimed, dict)
+             and json.dumps(claimed, sort_keys=True, separators=(",", ":"), allow_nan=False)
+             == json.dumps(comparison, sort_keys=True, separators=(",", ":"), allow_nan=False),
+             "captured native LVS correspondence differs from the report")
     return True
 
 

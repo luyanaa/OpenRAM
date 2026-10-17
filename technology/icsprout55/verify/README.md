@@ -32,10 +32,18 @@ parallel devices, compare MOS model/W/L at 1e-9 um absolute and zero relative
 tolerance, and bind every same-named top pin's nets as mandatory comparison
 correspondences. This never joins nets. The extracted netlist is saved before
 comparison so a search timeout preserves the graph for diagnosis.
-Both `opensource.py verify` and `macro.py` default to `--lvs-mode flat`; this is
-the existing strict comparison with a flattened schematic. The generic profile
-remains the default for direct `opensource.py verify` and passes no profile
-flags. Hierarchical comparison is opt-in only for `openram-macro`.
+Both `opensource.py verify` and `macro.py` default to `--lvs-mode flat`.
+For `openram-macro`, this explicitly selects the deck's `run_mode=flat`:
+physical extraction and the schematic are both flat. Flattening only the
+schematic leaves unmatched layout children and can skip the root comparison.
+The adjacent PDK deck now also defaults an omitted `run_mode` to physical flat
+for strict non-hierarchical comparison. Explicit modes remain honored; generic,
+extraction-only (`net_only=true`) and strict-hierarchy deep defaults are unchanged.
+Its frozen deck hash and local hierarchical-fixture regression were updated;
+the included device/connectivity rules and StarRC-corrected PEX were not changed.
+The generic profile remains the direct CLI default and passes no strict flags;
+its existing settings are unchanged. Hierarchical comparison is opt-in only
+for `openram-macro`.
 `--lvs-mode hierarchical` preserves the schematic hierarchy and requires an
 exact one-to-one case-insensitive set of circuit names and named boundary pins
 for every extracted/reference circuit. All corresponding pin nets are mandatory
@@ -352,9 +360,9 @@ all 5884 matched reduced MOS have exactly equal W/L. The independent direct
 GDS topology CLI also passes A and B at `ics55_work/runs/topology_repair_strict_b/`
 (6042 raw MOS; 5884 physically reduced matched devices; 50 top ports).
 
-Calibre was skipped as optional for this pass; this local environment has no
-Calibre executable, local decks, or configured license. No Calibre DRC/LVS
-result is claimed for either candidate.
+No Calibre result is claimed for either candidate. The current local LVS repair
+uses the supplied released LVS sources and KLayout, without a Calibre license
+or execution; released source availability is not a Calibre run.
 
 ### Real bounded sizing variants
 
@@ -401,12 +409,23 @@ New KLayout runs retain `*.runtime.json` and `drc.evidence.json`/
 execution interval/status, raw log and freshly produced report hashes. Nix is
 used to resolve the installed KLayout executable; the resolved tool runs
 directly, rather than recording Nix as the producing tool.
-Full-hierarchy DRC and bounded exact leaf waivers are required. LVS uses the
-pinned strict capability/deck, exact device dimensions and declared pins.
-Full strict flat or hierarchical comparison is allowed; skipped cells,
-generic profiles and joining/tolerance relaxations cannot satisfy the gate.
-Nonzero/tool-error/inconclusive execution is unknown; a completed strict
-mismatch is false. Historical log text cannot reconstruct missing tool state.
+Full-hierarchy DRC and bounded exact leaf waivers are required. Strict LVS uses
+the pinned capability/deck, exact MOS dimensions and original declared ports.
+`lvs_report.py` reads the actual native `.lvsdb`; both producer and consumer
+require root `Match`, exhaustive two-sided circuit/device/net/pin/subcircuit
+bijections and terminal/boundary incidence coverage. MOS G/B stay fixed and S/D
+may exchange; device/circuit warnings are rejected. Net ambiguity is admissible
+only with a complete electrically consistent selected mapping. Zero-incidence
+bookkeeping nets are disclosed in `unconnected_nets`, not joined or purged;
+any device terminal, outgoing pin or subcircuit pin makes a net mandatory.
+Original SPICE boundaries are checked independently because comparison can
+reconstruct pins inside the native report. Strict stages bind the comparison
+reader hash and summary, which the consumer recomputes rather than trusting.
+Flat mode must actually select physical-flat extraction; hierarchical mode
+retains strict named boundaries. Skipped cells, generic profiles and dimension,
+pin or connectivity relaxations cannot satisfy the gate.
+Nonzero/tool-error/inconclusive or incomplete proof is unknown; a completed
+strict mismatch is false. Historical log text cannot reconstruct missing state.
 
 `pex.evidence.json` records actual source-free generation inputs, sources and
 outputs. Relative `--process-json` inputs are expanded/resolved before both
@@ -423,9 +442,45 @@ tables or hand-entered coefficients alone are insufficient; estimated process
 ancestry cannot clear `estimated`. Missing calibration keeps PEX unaccepted.
 These checks are research evidence, never foundry signoff.
 
+LVS repair is independent of those broader PEX-promotion checks. The user's
+existing StarRC-corrected PEX is the best available model and remains unchanged;
+no new calibration, native CAPTAB or native PEX flow is required or run for
+LVS. The repair does not reinterpret old extraction metadata as signoff.
+
 Physical PASS is also not complete characterization. F4 additionally requires
 the independent `characterization` check; two-load numeric diagnostics leave it
 unknown until macro boundary and input/clock loading evidence can be verified.
 See [sim/README.md](../sim/README.md#measured-multi-port-liberty) for the
 diagnostic-only export boundary.
+
+### Current local strict-LVS repair proof
+
+`ics55_work/runs/klayout_lvs_repair/native_macro_results.json` records actual
+pinned KLayout0.30.7 runs, not replacement graph-solver verdicts:
+
+| Exact tuple | Native root | Paired MOS | Active nets | Original ports | MOS terminal incidences |
+|---|---|---:|---:|---:|---:|
+| `(9,4,.75)` | Match | 5884 | 2522 | 50 | 23536 |
+| `(9,3,1)` | Match | 5848 | 2504 | 50 | 23392 |
+
+Both reports contain one root and zero residual subcircuits; fresh full-hierarchy
+macro DRC has0 raw/waived/unwaived markers. The independent physical consumer
+returns `drc=true,lvs=true` for both new manifests. The shared reader requires
+the Python KLayout SDK in addition to the native executable (verified with
+SDK0.30.7); a missing/unreadable report or reader is unknown, never PASS.
+All connected nets are covered. Each macro discloses9 layout/8 reference
+zero-incidence bookkeeping nets and retains232/210 native net ambiguity warnings,
+validated through the full selected-map/incidence proof.
+
+Complete/S-D symmetric tiny GDS controls pass; W/body/gate/port negatives fail.
+Original GDS, source, electrical bundles, failed reports and StarRC-corrected PEX
+are unchanged. Current source-registry replay preserves measurements and proves
+3 F3/2 F4 cache-only hits with0 evaluations. Genuine old cache entries miss;
+current F4 cache cannot bypass predecessor gates, and8ns cannot reuse7.5ns data.
+See `replay_validation.json` for exact actual CLI outcomes. F4 frontiers remain
+empty under unchanged broader acceptance/characterization rules, not an LVS
+prerequisite to recalibrate PEX. No foundry or complete-STA result is claimed.
+
+The separate hierarchical smoke remains inconclusive at an unnamed child pin;
+this physical-flat repair does not rename boundaries or close TG/hierarchy work.
 

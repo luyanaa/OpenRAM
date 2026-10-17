@@ -18,6 +18,8 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
+import lvs_report
+
 REPO = Path(__file__).resolve().parents[3]
 DEFAULT_PDK_ROOT = REPO.parent / "icsprout55-pdk"
 DEFAULT_LIBRELANE_ROOT = REPO.parent / "librelane"
@@ -467,9 +469,12 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
             "-rd", "top={}".format(top), "-rd", "schematic={}".format(netlist),
             "-rd", "report={}".format(report), "-rd", "target_netlist={}".format(extracted)]
     selection = None
+    comparison_reader = None
     if lvs_profile == "openram-macro":
         if lvs_mode == "hierarchical":
             args.extend(["-rd", "strict_hierarchy=true"])
+        else:
+            args.extend(["-rd", "run_mode=flat"])
         args.extend(["-rd", "no_well_ties=true", "-rd", "strict_topology=true"])
         capability = _validate_strict_capability(pdk_root)
         selection = _select_klayout(librelane_root)
@@ -480,6 +485,7 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
                     capability["klayout_version"], actual_version))
         (out_dir / "strict_capability.json").write_text(
             json.dumps(capability, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        comparison_reader = _artifact_ref(lvs_report.__file__)
     if selection is None:
         rc, output = _run_klayout(args, librelane_root, out_dir / "lvs.log")
     else:
@@ -495,11 +501,31 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
         verdict = "matched"
     else:
         verdict = "no LVS verdict"
-    # A mocked/failed runner cannot manufacture report provenance. Retain the
-    # existing tuple API; acceptance validates the captured runtime separately.
+    comparison, comparison_error = None, None
+    if lvs_profile == "openram-macro":
+        try:
+            comparison = lvs_report.inspect_report(report, top, lvs_mode, netlist)
+            if _artifact_ref(lvs_report.__file__) != comparison_reader:
+                raise lvs_report.LVSReportError("LVS comparison reader changed during execution")
+            if verdict == "matched":
+                runtime = json.loads(Path(str(out_dir / "lvs.log") + ".runtime.json").read_text())
+                if (runtime.get("inputs_unchanged") is not True
+                        or runtime.get("returncode") != 0
+                        or any(runtime.get("outputs", {}).get(name, {}).get("fresh") is not True
+                               for name in ("report", "target_netlist"))):
+                    raise lvs_report.LVSReportError("strict LVS outputs are not fresh and input-bound")
+        except (lvs_report.LVSReportError, OSError, ValueError) as exc:
+            comparison_error = str(exc)
+        if verdict == "matched" and (
+                "ICS55_LVS_COMPARE=PASS" not in output.splitlines()
+                or "ICS55_LVS_COMPARE=FAIL" in output.splitlines()
+                or comparison_error is not None or not comparison or not comparison["complete"]):
+            verdict = "inconclusive"
     _write_evidence(out_dir / "lvs.evidence.json", {
         "schema": "ics55-lvs-evidence/1", "signoff": False, "top": top,
         "profile": lvs_profile, "mode": lvs_mode, "verdict": verdict,
+        "comparison": comparison, "comparison_reader": comparison_reader,
+        "comparison_error": comparison_error,
         "runtime": _stage_runtime(out_dir / "lvs.log"),
         "report": _artifact_ref(report) if report.is_file() else None,
         "capability": _artifact_ref(out_dir / "strict_capability.json")

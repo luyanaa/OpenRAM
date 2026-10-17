@@ -364,8 +364,8 @@
                   "sha256": "76d76708f450a1321b9c3eafdbcc5759aefd3c7cecc580165460feb6b9c3f26d"
                 },
                 "physical": {
-                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/physical_strict_flat/physical_evidence.json",
-                  "sha256": "31532a5e25fc0012318b05ff18642c564c26919af06601ff6144ea1c79857fa3"
+                  "path": "../../ics55_work/runs/klayout_lvs_repair/ics55_2rw_32x8_d9_f4_w075/physical_evidence.json",
+                  "sha256": "415184dd38f18c036e347cfe1c26608c1edf666772b4e0e64f6eaa5a1ecec5e0"
                 },
                 "run__snfp_7p5ns": {
                   "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/ec879ec59c2aebb3941dd48f09a09be4b6cfda28d2ad31801398ac5a988a4c71/runs/5c1bf80f48b1937ec6ad285a2d3fb18ba8ee79fb60305e1da2cb2001792ed7a9/attempt-0001/ngspice-z3el_j4q/simulation.json",
@@ -445,8 +445,8 @@
                   "sha256": "3f9ffa063e71effd9c615dd09e822ebee25913adef996540d3c585ee03f26952"
                 },
                 "physical": {
-                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/physical_strict_flat/physical_evidence.json",
-                  "sha256": "31532a5e25fc0012318b05ff18642c564c26919af06601ff6144ea1c79857fa3"
+                  "path": "../../ics55_work/runs/klayout_lvs_repair/ics55_2rw_32x8_d9_f4_w075/physical_evidence.json",
+                  "sha256": "415184dd38f18c036e347cfe1c26608c1edf666772b4e0e64f6eaa5a1ecec5e0"
                 },
                 "run__snfp_7p5ns_5ff_held": {
                   "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_native/ngspice-l2s098yf/simulation.json",
@@ -497,8 +497,8 @@
                   "sha256": "7cd79c82bba554474ec43c760d0ea47dc7dc2b23adbb8bffa1b381d9390b48a9"
                 },
                 "characterization": {
-                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/characterization_replay/characterization.json",
-                  "sha256": "5316bab19f8e4e8ac2bf991cfaf7cff5e2cf8b7f0c6b77c28ef910ea8cb1ed95"
+                  "path": "../../ics55_work/runs/klayout_lvs_repair/characterization_replay/characterization.json",
+                  "sha256": "7e7c19a6d73f1e8e03a118a1d551207b76255ba6da1d6f150b3bf0f700970a2d"
                 }
               },
               "basic_checks": [
@@ -571,8 +571,8 @@
                   "sha256": "76d76708f450a1321b9c3eafdbcc5759aefd3c7cecc580165460feb6b9c3f26d"
                 },
                 "physical": {
-                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/physical_strict_flat/physical_evidence.json",
-                  "sha256": "f07dcdd93c31a3df4ad0c78e3f61a5f20779545c8d925c35d0e259be4c0ce3f8"
+                  "path": "../../ics55_work/runs/klayout_lvs_repair/ics55_2rw_32x8_d9_f3_w100/physical_evidence.json",
+                  "sha256": "f7bec83a37e6cdbf25f9d149bdb8f2575b369557de4e099f3dfb17d14acd863b"
                 },
                 "run__snfp_7p5ns": {
                   "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing_native/e6996abf8de530645ca26dfcc64fbc23fe5e1eefad64f5b0d11f9825d14d8a8f/runs/8a8678fa1168b083d019fa0df0ecf4f756fa2c24d0b09783c47a7515e62801c7/attempt-0001/ngspice-oq1qnyvx/simulation.json",

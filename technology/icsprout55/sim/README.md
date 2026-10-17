@@ -165,6 +165,18 @@ initialization, probe columns, run result and waveforms. Registered bundles use
 Missing observation-time model provenance is unknown; do not manufacture a
 posthoc manifest for an archived passing run.
 
+Cache fingerprints hash current transitive dependency bytes, including the native
+LVS comparison reader. Historical captured producer hashes are not assertions
+that those paths still contain old code: admission and evidence consumers,
+not dependency discovery, validate declared hashes and eligibility. Changed
+reports invalidate cache keys and remain unknown when consumer bindings fail.
+After analysis-code changes, read-only characterization replay can publish a
+new analysis manifest from the exact registered raw bundles with
+`--ngspice /must-not-execute` and without `--execute`. It preserves original
+waveforms and observation-time model manifests; it does not invent historical
+execution provenance or authorize a different period/load.
+
+
 
 ## Measured multi-port Liberty
 

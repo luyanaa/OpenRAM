@@ -81,14 +81,15 @@ def _tool_identity(ngspice):
 
 
 def _referenced_paths(value, base):
-    """Follow artifact refs, not historical tool-identity metadata."""
+    """Collect dependencies; admission and evidence consumers validate refs."""
     if isinstance(value, dict):
         if set(value) in ({"path", "sha256"}, {"path", "sha256", "size_bytes"}):
             if not isinstance(value["path"], str) or not isinstance(value["sha256"], str):
                 raise ValueError("invalid transitive evidence reference")
             path = (base / value["path"]).resolve()
-            if _digest(path) != value["sha256"]:
-                raise ValueError("transitive evidence changed: " + str(path))
+            # Captured hashes may describe historical producer code. Hash current
+            # bytes in fingerprint() to invalidate caches; stale evidence must
+            # reach its validating consumer, not abort every candidate's search.
             yield path
         for child in value.values():
             yield from _referenced_paths(child, base)

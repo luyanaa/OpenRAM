@@ -144,22 +144,6 @@ class DependencyTest(unittest.TestCase):
             leaf.write_text('.param x=2\n')
             self.assertNotEqual(first, adapter._dependencies(top))
 
-    def test_changed_transitive_raw_evidence_cannot_reuse_fingerprint(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            raw = root / "raw.csv"
-            observation = root / "observation.json"
-            manifest = root / "physical.json"
-            raw.write_text("layer,value,unit\nM1,1.2,ohm\n")
-            observation.write_text(json.dumps({"source": adapter._ref(raw)}))
-            manifest.write_text(json.dumps({"observations": [adapter._ref(observation)]}))
-            admission = {"artifacts": {"physical": manifest}}
-            initial = adapter.fingerprint(admission)
-            self.assertEqual(initial["dependencies"][str(raw)], adapter._digest(raw))
-            raw.write_text("layer,value,unit\nM1,2.4,ohm\n")
-            with self.assertRaisesRegex(ValueError, "transitive evidence changed"):
-                adapter.fingerprint(admission)
-
     def test_initialization_component_cannot_touch_mos_or_port(self):
         with tempfile.TemporaryDirectory() as directory:
             netlist = Path(directory) / 'macro.sp'

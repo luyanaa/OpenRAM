@@ -1100,9 +1100,88 @@ CLI exit1 是这些门禁拒绝的实际结果，不是数值模拟失败。
 源 registry 扩展后再次与预先保存的 baseline implementation 比较，
 冻结条目完全相等。最终163项回归及上述实际运行的 hash-bound 汇总为
 `optimizer_sizing_characterization/integration_evidence.json`。
-代码/数值执行门已完成；物理和完整 STA 门**未关闭**：需要真实完整的
-strict-LVS root correspondence、独立定量且有量纲的 RC 校准、
+在上述163项回归的历史 checkpoint，物理和完整 STA 门**未关闭**：
+当时仍缺 strict-LVS root correspondence、独立定量且有量纲的 RC 校准、
 waveform-verified macro setup/hold/pulse/Tmin、input/clock capacitance，
 以及与实际动态输出行为一致的完整边沿/条件覆盖。未用 DFF常数、
 自声明 JSON、估算 RC、放宽 LVS 或诊断 `.lib` 替代这些证据。
+
+### 本地 strict LVS 修复：两个真实 sizing 变体
+
+只使用现有 LVS 源文件和本地 KLayout0.30.7；没有 Calibre license/执行，
+没有改私有或 released deck，也没有重新生成/校准 PEX。用户已有的
+StarRC-corrected PEX 仍是当前最好可用模型，全部字节原样保留。
+
+根因是默认 `lvs_mode=flat` 只 flatten reference，物理提取仍走 deep，
+导致 layout-only 子电路与 root Skipped。严格 flat 调用现在明确传
+`run_mode=flat`，让两侧处在同一比较层级；没有加入 join、拓扑提示、
+替代 solver、端口忽略或 W/L 放宽。
+
+两个**原 GDS 对各自原 reference**完成了实际 native 比较：
+
+| top suffix | root | matched MOS | 有效网络 | 原声明端口 | MOS端子 incidence | LVS用时(s) | fresh DRC raw/waived/unwaived |
+|---|---|---:|---:|---:|---:|---:|---|
+| `d9_f4_w075` | Match | 5884 | 2522 | 50 | 23536 | 461.175 | 0/0/0 |
+| `d9_f3_w100` | Match | 5848 | 2504 | 50 | 23392 | 453.313 | 0/0/0 |
+
+`lvs_report.py` 检查 `.lvsdb` 的完整双侧 circuit/device/net/pin/
+subcircuit bijection、原 SPICE 边界和全部 terminal/port incidence；
+producer、physical consumer 各自读取 native 文件，不信自声明 complete。
+两者均只有1个 root、0残留 subcircuits，全部器件/端口/根状态为 Match。
+每个宏的232/210个 net ambiguity warnings 都保留，并通过实际选定映射及
+全部电气 incidence 检查。无任何端子或端口的 bookkeeping nets 显式记录
+为 layout9/reference8；并未删除或电气合并任何网络。
+
+真实小 GDS 的 complete、合法 S/D 对调两项通过；W20→20.1um、
+缺少 body tap、gate 接错、原 source 少端口四项仍失败。G/B 固定，
+模型和 W/L 严格比较。旧 root Skipped、伪 PASS/不完整 native 记录、
+stale report 和 source 边界不符均不能变成 consumer PASS。
+独立 hierarchical 小样本仍因 `mos_leaf` 空名边界 pin 在 native preflight
+停止，保持 unknown；本次没有把 flat 修复冒充完整 hierarchical/TG 修复。
+
+新的 `physical_evidence.json` 只替换 DRC/LVS stage refs，原 bindings/
+PEX 字段完全相等。实际 consumer 对两者都得到 `drc=true,lvs=true`。
+原 DRC 也保留；fresh DRC 用当前 producer source 重新运行以满足工具
+provenance，不能简单给旧报告改哈希。
+
+Replay 首次暴露 cache dependency discovery 把历史 PEX producer hash
+误作“当前代码必须不变”而全局退出。现在 fingerprint 计算当前依赖字节，
+使旧 cache 自然失效；admission/consumer 的严格证据校验不变。新增真实
+native report mutation 回归证明 fingerprint 改变且 LVS 降为 unknown，
+没有把 stale 证据放行。最终12模块179项回归通过，原 ResourceWarnings
+仍可见，没有 suppression。
+
+由于 analysis source 变化，5/50fF characterization 只从原 raw bundles
+离线重算，`--ngspice /must-not-execute` 且无 `--execute`。所有 domain、
+sample、energy、functional、margin、details 和原 bundle refs 完全相同，
+measurements 文件逐字节相同；只有当前 analysis-source ref 更新。
+这不是新的 simulator execution-time provenance，原 native manifests、
+波形、网表、GDS、StarRC-corrected PEX 和冻结 baseline 都没有被改写。
+
+证据目录：`ics55_work/runs/klayout_lvs_repair/`，包括
+`native_macro_results.json`、`physical_validation.json`、
+`characterization_replay_summary.json`、`regression_results_final.json`
+以及保留的全部失败实验。此处完成的是两个具体变体的本地 LVS，
+不代表完整 STA、full-PPA 可行、所有 TG/spare/mask 组合或 foundry signoff。
+
+更新后的源 registry 又完成真实 CLI replay/cache 验证，全部禁止 simulator：
+
+- 预置3份真实 OLD F3 cache 后首次运行：0 hit、3次 evaluation；两个新变体
+  均 `drc=true,lvs=true`，三种准入 tuple 的全部 measurements 数值/domain/
+  functional 与原结果相同，未生成组合仍拒绝。随后 cache-only 为3 hit、
+  0 evaluation；screening frontier 保留3点，physical frontier 仍空。
+- 5/50fF F4 首次2次 evaluation、0 hit；两个负载均保留原四目标数值且
+  `drc=true,lvs=true`。cache-only 为2 hit、0 evaluation。既有 PEX acceptance
+  metadata 和 characterization 约束未被本次修改，F4两个 frontier 仍空；
+  这不要求为本次 LVS 维修重新校准用户的 PEX。
+- 预置**当前有效的** F4 cache 后，F3→F4 仍为 `not_promoted`，没有消费或
+  改写 higher-stage cache。8ns请求的两个负载都明确有
+  `evaluation.details.error=characterization candidate/domain mismatch`，
+  全部目标为null，没有改标7.5ns波形。
+
+原始 CLI report/log 在 `klayout_lvs_repair/replay_attempt2/`；
+`replay_validation.json` 汇总全部6次实际 CLI 命令。最后 throwaway harness
+误把 domain error 查在 `first_unknown_reason`（实际为 functional unknown），
+不是 production failure；保留该记录，并直接对真实 report 的正确字段
+完成离线校验，没有重跑或篡改报告。
 
