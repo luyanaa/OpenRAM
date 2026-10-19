@@ -41,6 +41,10 @@ for strict non-hierarchical comparison. Explicit modes remain honored; generic,
 extraction-only (`net_only=true`) and strict-hierarchy deep defaults are unchanged.
 Its frozen deck hash and local hierarchical-fixture regression were updated;
 the included device/connectivity rules and StarRC-corrected PEX were not changed.
+Fresh full-macro native, consumer and registered replay/cache proofs for this
+deck version are under `ics55_work/runs/klayout_pdk_lvs_update/`. Only the three
+affected physical artifact refs select these fresh LVS records; older reports
+remain historical evidence rather than current-deck acceptance.
 The generic profile remains the direct CLI default and passes no strict flags;
 its existing settings are unchanged. Hierarchical comparison is opt-in only
 for `openram-macro`.

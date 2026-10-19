@@ -162,6 +162,11 @@ Individually legal values do not imply a supported combination: `(9,3,.75)`
 is rejected. TG, other cell/port families and unvalidated variants never fall
 back to the baseline. Only `(9,4,.75)` has the explicit F4 diagnostic model;
 registration authorizes measurement attempts, not physical/STA acceptance.
+The registry also binds an F1 Icarus behavioral adapter for each admitted
+2RW tuple. It replays hash-bound behavioral reports and checks dual-port
+access, cross-port visibility, and same-physical-row write rejection under
+`OPENRAM_ASSERTIONS`; it emits null electrical measurements and never claims
+schematic, PEX, physical, characterization, or signoff evidence.
 
 Run from the repository root with the local Python environment:
 
@@ -243,6 +248,35 @@ The first model-closure-complete local example is SNFP/125 C at7.5ns:
 It is a measured screening point, not a minimum-period or sizing result.
 The separate5ns pass lacks launch-time model closure and remains diagnostic.
 Metrics, final report paths and physical limitations are in [SIM_RESULTS.md](SIM_RESULTS.md).
+
+## Register-file backends (bounded native scope)
+
+The frozen register-file contract is CPU-facing `[R, R, W]` with one common
+cycle, one-cycle synchronous reads, new-data same-address read-during-write,
+one writer, absent reset, and explicitly uninitialized storage. The Phase 1
+replicated backend is a behavioral F1 proof only: it uses two 1R1W copies,
+broadcasts writes, and assigns one reader to each copy. Its hash-bound report
+does not establish electrical, physical, PPA, Liberty, or signoff evidence.
+
+The native ICsprout55 cell boundary is `configs/ics55_2r1w_native.py` and
+`sim/native_register_file.py`. It maps the CPU roles explicitly to OpenRAM's
+physical `[W, R, R]` order (`num_rw_ports=0`, `num_w_ports=1`,
+`num_r_ports=2`) and emits a standalone parameterized `pbitcell` SPICE
+netlist. The current bank and port-data layout boundary supports at most two
+physical ports; a three-port full macro is rejected with
+`unsupported-register-file-layout`. The native manifest is structural cell /
+netlist evidence only and remains `signoff: false`; no full macro, timing,
+PEX, DRC/LVS, characterization, or foundry claim follows from this smoke.
+The replicated backend is admitted as `ics55.register_file.2r1w.replicated` with
+hash-bound F1 Icarus evidence. The architecture CLI dispatches its
+`ics55-register-file-f1` adapter explicitly; the replay reports functional
+evidence only, leaves electrical/physical checks and all PPA measurements
+unknown, and never claims native 2R1W physical equivalence.
+
+The native cell smoke validates typed CPU/compiler role maps, exact generated
+pin names and directions, and the mandatory three-physical-port rejection
+before writing its structural manifest. Its standalone netlist is not a
+CPU-facing macro.
 
 
 

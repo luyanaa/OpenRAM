@@ -19,6 +19,16 @@ ENVIRONMENT = {
 }
 OBJECTIVES = {"area_um2", "read_energy_pj", "write_energy_pj", "cycle_time_ns"}
 MARGINS = {"wen_pulse_ns", "sa_setup_ns", "bl_diff_v", "write_recovery_ns"}
+REGISTER_FILE_ACCESS_CONTRACT = {
+    "ports": ["R", "R", "W"],
+    "clocking": "common-cycle",
+    "same_row_write": "single-writer",
+    "read_during_write": "new-data-bypass",
+    "read_latency_cycles": 1,
+    "write_visibility": "same-cycle",
+    "reset": "absent",
+    "initialization": "uninitialized",
+}
 
 
 class ContractError(ValueError):
@@ -151,17 +161,27 @@ def validate_candidate(candidate):
     for key in ("capability_id", "backend"):
         if not isinstance(candidate[key], str) or not candidate[key]:
             raise ContractError("candidate " + key + " is empty")
-    contract = fields(candidate["access_contract"],
-                      {"ports", "clocking", "same_row_write", "read_during_write"}, label="access contract")
-    if (not isinstance(contract["ports"], list) or not contract["ports"]
-            or any(port not in ("RW", "R", "W", "SEARCH") for port in contract["ports"])):
-        raise ContractError("invalid port roles")
-    for key in ("clocking", "same_row_write", "read_during_write"):
-        if not isinstance(contract[key], str) or not contract[key]:
-            raise ContractError("missing access semantics: " + key)
-    if not isinstance(candidate["parameters"], dict) or not candidate["parameters"]:
-        raise ContractError("candidate requires explicit parameters")
+    base_contract_fields = {"ports", "clocking", "same_row_write", "read_during_write"}
+    if candidate["family"] == "register_file":
+        contract = fields(candidate["access_contract"],
+                          set(REGISTER_FILE_ACCESS_CONTRACT),
+                          label="register-file access contract")
+        if contract != REGISTER_FILE_ACCESS_CONTRACT:
+            raise ContractError("register-file access contract differs from the frozen 2R1W contract")
+    else:
+        contract = fields(candidate["access_contract"], base_contract_fields,
+                          label="access contract")
+        if (not isinstance(contract["ports"], list) or not contract["ports"]
+                or any(port not in ("RW", "R", "W", "SEARCH") for port in contract["ports"])):
+            raise ContractError("invalid port roles")
+        for key in ("clocking", "same_row_write", "read_during_write"):
+            if not isinstance(contract[key], str) or not contract[key]:
+                raise ContractError("missing access semantics: " + key)
     _environment(candidate["environment"])
+    if (candidate["family"] == "register_file"
+            and candidate["environment"]["initialization"]
+            != REGISTER_FILE_ACCESS_CONTRACT["initialization"]):
+        raise ContractError("register-file candidates require uninitialized storage semantics")
     canonical_bytes(candidate)
     return candidate
 

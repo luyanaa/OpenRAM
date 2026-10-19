@@ -124,6 +124,7 @@
         },
         "fidelity": {
           "values": [
+            "F1",
             "F3",
             "F4"
           ]
@@ -146,6 +147,36 @@
             "write_driver_strength": 1
           },
           "models": {
+            "F1": {
+              "adapter": "ics55-iverilog",
+              "artifacts": {
+                "model": {
+                  "path": "../../ics55_work/runs/out_fresh_final_2rw_baseline/fresh_final_2rw_baseline.v",
+                  "sha256": "1c76648a76eb5be345b3dbc18826c43be28af34393d08da45ebe4bf7e64fa7b8"
+                },
+                "report": {
+                  "path": "../../ics55_work/runs/f1_behavioral_smoke/fresh_final_2rw_baseline/behavioral.json",
+                  "sha256": "f0d97886a5dbef3a087b17c37c993c0a418374786f794c54fbb8b5013e0caa11"
+                }
+              },
+              "basic_checks": [
+                {"artifact": "report", "pointer": "/results/functional", "equals": true},
+                {"artifact": "report", "pointer": "/results/conflict_rejection", "equals": true},
+                {"artifact": "report", "pointer": "/candidate/parameters", "equals": {
+                  "word_size": 8,
+                  "num_words": 32,
+                  "words_per_row": 1,
+                  "num_banks": 1,
+                  "stdcell_library": "SC9T",
+                  "column_mux": "nmos",
+                  "decoder_strategy": "baseline",
+                  "replica_strategy": "baseline",
+                  "delay_chain_stages": 9,
+                  "delay_chain_fanout": 4,
+                  "write_driver_strength": 1
+                }}
+              ]
+            },
             "F3": {
               "adapter": "ics55-ngspice",
               "artifacts": {
@@ -324,6 +355,36 @@
             "write_driver_strength": 0.75
           },
           "models": {
+            "F1": {
+              "adapter": "ics55-iverilog",
+              "artifacts": {
+                "model": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f4_w075/ics55_2rw_32x8_d9_f4_w075.v",
+                  "sha256": "8734ad8d6b64ae28688bd69f648f5439ac7fb7f8fe070d90fd52db9bafbce771"
+                },
+                "report": {
+                  "path": "../../ics55_work/runs/f1_behavioral_smoke/d9_f4_w075/behavioral.json",
+                  "sha256": "bd66c9edf4dde087fe1768c636263efecf2a97dbc10355ac00dc16ab52f9f007"
+                }
+              },
+              "basic_checks": [
+                {"artifact": "report", "pointer": "/results/functional", "equals": true},
+                {"artifact": "report", "pointer": "/results/conflict_rejection", "equals": true},
+                {"artifact": "report", "pointer": "/candidate/parameters", "equals": {
+                  "word_size": 8,
+                  "num_words": 32,
+                  "words_per_row": 1,
+                  "num_banks": 1,
+                  "stdcell_library": "SC9T",
+                  "column_mux": "nmos",
+                  "decoder_strategy": "baseline",
+                  "replica_strategy": "baseline",
+                  "delay_chain_stages": 9,
+                  "delay_chain_fanout": 4,
+                  "write_driver_strength": 0.75
+                }}
+              ]
+            },
             "F3": {
               "adapter": "ics55-ngspice",
               "artifacts": {
@@ -531,6 +592,36 @@
             "write_driver_strength": 1
           },
           "models": {
+            "F1": {
+              "adapter": "ics55-iverilog",
+              "artifacts": {
+                "model": {
+                  "path": "../../ics55_work/runs/optimizer_sizing_characterization/sizing/work/runs/out_ics55_2rw_32x8_d9_f3_w100/ics55_2rw_32x8_d9_f3_w100.v",
+                  "sha256": "cfc980093863747afbb0bdba4362b550a5cb852ed6bbfb0df3771e8ade8da5b9"
+                },
+                "report": {
+                  "path": "../../ics55_work/runs/f1_behavioral_smoke/d9_f3_w100/behavioral.json",
+                  "sha256": "b950414ed0639352e234258c7d1b2463201cfa549d88ea7740d2db0d11a8ae97"
+                }
+              },
+              "basic_checks": [
+                {"artifact": "report", "pointer": "/results/functional", "equals": true},
+                {"artifact": "report", "pointer": "/results/conflict_rejection", "equals": true},
+                {"artifact": "report", "pointer": "/candidate/parameters", "equals": {
+                  "word_size": 8,
+                  "num_words": 32,
+                  "words_per_row": 1,
+                  "num_banks": 1,
+                  "stdcell_library": "SC9T",
+                  "column_mux": "nmos",
+                  "decoder_strategy": "baseline",
+                  "replica_strategy": "baseline",
+                  "delay_chain_stages": 9,
+                  "delay_chain_fanout": 3,
+                  "write_driver_strength": 1
+                }}
+              ]
+            },
             "F3": {
               "adapter": "ics55-ngspice",
               "artifacts": {
@@ -610,6 +701,86 @@
                   "pointer": "/equivalent",
                   "equals": true
                 }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "ics55.register_file.2r1w.replicated",
+      "family": "register_file",
+      "backend": "replicated-1r1w",
+      "access_contract": {
+        "ports": ["R", "R", "W"],
+        "clocking": "common-cycle",
+        "same_row_write": "single-writer",
+        "read_during_write": "new-data-bypass",
+        "read_latency_cycles": 1,
+        "write_visibility": "same-cycle",
+        "reset": "absent",
+        "initialization": "uninitialized"
+      },
+      "parameters": {
+        "word_size": {"values": [8]},
+        "num_words": {"values": [4]}
+      },
+      "environment": {
+        "corner": {"values": ["tt"]},
+        "voltage_v": {"values": [1.08]},
+        "temperature_c": {"values": [25.0]},
+        "period_ns": {"values": [10.0]},
+        "cload_ff": {"values": [5.0]},
+        "slew_ns": {"values": [0.03]},
+        "skew1": {"values": [0.0]},
+        "initialization": {"values": ["uninitialized"]},
+        "fidelity": {"values": ["F1"]}
+      },
+      "excludes": [],
+      "implementations": [
+        {
+          "parameters": {"word_size": 8, "num_words": 4},
+          "models": {
+            "F1": {
+              "adapter": "ics55-register-file-f1",
+              "artifacts": {
+                "report": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/register_file_f1.json",
+                  "sha256": "f084dd68934f00c06779705045dcd271f8a2c7fef3ac9d3d0c0bb23b88f3ec6e"
+                },
+                "model": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/rf_1r1w_leaf.v",
+                  "sha256": "c1f0ae4959665b1cbccccaba9265be61cd796ad625545f3a194ab01eafb7400e"
+                },
+                "cycle_model": {
+                  "path": "../../compiler/architecture/register_file.py",
+                  "sha256": "9d17b76219abbf56fa955bf68f527615ef2cb00bfde187dd352ba5f0fa925ac9"
+                },
+                "wrapper": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/rf_replicated_2r1w.v",
+                  "sha256": "bbc8f973a7a07a63b884e5d7f4ccd131e6314ee4798e5b096aa6d8540d08ec7a"
+                },
+                "testbench": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/tb.v",
+                  "sha256": "ab7cf26844feb681bf578cfad407d07dbe79d1a03b0aebdff6381ab7e355b148"
+                },
+                "executable": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/sim.vvp",
+                  "sha256": "47796c3166e4c5f050464a6f2699c27ea8f956c51aa1080ba5e1d37a17ca5aa6"
+                },
+                "compile_log": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/compile.log",
+                  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                },
+                "run_log": {
+                  "path": "../../ics55_work/runs/register_file_f1_evidence/run.log",
+                  "sha256": "a2866b567e24fea410c6f2d11d3a0624175a3af1e50876429b80c3f3560c68bc"
+                }
+              },
+              "basic_checks": [
+                {"artifact": "report", "pointer": "/results/functional", "equals": true},
+                {"artifact": "report", "pointer": "/coverage/uninitialized_read_unknown", "equals": true},
+                {"artifact": "report", "pointer": "/candidate/backend", "equals": "replicated-1r1w"}
               ]
             }
           }

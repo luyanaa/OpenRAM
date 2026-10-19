@@ -178,6 +178,27 @@ execution provenance or authorize a different period/load.
 
 
 
+
+## Native 2R1W register-file cell boundary
+
+`native_register_file.py` validates the explicit CPU role order `[R, R, W]`
+against OpenRAM's physical order `[W, R, R]` and generates only a standalone
+parameterized `pbitcell` SPICE netlist from `configs/ics55_2r1w_native.py`.
+Role declarations must be typed lists/tuples. The generated pins and pin
+directions are checked against the explicit contract, and the three-port full
+macro rejection is exercised before the manifest is published. The current
+`bank` / `port_data` layout generators do not support three physical ports,
+so the backend rejects a full macro with the stable
+`unsupported-register-file-layout` error. The emitted manifest is structural
+cell/netlist evidence, not a CPU-facing macro and not DRC/LVS, transistor,
+PEX, Liberty, characterization, PPA, or signoff evidence.
+
+The replicated behavioral backend is registered as
+`ics55.register_file.2r1w.replicated` and dispatched by the architecture CLI
+through `ics55-register-file-f1`. Its generated F1 testbench explicitly
+observes an uninitialized read as Verilog unknown; the Python cycle model
+rejects the same operation. Non-power-of-two depths and non-replicated backend
+identities are rejected before generation.
 ## Measured multi-port Liberty
 
 `tbgen.py` reads the `// Port N: RW|R|W` comments on the generated behavioral

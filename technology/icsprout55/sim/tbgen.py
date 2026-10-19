@@ -22,7 +22,8 @@ import re
 
 
 def parse_ports(vfile):
-    txt = open(vfile).read()
+    with open(vfile, encoding="utf-8") as stream:
+        txt = stream.read()
     name_match = re.search(r"module\s+(\w+)", txt)
     aw_match = re.search(r"ADDR_WIDTH\s*=\s*(\d+)", txt)
     dw_match = re.search(r"DATA_WIDTH\s*=\s*(\d+)", txt)
@@ -159,7 +160,7 @@ def gen(vfile, outdir, ncyc, seed, clk_delay1=0.0):
     for p in ports:
         for s in p["sigs"]:
             conns.append(".{0}({0})".format(s))
-    L.append("  {} #(.DELAY(0), .VERBOSE(0)) dut ({});".format(name, ", ".join(conns)))
+    L.append("  {} #(.DELAY(0), .T_HOLD(0), .VERBOSE(0)) dut ({});".format(name, ", ".join(conns)))
     L.append("  integer f; integer cyc;")
     L.append("  initial begin")
     L.append('    f = $fopen("trace.txt");')
@@ -210,6 +211,7 @@ def gen(vfile, outdir, ncyc, seed, clk_delay1=0.0):
         tb_file.write("\n".join(l for l in L if l is not None) + "\n")
     meta = dict(schema_version=1, kind="ics55_tbgen_trace", name=name, aw=aw, dw=dw,
                 ports=ports, ncyc=ncyc, seed=seed, clock_period_ns=10.0,
+                model_parameters={"DELAY": 0, "T_HOLD": 0, "VERBOSE": 0},
                 cycle_semantics="C values are applied before the rising edge of that cycle",
                 trace_file="trace.txt")
     with open(os.path.join(outdir, "trace.meta.json"), "w") as meta_file:

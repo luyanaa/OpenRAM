@@ -27,8 +27,10 @@ def _parser():
         if name == "search":
             command.add_argument("--out-dir", type=Path, required=True)
             command.add_argument("--execute", action="store_true",
-                                 help="permit actual serial local ngspice for unmatched observations")
+                                 help="permit actual local simulator execution for unmatched observations")
             command.add_argument("--ngspice", default="ngspice")
+            command.add_argument("--iverilog", default="iverilog")
+            command.add_argument("--vvp", default="vvp")
             command.add_argument("--timeout", type=float, default=3600,
                                  help="seconds per actual simulator invocation")
             command.add_argument("--max-evaluations", type=int,
@@ -53,16 +55,59 @@ def main(argv=None):
         if registry.data["technology"] != "icsprout55":
             raise ContractError("no local evaluation backend for this technology")
         prefix = "openram." if __package__.startswith("openram.") else ""
-        adapter = importlib.import_module(prefix + "technology.icsprout55.sim.architecture")
-        fingerprint = adapter.fingerprint(registry, ngspice=args.ngspice,
-                                          replay_only=not args.execute, timeout=args.timeout)
+        records = list(enumerate_candidates(registry, request))
+        module_names = {
+            "ics55-ngspice": "technology.icsprout55.sim.architecture",
+            "ics55-iverilog": "technology.icsprout55.sim.behavioral",
+            "ics55-register-file-f1": "technology.icsprout55.sim.register_file",
+        }
+        adapter_families = {
+            "ics55-ngspice": {"sram"},
+            "ics55-iverilog": {"sram"},
+            "ics55-register-file-f1": {"register_file"},
+        }
+        adapters = {}
+        adapter_fingerprints = {}
+        adapter_names = set()
+        for record in records:
+            if "admission_error" in record:
+                continue
+            try:
+                admission = registry.admit(record["candidate"])
+            except ContractError:
+                # run_search owns the authoritative per-record admission result.
+                continue
+            adapter_names.add(admission["model"]["adapter"])
+        for adapter_name in sorted(adapter_names):
+            if adapter_name not in module_names:
+                adapter_fingerprints[adapter_name] = {
+                    "adapter": adapter_name, "status": "unsupported-local"}
+                continue
+            adapter = importlib.import_module(prefix + module_names[adapter_name])
+            adapters[adapter_name] = adapter
+            fingerprint_kwargs = {"replay_only": not args.execute, "timeout": args.timeout}
+            if adapter_name == "ics55-ngspice":
+                fingerprint_kwargs["ngspice"] = args.ngspice
+            else:
+                fingerprint_kwargs.update(iverilog=args.iverilog, vvp=args.vvp)
+            adapter_fingerprints[adapter_name] = adapter.fingerprint(
+                registry, **fingerprint_kwargs)
+        fingerprint = {"schema": "openram-local-adapters/1",
+                       "adapters": adapter_fingerprints}
 
         def evaluate(admission, destination):
-            if admission["model"]["adapter"] != "ics55-ngspice" or admission["candidate"]["family"] != "sram":
-                raise ContractError("candidate has no implemented local SRAM evaluator")
-            return adapter.evaluate(admission, destination, execute=args.execute,
-                                    ngspice=args.ngspice, timeout=args.timeout,
-                                    required_margins=request["required_margins"])
+            adapter_name = admission["model"]["adapter"]
+            adapter = adapters.get(adapter_name)
+            family = admission["candidate"]["family"]
+            if adapter is None or family not in adapter_families.get(adapter_name, set()):
+                raise ContractError("candidate has no compatible local evaluator: " + adapter_name)
+            evaluate_kwargs = {"execute": args.execute, "timeout": args.timeout,
+                               "required_margins": request["required_margins"]}
+            if adapter_name == "ics55-ngspice":
+                evaluate_kwargs["ngspice"] = args.ngspice
+            else:
+                evaluate_kwargs.update(iverilog=args.iverilog, vvp=args.vvp)
+            return adapter.evaluate(admission, destination, **evaluate_kwargs)
 
         report = run_search(registry, request, args.out_dir, evaluate,
                             evaluator_fingerprint=fingerprint, max_evaluations=args.max_evaluations)

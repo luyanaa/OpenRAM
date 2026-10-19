@@ -96,6 +96,24 @@ class AdmissionTest(unittest.TestCase):
         candidate["environment"]["fidelity"] = "F4"
         with self.assertRaises(ContractError):
             registry.admit(candidate)
+    def test_register_file_rejects_zero_initialized_environment(self):
+        candidate = self.candidate()
+        candidate["family"] = "register_file"
+        candidate["backend"] = "replicated-1r1w"
+        candidate["access_contract"] = {
+            "ports": ["R", "R", "W"],
+            "clocking": "common-cycle",
+            "same_row_write": "single-writer",
+            "read_during_write": "new-data-bypass",
+            "read_latency_cycles": 1,
+            "write_visibility": "same-cycle",
+            "reset": "absent",
+            "initialization": "uninitialized",
+        }
+        candidate["environment"]["initialization"] = "zero-voltage"
+        with self.assertRaisesRegex(ContractError, "uninitialized storage semantics"):
+            validate_candidate(candidate)
+
 
     def test_invalid_environment_and_unknown_fields_reject(self):
         for key, value in (("period_ns", 0), ("slew_ns", 0.7), ("skew1", 0.5),
