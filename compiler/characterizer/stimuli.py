@@ -13,6 +13,7 @@ simulations as well.
 
 import os
 import shlex
+import shutil
 import subprocess
 import numpy as np
 from openram import debug
@@ -50,6 +51,34 @@ class stimuli():
             pass
         if not found:
             debug.error("Must define either fet_libraries or fet_models.", -1)
+
+        if tech.spice.get("stage_model_includes", False):
+            self.stage_model_includes()
+
+    def stage_model_includes(self):
+        """Expose model-wrapper siblings in the simulation temp directory.
+
+        Vendor decks such as ICsprout55 use relative ``.LIB``/``.INC`` paths
+        next to the model library.  ngspice and Xyce resolve them against the
+        process working directory, so stage the model directory entries in
+        ``OPTS.openram_temp`` without modifying the PDK files.
+        """
+        model_dir = os.environ.get("SPICE_MODEL_DIR")
+        if not model_dir or not os.path.isdir(model_dir):
+            debug.warning("SPICE_MODEL_DIR is invalid; model includes may fail: {}".format(model_dir))
+            return
+        for entry in sorted(os.listdir(model_dir)):
+            source = os.path.join(model_dir, entry)
+            target = os.path.join(OPTS.openram_temp, entry)
+            if os.path.lexists(target):
+                continue
+            try:
+                os.symlink(source, target, target_is_directory=os.path.isdir(source))
+            except OSError:
+                if os.path.isdir(source):
+                    shutil.copytree(source, target)
+                else:
+                    shutil.copy2(source, target)
 
     def inst_model(self, pins, model_name):
         """ Function to instantiate a generic model with a set of pins """

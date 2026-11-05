@@ -29,6 +29,7 @@ uses the vendor model libraries supplied separately by icsprout55-pdk.
 """
 
 import os
+import shutil
 
 from openram import OPTS
 from openram import drc as d
@@ -279,13 +280,29 @@ spice = {}
 spice["stdcell_library"] = stdcell_library
 spice["nmos"] = stdcell_variant["nmos"]
 spice["pmos"] = stdcell_variant["pmos"]
+def _default_spice_model_flavor():
+    """Pick the vendor model flavor for the simulator OpenRAM will use.
+
+    Xyce consumes the HSPICE-compatible cards; ngspice uses the ngspice
+    wrapper with its relative MOS/bjt/dio includes.  Xyce is OpenRAM's first
+    spice preference, so check it first.
+    """
+    for executable, flavor in (("Xyce", "hspice"), ("xyce", "hspice"),
+                               ("ngspice", "ngspice")):
+        if shutil.which(executable):
+            return flavor
+    return "ngspice"
+
+
 SPICE_MODEL_DIR = os.environ.get("SPICE_MODEL_DIR")
 if not SPICE_MODEL_DIR:
     pdk_root = os.environ.get(
         "ICSPROUT55_PDK_ROOT",
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..",
                                     "icsprout55-pdk")))
-    SPICE_MODEL_DIR = os.path.join(pdk_root, "libs.tech", "spice", "foundry", "SIMULATOR")
+    SPICE_MODEL_DIR = os.path.join(pdk_root, "libs.tech", "spice", "foundry",
+                                   _default_spice_model_flavor())
+os.environ.setdefault("SPICE_MODEL_DIR", SPICE_MODEL_DIR)
 _model_library = os.path.join(
     SPICE_MODEL_DIR, "ICsprout_55LLULP1225_V1p1_hsp.lib")
 spice["fet_libraries"] = {
@@ -299,6 +316,9 @@ spice["fet_models"] = {}
 spice["analytical_only"] = False
 spice["subckt_model_si_units"] = True
 spice["lvs_uses_mos_cards"] = True
+# The vendor model wrappers use relative .LIB/.INC paths next to the model
+# library; stage those siblings in the simulation temp directory.
+spice["stage_model_includes"] = True
 spice["power"] = "vdd"
 spice["ground"] = "gnd"
 
