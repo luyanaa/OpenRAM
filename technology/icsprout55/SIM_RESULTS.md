@@ -315,6 +315,13 @@ The temporary smoke adapter maps the 24 flattened DFF MOS cards to the
 equivalent PDK transistor-wrapper subcircuits. No interconnect parasitics,
 PEX, mismatch, or foundry Spectre models are included.
 
+The mapping is now automatic in the stimulus writer: the icsprout55 tech flag
+`mos_cards_to_subckts` rewrites imported `M... <wrapper>` cards as `X...
+<wrapper>` subcircuit calls and maps the MOS `M` multiplier to the wrapper's
+`mr` parameter. A 16-cycle, 2.5 ns transistor-level ngspice functional run of
+the current `ics55_1rw_16x4` macro completes with `SUCCESS` in 96.7 s using
+the unmodified generated `.sp` netlist.
+
 | macro / configuration | period | initialized accesses | readback |
 |---|---:|---|---|
 | 1RW 64x8, default NMOS mux 2:1 | 20 ns | addresses 0–2 prewritten to `FF`, then `A5`, `3C`, `5A` | 3 reads, all bits match |
@@ -814,9 +821,57 @@ OpenRAM runner 现请求 PDK `strict_topology=true`：禁用 simplify/purge，
 上述 `ghost` 反例现在 mismatch，真实 CLI 返回 1。另一个单 MOS W 增加
 8% 的反例在默认 foundry-library 10% 模式可接受，在新严格模式正确失败。
 证据在 `tg_hierarchy_repair/native_strict_compare/`；一般标准单元直接运行
-PDK deck 的默认宽度公差未改。完整 TG 宏的严格 native verdict 仍需独立完成；
-其严格重跑同样在 3600.26 s 超时，仅留下 48487 行预比较抽取网表，
-没有 report/log/verdict。冻结原始 2RW 宏则已单独严格通过，见上方短周期复测段。
+PDK deck 的默认宽度公差未改。
+
+当前完整 TG 宏的严格 native verdict 仍未完成：最新保留的 full-macro
+extraction 有 48,487 行，但没有 report/log/verdict；该结果是
+inconclusive，既不是 LVS pass，也不是新的 physical mismatch。冻结原始
+2RW 宏的严格通过只适用于其冻结 GDS/source，不转移到当前生成物。
+
+### 2026-10-21: replica-column offsets in current TG macro generation
+
+The current generator sizes the TG array from SRAM-provided absolute offsets,
+including the left replica-column offset, using
+`max(inherited_width, max(offsets[:columns]) + mux.width)`. This keeps the SRAM-
+provided placements and spacing rules intact; it does not waive DRC or move the
+mux leaves.
+
+`verify/test_tgate_mux_array_geometry.py` contains the 64-row/32-column offset
+fixture and the existing 8/16/32-column landing sweep. No retained result for
+the added offset test or a pre-fix failure is asserted here.
+
+The rebuilt macro compiled in 1126.7 s and passed pinned KLayout 0.30.7 full-
+hierarchy macro-profile DRC with 0 raw, 0 waived, and 0 unwaived markers. Its
+GDS SHA-256 is
+`2b7b822baeaa10207f267608203c8ccb5bb641de69975bbf47f26136922a2583`; the
+generated LVS netlist SHA-256 is
+`11f7d1a6e8c462f88a85e0838e040124081e18239ab9dc7ba68e4a6adc3539ce`.
+The retained full-macro native LVS artifacts contain a 48,487-line extracted
+netlist but no native LVS report or verdict. This build is inconclusive,
+neither pass nor mismatch, and is not a foundry-signoff result.
+
+### 2026-11-05: current-source 2RW/TG rebuild and write-driver supply fix
+
+The current source was rebuilt for 2RW and TG. The first 2RW rebuild extracted
+5,854 MOS / 2,490 nets instead of 5,884 / 2,522; the missing devices were 16+16
+write-driver MOS merged into 9.6 um devices with `G=VDD, S=GND, D=VDD`.
+`write_driver_array.route_supplies` had promoted the ICsprout55 M1 leaf rails
+to M3, and the via stack crossed the M2 bitlines. Keeping low-layer leaf rails
+on their own layer (commit `7cb75bca`) restores the extraction to 5,884 /
+2,522 / 50. The rebuilt 2RW GDS
+`5b98d82163a4227de1ad5990ecba332312cc6600978fc3345faca1d7f07a5cb5` has DRC
+0/0/0 and strict flat LVS matched: 5,884 MOS, 2,522 nets, 50 pins, 1,207 s.
+The older repository GDS `d6d5...` also matches on Linux (1,439 s); the earlier
+macOS `-5` did not reproduce.
+
+The current TG GDS
+`f7e70c76a84c7381f0f816b9638c00ceaa9701253b414471132d08f1244ec3ba` has DRC
+0/0/0 and extracts 16,150 MOS / 6,133 nets / 29 pins, matching the reference
+population. A direct `NetlistComparer#compare` strict flat comparison did not
+finish in 90 minutes; the original `l2n_data.compare` path had timed out at
+3,600 s. The full-macro TG native verdict therefore remains inconclusive,
+neither pass nor mismatch. The bounded TG leaf/pair/array evidence is unchanged;
+a hierarchical or partitioned full-macro comparison is still required.
 
 ## Capability-gated SRAM timing search：首次执行
 

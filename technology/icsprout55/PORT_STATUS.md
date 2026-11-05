@@ -308,10 +308,14 @@ unchanged; no calibration, native CAPTAB or new PEX flow was required.
   incomplete `dont_use` tables. Historical role-correct table generation and
   fixture coverage do not prove macro setup/hold/pulse/Tmin or input/clock
   loading. Complete STA Liberty remains unavailable.
-* Native F4 diagnostics and strict physical evidence ingestion are implemented;
-  DRC evidence passes, strict native LVS fails and RC is estimated/unaccepted.
-  The independent characterization closure gate remains unknown. See
-  [SIM_RESULTS.md](SIM_RESULTS.md) for exact measured domains and raw evidence.
+* Native F4 diagnostics and strict physical evidence ingestion are implemented.
+  The later strict-flat repair proves DRC and complete native LVS matches for
+  the exact width075/fanout3 sizing variants, and the current 32x8 2RW
+  baseline also matches on Linux after the write-driver supply-rail fix. It
+  does not close the full TG macro (flat LVS did not finish in 90 minutes),
+  independent RC calibration, or the characterization gate.
+  RC remains estimated/unaccepted and complete STA remains unavailable. See
+  [SIM_RESULTS.md](SIM_RESULTS.md) for the measured domains and raw evidence.
 
 
 ## Open items

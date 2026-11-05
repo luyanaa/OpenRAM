@@ -88,6 +88,8 @@ nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technolo
 
 # Explicitly limited top-cell interconnect screen; this does not inspect child geometry
 nix-shell -I "nixpkgs=$NIXPKGS_URL" ../librelane --run 'venv/bin/python technology/icsprout55/verify/opensource.py verify macro.gds TOP --no-lvs --mode top-interconnect'
+# Focused pin-layer normalization regression (local Python environment only)
+.venv/bin/python technology/icsprout55/verify/test_router_pin_layers.py
 ```
 
 Full mode checks the complete hierarchy. `top-interconnect` creates a GDS
@@ -230,6 +232,54 @@ divergence, not proof of a false positive; no current Calibre run was
 available. Reports are under
 `ics55_work/runs/out_routefix5_1rw/signoff/macro_routefix5_1rw/opensource/`.
 
+### Current 1RW16×4 strict LVS result
+
+A fresh full-hierarchy `ics55_1rw_16x4` run completes with `ALL CHECKS PASS`:
+compile succeeds and macro-profile DRC reports 0 raw / 0 waived / 0 unwaived
+markers. The raw PDK comparer still records `NoMatch` and 8 mismatched MOS
+pairs around predecoder outputs 6–7; `lvs.evidence.json` retains that as
+`native_verdict=mismatch`.
+
+The mismatch is a KLayout correspondence ambiguity, not an LVS waiver. The
+OpenRAM verifier anchors the two candidate output nets from predecoder
+inverter NMOS devices whose gate, body and source correspondences already
+match, then checks both output-net bijections with a full constrained netlist
+compare. It accepts only the unique mapping that matches the complete graph.
+The latest evidence has 1/2 passing mappings, 1,530/1,530 MOS devices,
+6,120/6,120 terminal incidences and 17/17 top pins covered, with no comparison
+errors. The report still records 94 `MatchWithWarning` net pairs; every selected
+mapping is checked against device, pin and terminal incidence before acceptance.
+
+The reader enumerates nets with `Circuit#nets_by_name('*')`: KLayout 0.30.x
+Python bindings corrupt the heap while iterating `Circuit#each_net()`, which
+surfaced as `malloc_consolidate(): unaligned fastbin chunk detected` when the
+`LayoutVsSchematic` was destroyed. The workaround is regression-tested on both
+the two-MOS fixture and the real report; it does not alter the LVS verdict.
+
+The resolved wrapper verdict and the raw PDK verdict are both preserved in
+`macro_ics55_1rw_16x4/opensource/lvs/lvs.evidence.json`; DRC evidence is under
+the sibling `drc/` directory. This is an open-source verification result, not
+Calibre/Assura or foundry signoff.
+
+### Current 2RW strict-LVS gate
+
+The current `ics55_2rw_32x8` compile completes and its fresh pinned KLayout
+0.30.7 full-hierarchy macro-profile DRC is 0 raw / 0 waived / 0 unwaived. The
+earlier macOS strict-LVS attempt exited `-5`; a Linux rerun of the same GDS/LVS
+pair with the pinned KLayout 0.30.7 completes and matches: 5,884/5,884 MOS,
+2,522/2,522 nets, 50/50 top ports, no comparison errors, 1,439 s. The macOS
+failure was host/tool-path specific, not an LVS mismatch or a waived short.
+
+A current-source rebuild then exposed a real write-driver supply short: 16
+parallel 0.6 um PMOS/NMOS devices were combined into 9.6 um devices with
+`G=VDD, S=GND, D=VDD`. `write_driver_array.route_supplies` promoted ICsprout55
+M1 leaf supply rails to M3; the via stack crossed the M2 bitlines. The fix keeps
+low-layer leaf rails on their own layer and promotes only M2 leaf rails
+(commit `7cb75bca`). After the fix the current source artifact has DRC
+0/0/0 and strict LVS matched: 5,884/5,884 MOS, 2,522/2,522 nets, 50/50 ports,
+1,207 s. FreePDK45 and SUB4M write-driver regressions remain DRC 0 / LVS
+matches.
+
 Verification of waiver handling: four regression tests cover marker identity,
 generated/top-cell boundaries, malformed counts and wildcard rejection. An
 actual full-hierarchy KLayout run with both vendor DFFs and deliberately bad
@@ -326,47 +376,39 @@ The independently emitted MOS-only netlist has no R/C cards and uses
 equivalence; all these artifacts remain non-signoff and unaccepted for PEX
 calibration purposes.
 
-### Fresh final-configuration evidence
+### Macro evidence and current-gate boundaries
 
-These reports are from two isolated builds of the current source configurations.
-The copied config inputs preserve SRAM geometry and functional parameters and set
-`check_lvsdrc=False`, `use_nix=False`; the build invocations supply unique
-output names/paths so verification can be run separately on each resulting GDS.
+The strict results below are artifact-scoped. A native match or a process
+failure for one GDS/source pair MUST NOT be transferred to another pair.
 
-| Candidate | Source config SHA-256 | GDS SHA-256 | Pinned KLayout 0.30.7 full-hierarchy result |
+The current repository `ics55_2rw_32x8` artifact and its current-source rebuild
+both pass pinned KLayout 0.30.7 strict flat LVS. The first pair (`d6d5...` /
+`94e51...`) matches at 5,884/5,884 MOS, 2,522/2,522 nets and 50/50 ports in
+1,439 s. A current-source rebuild initially exposed a real write-driver
+supply-to-bitline short; after the `write_driver_array` layer fix the rebuilt
+pair (`5b98d8...` / `1062a0...`) has DRC 0/0/0 and also matches at
+5,884/5,884 MOS, 2,522/2,522 nets, 50/50 ports in 1,207 s.
+
+The current rebuilt 256x8 TG artifact (`f7e70c...` / `376e3d...`) has pinned
+full-hierarchy macro-profile DRC 0/0/0 and extracts 16,150 MOS / 6,133 nets /
+29 pins, matching the reference population. The strict flat comparison did not
+finish within 90 minutes with the direct `NetlistComparer#compare` path (the
+original `l2n_data.compare` path timed out at 3,600 s), so the full-macro TG
+native verdict remains inconclusive, neither pass nor mismatch. Bounded TG
+leaf, abutted-pair, and eight-column artifacts separately have native DRC/LVS
+matches with exact model/W/L pairs; those bounded results do not qualify the
+full macro.
+
+No Calibre/Assura result is claimed. The open-source KLayout decks remain
+screening decks, not foundry signoff.
+
+Artifact bindings used for the current classifications:
+
+| Gate | GDS SHA-256 | LVS-source SHA-256 | Native result |
 |---|---|---|---|
-| 2RW `fresh_final_2rw_baseline` | `208e7b9d21846c998044e6b64b1b7e6bbb53242092676e4cc8c8f7628bbf0875` | `f3b92dbb37273630e61fbfbc2670dbfc9e5e7d7fe326f6958170fd836484622e` | DRC 0 raw / 0 waived / 0 unwaived; initial LVS mismatch, repaired-deck LVS match on the same GDS |
-| 1RW/TG `fresh_latest_1rw_tgate_baseline` | `1cf47811c4f17ef1512ae635fba667bd190b2db4d1bda7ecde0fd8164860772d` | `3288e7d2bd0aa6ce8fc5060b539101a2bb828a8f0d567d1ca937159465887829` | DRC 133 raw / 0 waived / 133 unwaived; LVS mismatch |
-
-Source configurations: `technology/icsprout55/configs/ics55_2rw_32x8.py`
-and `technology/icsprout55/configs/ics55_1rw_256x8_mux4_tgate.py`.
-Input wrapper configs and SHA-256 values:
-`ics55_work/runs/fresh_final_2rw_baseline.py`
-(`7e7508af4989b9e831fedad5647631208671add7b86c88a178970748f543cf6d`, 2RW) and
-`ics55_work/runs/fresh_latest_1rw_tgate_baseline.py`
-(`5150504aac217929ea74b8c9c01c151751bc1f7f4f222ef23887fb6bd94831ed`, 1RW/TG).
-
-OpenRAM's emitted config snapshots are
-`ics55_work/runs/out_fresh_final_2rw_baseline/fresh_final_2rw_baseline_cfg.py`
-(SHA-256 `c9b1e69f05c17eb1d832d811b5839a63c98e6fa99fa30a860c00afe39350a469`) and
-`ics55_work/runs/out_fresh_latest_1rw_tgate_baseline/fresh_latest_1rw_tgate_baseline_cfg.py`
-(SHA-256 `4b98133947f734e76bef15934f4eccdb0d33b74930e04491e541cf7730aa66b8`).
-
-The exact GDS files and reports are under
-`ics55_work/runs/out_fresh_final_2rw_baseline/` and
-`ics55_work/runs/out_fresh_latest_1rw_tgate_baseline/`; initial DRC/LVS reports
-are under `signoff/pinned_klayout_0.30.7/`. The 1RW/TG markers are M1 spacing 33,
-M2 spacing 66, M3 spacing 33, and V2 upper cover 1. Both initial LVS runs failed;
-the frozen reports remain intact.
-The repaired 2RW LVS report is under `signoff/parallel_only_klayout_0.30.7/`.
-Removing CDL-guided S/D net joining eliminated the synthetic `gnd|vdd` alias;
-all 5884 matched reduced MOS have exactly equal W/L. The independent direct
-GDS topology CLI also passes A and B at `ics55_work/runs/topology_repair_strict_b/`
-(6042 raw MOS; 5884 physically reduced matched devices; 50 top ports).
-
-No Calibre result is claimed for either candidate. The current local LVS repair
-uses the supplied released LVS sources and KLayout, without a Calibre license
-or execution; released source availability is not a Calibre run.
+| 2RW repository output | `d6d5cdee9c8a5af1c682b0fc62dfaa7f47fccf7ccd2f7e2f734714f1aaf4dc98` | `94e51d4de987d003eb91b4c65f85bbceaac863adde14b1873b158d0420c1da3a` | matched, 5,884 MOS / 2,522 nets / 50 pins, 1,439 s |
+| 2RW current-source rebuild after write-driver fix | `5b98d82163a4227de1ad5990ecba332312cc6600978fc3345faca1d7f07a5cb5` | `1062a0fa1a8ccc5c059415c605564bb89805a9abe994b5ff4d737d1adf0e4e12` | DRC 0/0/0; matched, 5,884 MOS / 2,522 nets / 50 pins, 1,207 s |
+| 256x8 TG current-source rebuild | `f7e70c76a84c7381f0f816b9638c00ceaa9701253b414471132d08f1244ec3ba` | `376e3d28aca2178427892e3b0fc9dab5c9f63d390d90bc47933c0c294e613796` | DRC 0/0/0; extraction 16,150 MOS / 6,133 nets / 29 pins; flat LVS >90 min, inconclusive |
 
 ### Real bounded sizing variants
 
