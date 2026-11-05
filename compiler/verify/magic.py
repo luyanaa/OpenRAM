@@ -133,6 +133,12 @@ def write_drc_script(cell_name, gds_name, extract, final_verification, output_pa
         f.write(pre + "extract style ngspice(si)\n")
     if final_verification and OPTS.route_supplies:
         f.write(pre + "extract unique all\n")
+    else:
+        # Magic 8.3.685 defaults to unique net names when duplicate labels
+        # land on different nodes.  The older flow (and our LVS netlists)
+        # expects duplicate supply labels to merge by name, so pin the
+        # non-final behavior explicitly instead of relying on the default.
+        f.write(pre + "extract no unique\n")
     f.write(pre + "extract all\n")
     f.write(pre + "select top cell\n")
     f.write(pre + "feedback why\n")
