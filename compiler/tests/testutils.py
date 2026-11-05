@@ -47,6 +47,11 @@ class openram_test(unittest.TestCase):
 
         tempgds = "{}.gds".format(w.name)
         w.gds_write("{0}{1}".format(OPTS.openram_temp, tempgds))
+        if not OPTS.drc_exe:
+            debug.warning("No DRC tool available; skipping DRC for {}.".format(w.name))
+            if not OPTS.keep_temp:
+                self.cleanup()
+            return
         from openram import verify
 
         result=verify.run_drc(w.name, tempgds, None)
@@ -66,6 +71,12 @@ class openram_test(unittest.TestCase):
         # cannot write gds in netlist_only mode
         if not OPTS.netlist_only:
             a.gds_write("{0}{1}".format(OPTS.openram_temp, tempgds))
+
+            if not OPTS.drc_exe or not OPTS.lvs_exe:
+                debug.warning("No DRC/LVS tool available; skipping physical verification for {}.".format(a.name))
+                if not OPTS.keep_temp:
+                    self.cleanup()
+                return
 
             from openram import verify
             # Run both DRC and LVS even if DRC might fail

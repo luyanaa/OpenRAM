@@ -37,7 +37,8 @@ else:
     # if OPTS.tech_name == "sky130":
     #     OPTS.magic_exe = get_tool("GDS", ["magic"])
 
-if not OPTS.drc_exe:
+if not OPTS.drc_exe or OPTS.drc_exe[0] is None:
+    OPTS.drc_exe = None
     from .none import run_drc, print_drc_stats, write_drc_script
 elif "klayout"==OPTS.drc_exe[0]:
     from .klayout import run_drc, print_drc_stats, write_drc_script
@@ -51,7 +52,8 @@ else:
     debug.error("Did not find a supported DRC tool."
                 + "Disable DRC/LVS with check_lvsdrc=False to ignore.", 2)
 
-if not OPTS.lvs_exe:
+if not OPTS.lvs_exe or OPTS.lvs_exe[0] is None:
+    OPTS.lvs_exe = None
     from .none import run_lvs, print_lvs_stats, write_lvs_script
 elif "klayout"==OPTS.lvs_exe[0]:
     from .klayout import run_lvs, print_lvs_stats, write_lvs_script
@@ -66,7 +68,8 @@ else:
                   + "Disable DRC/LVS with check_lvsdrc=False to ignore.", 2)
 
 
-if not OPTS.pex_exe:
+if not OPTS.pex_exe or OPTS.pex_exe[0] is None:
+    OPTS.pex_exe = None
     from .none import run_pex, print_pex_stats
 elif "klayout"==OPTS.pex_exe[0]:
     from .klayout import run_pex, print_pex_stats

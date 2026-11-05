@@ -284,6 +284,14 @@ def get_tool(tool_type, preferences, default_name=None):
     """
     debug.info(2, "Finding {} tool...".format(tool_type))
 
+    # A technology may explicitly declare that it has no tool for this stage
+    # (icsprout55: sign-off DRC/LVS/PEX is run outside OpenRAM).  Treat that
+    # sentinel as "no tool" instead of looking for an executable named
+    # "none"; callers then fall back to verify.none.
+    if default_name and default_name.lower() == "none":
+        debug.info(1, "No {} tool requested by technology.".format(tool_type))
+        return (None, "")
+
     if default_name:
         exe_name = find_exe(default_name)
         if exe_name == None:

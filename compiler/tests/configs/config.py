@@ -11,6 +11,11 @@ num_words = 16
 
 tech_name = OPTS.tech_name
 
+# OpenRule1um and icsprout55 provide generated bitcells, not a
+# bitcell_1port hard macro.
+if tech_name in ("openrule1um", "icsprout55"):
+    bitcell = "pbitcell"
+
 nominal_corner_only = True
 check_lvsdrc = True
 
