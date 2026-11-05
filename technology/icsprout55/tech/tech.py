@@ -283,10 +283,14 @@ spice["pmos"] = stdcell_variant["pmos"]
 def _default_spice_model_flavor():
     """Pick the vendor model flavor for the simulator OpenRAM will use.
 
-    Xyce consumes the HSPICE-compatible cards; ngspice uses the ngspice
-    wrapper with its relative MOS/bjt/dio includes.  Xyce is OpenRAM's first
-    spice preference, so check it first.
+    An explicit ``--spice`` selection wins.  Otherwise Xyce is OpenRAM's
+    first auto-detected spice preference, so check it before ngspice.
     """
+    selected = str(getattr(OPTS, "spice_name", "") or "").strip().casefold()
+    if selected in ("xyce", "xa", "hspice"):
+        return "hspice"
+    if selected == "ngspice":
+        return "ngspice"
     for executable, flavor in (("Xyce", "hspice"), ("xyce", "hspice"),
                                ("ngspice", "ngspice")):
         if shutil.which(executable):
