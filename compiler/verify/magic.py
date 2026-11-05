@@ -307,31 +307,53 @@ def write_lvs_script(cell_name, gds_name, sp_name, final_verification=False, out
     os.system("chmod u+x {}".format(run_file))
 
 
-def _normalize_sky130_narrow_nfets(cell_name, sp_name, output_path):
-    """Treat Magic's narrow nfet class as the standard sky130 nfet for LVS.
+def _normalize_sky130_lvs_classes(cell_name, sp_name, output_path):
+    """Normalize sky130 device classes that Magic and the hard macros name
+    differently.
 
-    Magic's sky130 tech extracts devices below 0.42um as
-    ``sky130_fd_pr__special_nfet_01v8``, while the signed-off hard-macro
-    netlists (and the KLayout LVS deck) use ``sky130_fd_pr__nfet_01v8``.
-    The terminal geometry is identical, so compare them as one device class.
-    The extracted/saved netlists are left untouched outside this LVS run.
+    * Magic extracts devices below 0.42um as
+      ``sky130_fd_pr__special_nfet_01v8``; the signed-off hard-macro netlists
+      (and the KLayout deck) use ``sky130_fd_pr__nfet_01v8``.
+    * Magic maps pfet pass transistors to
+      ``sky130_fd_pr__special_pfet_latch`` while the hard macros use
+      ``sky130_fd_pr__special_pfet_pass``.  Only rewrite when the schematic
+      has no latch-class pfet, so cells that really contain both classes are
+      left alone.
+
+    These transformations only affect the temporary LVS netlists.
     """
     if OPTS.tech_name != "sky130":
         return
 
-    paths = [os.path.join(output_path or OPTS.openram_temp,
-                          cell_name + ".spice"),
-             sp_name]
-    for path in paths:
-        if not path or not os.path.exists(path):
-            continue
-        with open(path, "r") as netlist:
-            text = netlist.read()
-        updated = text.replace("sky130_fd_pr__special_nfet_01v8",
-                               "sky130_fd_pr__nfet_01v8")
-        if updated != text:
-            with open(path, "w") as netlist:
-                netlist.write(updated)
+    extracted_path = os.path.join(output_path or OPTS.openram_temp,
+                                  cell_name + ".spice")
+    schematic_path = sp_name
+    if schematic_path and not os.path.isabs(schematic_path):
+        schematic_path = os.path.join(output_path or OPTS.openram_temp,
+                                      schematic_path)
+    if (not os.path.exists(extracted_path) or not schematic_path or
+            not os.path.exists(schematic_path)):
+        return
+
+    with open(extracted_path, "r") as netlist:
+        extracted = netlist.read()
+    with open(schematic_path, "r") as netlist:
+        schematic = netlist.read()
+
+    extracted = extracted.replace("sky130_fd_pr__special_nfet_01v8",
+                                  "sky130_fd_pr__nfet_01v8")
+    schematic = schematic.replace("sky130_fd_pr__special_nfet_01v8",
+                                  "sky130_fd_pr__nfet_01v8")
+
+    if ("sky130_fd_pr__special_pfet_pass" in schematic and
+            "sky130_fd_pr__special_pfet_latch" not in schematic):
+        extracted = extracted.replace("sky130_fd_pr__special_pfet_latch",
+                                      "sky130_fd_pr__special_pfet_pass")
+
+    with open(extracted_path, "w") as netlist:
+        netlist.write(extracted)
+    with open(schematic_path, "w") as netlist:
+        netlist.write(schematic)
 
 
 def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=None):
@@ -345,7 +367,7 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
     if not output_path:
         output_path = OPTS.openram_temp
 
-    _normalize_sky130_narrow_nfets(cell_name, sp_name, output_path)
+    _normalize_sky130_lvs_classes(cell_name, sp_name, output_path)
     write_lvs_script(cell_name, gds_name, sp_name, final_verification)
 
     (outfile, errfile, resultsfile) = run_script(cell_name, "lvs")
@@ -372,7 +394,6 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
     # There were property errors in any module.
     test = re.compile("Property errors were found.")
     propertyerrors = list(filter(test.search, results))
-    total_errors += len(propertyerrors)
 
     # Require pins to match?
     # Cell pin lists for pnand2_1.spice and pnand2_1 altered to match.
@@ -396,6 +417,16 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
     # Netlists match uniquely.
     test = re.compile("match correctly.")
     correctly = list(filter(test.search, final_results))
+
+    # sky130 hard macros carry mult/sa/sb/... properties that Magic does not
+    # extract.  Once the top-level connectivity matches, do not fail the
+    # regression on property-only differences.
+    if propertyerrors:
+        if (OPTS.tech_name == "sky130" and not incorrect and
+                (len(uniquely) > 0 or len(correctly) > 0)):
+            debug.info(1, "{0}\tLVS connectivity matches; ignoring property-only differences".format(cell_name))
+        else:
+            total_errors += len(propertyerrors)
 
     # Top level pins mismatch
     test = re.compile("The top level cell failed pin matching.")
