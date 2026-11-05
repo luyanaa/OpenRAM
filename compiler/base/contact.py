@@ -5,7 +5,7 @@
 # (acting for and on behalf of Oklahoma State University)
 # All rights reserved.
 #
-from openram import debug
+from openram import debug, OPTS
 from openram.tech import drc, layer, preferred_directions
 from openram.tech import layer as tech_layers
 from .hierarchy_design import hierarchy_design
@@ -250,6 +250,23 @@ class contact(hierarchy_design):
                                       self.second_layer_minwidth)
         self.second_layer_height = max(self.contact_array_height + 2 * self.second_layer_vertical_enclosure,
                                        self.second_layer_minwidth)
+
+        # A via landing that is not merged into a wire in the parent cell
+        # must still satisfy the second layer's minimum area rule.  sky130
+        # m1.6 (0.083um^2) is the common case: an li/mcon/m1 stack contact
+        # otherwise produces an isolated 0.29x0.28um m1 island.
+        area = self.second_layer_width * self.second_layer_height
+        if OPTS.tech_name == "sky130" and area < self.second_layer_minarea:
+            # Extend across the preferred routing direction so the added
+            # enclosure does not grow into the neighbouring wire track.
+            if self.directions[1] == "V":
+                area_extend = (self.second_layer_minarea / self.second_layer_height) - self.second_layer_width
+                self.second_layer_width = ceil(self.second_layer_width + area_extend)
+                self.second_layer_position = self.second_layer_position - vector(area_extend / 2, 0)
+            elif self.directions[1] == "H":
+                area_extend = (self.second_layer_minarea / self.second_layer_width) - self.second_layer_height
+                self.second_layer_height = ceil(self.second_layer_height + area_extend)
+                self.second_layer_position = self.second_layer_position - vector(0, area_extend / 2)
 
         self.add_rect(layer=self.second_layer_name,
                       offset=self.second_layer_position,
