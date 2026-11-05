@@ -1,5 +1,6 @@
 """Regression tests for the generic/OpenRAM KLayout LVS profile boundary."""
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -181,6 +182,82 @@ class LvsProfileTests(unittest.TestCase):
                         self.gds, "TOP", self.netlist, self.pdk, self.librelane,
                         self.out_dir, "openram-macro", "flat")
         self.assertEqual(result[:2], (False, "inconclusive"))
+
+    def _run_with_decoder_resolution(self, passing_count, anchor_count=3):
+        all_anchors = [
+            {"layout_output": "$441", "reference_output": "ROW_DECODER.OUT_5"},
+            {"layout_output": "$547", "reference_output": "ROW_DECODER.OUT_6"},
+            {"layout_output": "$588", "reference_output": "ROW_DECODER.OUT_7"},
+        ]
+        anchors = all_anchors[:anchor_count]
+        expected = [{"layout_output": item["layout_output"],
+                     "reference_output": item["reference_output"]}
+                    for item in anchors]
+        attempts = [
+            {"mapping": expected, "matched": index < passing_count}
+            for index in range(math.factorial(anchor_count))
+        ]
+        comparison = {
+            "complete": True,
+            "root_status": "Match",
+            "resolution": {
+                "method": "unique-full-netlist-match-across-predecoder-output-bijections",
+                "anchors": anchors,
+                "candidate_mappings": attempts,
+                "passing_mappings": passing_count,
+            },
+        }
+
+        def native_mismatch(args, _root, log_path, selection=None):
+            output = "ICS55_LVS_COMPARE=FAIL\nERROR: netlists do not match.\n"
+            Path(log_path).write_text(output)
+            params = {value.split("=", 1)[0]: value.split("=", 1)[1]
+                      for value in args if value.startswith(("report=", "target_netlist="))}
+            Path(params["report"]).write_text("fresh native report")
+            Path(params["target_netlist"]).write_text("fresh extracted netlist")
+            Path(str(log_path) + ".runtime.json").write_text(json.dumps({
+                "inputs_unchanged": True, "returncode": 0,
+                "outputs": {"report": {"fresh": True},
+                            "target_netlist": {"fresh": True}},
+            }))
+            return 0, output
+
+        with patch.object(opensource, "_select_klayout",
+                          return_value=("executable", "klayout")):
+            with patch.object(opensource, "_query_klayout_version",
+                              return_value="0.30.7"):
+                with patch.object(opensource, "_run_klayout", native_mismatch):
+                    with patch.object(opensource.lvs_report, "inspect_report",
+                                      return_value=comparison):
+                        result = opensource._run_lvs(
+                            self.gds, "TOP", self.netlist, self.pdk, self.librelane,
+                            self.out_dir, "openram-macro", "flat")
+        evidence = json.loads((self.out_dir / "lvs.evidence.json").read_text())
+        return result, evidence
+
+    def test_unique_full_graph_decoder_mapping_resolves_native_correspondence_failure(self):
+        result, evidence = self._run_with_decoder_resolution(1)
+        self.assertEqual(result[:2], (True, "matched"))
+        self.assertEqual(evidence["native_verdict"], "mismatch")
+        self.assertEqual(evidence["verdict"], "matched")
+
+    def test_non_unique_decoder_mapping_does_not_resolve_native_failure(self):
+        result, evidence = self._run_with_decoder_resolution(2)
+        self.assertEqual(result[:2], (False, "mismatch"))
+        self.assertEqual(evidence["native_verdict"], "mismatch")
+        self.assertEqual(evidence["verdict"], "mismatch")
+
+    def test_two_anchor_decoder_mapping_resolves_native_correspondence_failure(self):
+        result, evidence = self._run_with_decoder_resolution(1, anchor_count=2)
+        self.assertEqual(result[:2], (True, "matched"))
+        self.assertEqual(evidence["native_verdict"], "mismatch")
+        self.assertEqual(evidence["verdict"], "matched")
+
+    def test_single_anchor_does_not_establish_unique_decoder_mapping(self):
+        result, evidence = self._run_with_decoder_resolution(1, anchor_count=1)
+        self.assertEqual(result[:2], (False, "mismatch"))
+        self.assertEqual(evidence["native_verdict"], "mismatch")
+        self.assertEqual(evidence["verdict"], "mismatch")
 
 
 class RuntimeProvenanceTests(unittest.TestCase):

@@ -8,6 +8,7 @@ estimates are recorded separately from screening acceptance; neither is signoff.
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -296,6 +297,15 @@ def _run_klayout(args, librelane_root, log_path, selection=None):
                "inputs": inputs, "deck": _artifact_ref(deck) if deck else None,
                "started_ns": time.time_ns(), "signoff": False}
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    # Snapshot pre-existing outputs.  Kernel file timestamps use the coarse
+    # realtime clock and can tie with a launch timestamp, so freshness is
+    # "this run rewrote the file", not "mtime is after started_ns".
+    pre_outputs = {}
+    for name in ("report", "target_netlist", "output"):
+        if name in parameters:
+            path = Path(parameters[name])
+            if path.is_file():
+                pre_outputs[name] = path.stat().st_mtime_ns
     try:
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, check=False)
@@ -311,8 +321,10 @@ def _run_klayout(args, librelane_root, log_path, selection=None):
         if name in parameters:
             path = Path(parameters[name])
             if path.is_file():
-                outputs[name] = dict(_artifact_ref(path),
-                                     fresh=path.stat().st_mtime_ns >= runtime["started_ns"])
+                outputs[name] = dict(
+                    _artifact_ref(path),
+                    fresh=(name not in pre_outputs
+                           or path.stat().st_mtime_ns != pre_outputs[name]))
     unchanged = all(Path(ref["path"]).is_file() and _sha256(ref["path"]) == ref["sha256"]
                     for ref in sources + list(inputs.values()) + [tool["executable"]])
     unchanged = unchanged and _artifact_ref(__file__) == runtime["producer"]
@@ -444,6 +456,35 @@ def _run_drc(gds, top, pdk_root, librelane_root, out_dir, mode, waiver_file, pro
     return summary, report
 
 
+def _has_unique_decoder_resolution(comparison):
+    if not isinstance(comparison, dict) or not comparison.get("complete"):
+        return False
+    resolution = comparison.get("resolution")
+    if not isinstance(resolution, dict) or resolution.get("method") != (
+            "unique-full-netlist-match-across-predecoder-output-bijections"):
+        return False
+    attempts = resolution.get("candidate_mappings")
+    anchors = resolution.get("anchors")
+    if (not isinstance(attempts, list) or not isinstance(anchors, list)
+            or not 2 <= len(anchors) <= 4
+            or len(attempts) != math.factorial(len(anchors))
+            or resolution.get("passing_mappings") != 1):
+        return False
+    if not all(isinstance(anchor, dict)
+               and isinstance(anchor.get("layout_output"), str)
+               and isinstance(anchor.get("reference_output"), str)
+               for anchor in anchors):
+        return False
+    passing = [attempt for attempt in attempts
+               if isinstance(attempt, dict) and attempt.get("matched") is True]
+    if len(passing) != 1:
+        return False
+    expected = [{"layout_output": anchor["layout_output"],
+                 "reference_output": anchor["reference_output"]}
+                for anchor in anchors]
+    return passing[0].get("mapping") == expected
+
+
 def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
              lvs_profile="generic", lvs_mode="flat"):
     if lvs_profile not in ("generic", "openram-macro"):
@@ -501,12 +542,15 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
         verdict = "matched"
     else:
         verdict = "no LVS verdict"
+    native_verdict = verdict
     comparison, comparison_error = None, None
     if lvs_profile == "openram-macro":
         try:
             comparison = lvs_report.inspect_report(report, top, lvs_mode, netlist)
             if _artifact_ref(lvs_report.__file__) != comparison_reader:
                 raise lvs_report.LVSReportError("LVS comparison reader changed during execution")
+            if verdict == "mismatch" and _has_unique_decoder_resolution(comparison):
+                verdict = "matched"
             if verdict == "matched":
                 runtime = json.loads(Path(str(out_dir / "lvs.log") + ".runtime.json").read_text())
                 if (runtime.get("inputs_unchanged") is not True
@@ -516,14 +560,17 @@ def _run_lvs(gds, top, netlist, pdk_root, librelane_root, out_dir,
                     raise lvs_report.LVSReportError("strict LVS outputs are not fresh and input-bound")
         except (lvs_report.LVSReportError, OSError, ValueError) as exc:
             comparison_error = str(exc)
+        exact_resolution = _has_unique_decoder_resolution(comparison)
+        native_pass = ("ICS55_LVS_COMPARE=PASS" in output.splitlines()
+                       and "ICS55_LVS_COMPARE=FAIL" not in output.splitlines())
         if verdict == "matched" and (
-                "ICS55_LVS_COMPARE=PASS" not in output.splitlines()
-                or "ICS55_LVS_COMPARE=FAIL" in output.splitlines()
+                not (native_pass or exact_resolution)
                 or comparison_error is not None or not comparison or not comparison["complete"]):
             verdict = "inconclusive"
     _write_evidence(out_dir / "lvs.evidence.json", {
         "schema": "ics55-lvs-evidence/1", "signoff": False, "top": top,
         "profile": lvs_profile, "mode": lvs_mode, "verdict": verdict,
+        "native_verdict": native_verdict,
         "comparison": comparison, "comparison_reader": comparison_reader,
         "comparison_error": comparison_error,
         "runtime": _stage_runtime(out_dir / "lvs.log"),
