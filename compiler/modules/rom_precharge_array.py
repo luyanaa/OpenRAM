@@ -17,8 +17,10 @@ class rom_precharge_array(design):
     """
     An array of inverters to create the inverted address lines for the rom decoder
     """
-    def __init__(self, cols, name="", bitline_layer="m2", strap_spacing=0, strap_layer="m3", tap_direction="row"):
+    def __init__(self, cols, name="", bitline_layer="m2", strap_spacing=0, strap_layer=None, tap_direction="row"):
         self.cols = cols
+        # Resolve the default after design.__init__ below: top_layer is a
+        # layer constant populated by layout.setup_layer_constants().
         self.strap_layer = strap_layer
         self.bitline_layer = bitline_layer
         self.tap_direction = tap_direction
@@ -36,6 +38,8 @@ class rom_precharge_array(design):
             self.array_col_size = self.cols
 
         super().__init__(name)
+        if self.strap_layer is None:
+            self.strap_layer = self.top_layer
         self.create_netlist()
         self.create_layout()
 
