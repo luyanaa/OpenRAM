@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
+# See LICENSE for licensing information.
+#
+# Copyright (c) 2016-2026 Regents of the University of California and The Board
+# of Regents for the Oklahoma Agricultural and Mechanical College
+# (acting for and on behalf of Oklahoma State University)
+# All rights reserved.
+#
 """Check that known vendor markers cannot waive generated SRAM geometry."""
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "technology/icsprout55/verify/opensource.py"
+# opensource.py imports its sibling lvs_report module by name.
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("ics55_opensource", SCRIPT)
 opensource = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(opensource)

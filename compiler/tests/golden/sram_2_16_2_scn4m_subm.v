@@ -53,8 +53,7 @@ module sram_2_16_2_scn4m_subm(
   end
 
 
-  // Memory Write Block Port 0
-  // Write Operation : When web0 = 0, csb0 = 0
+  // Write when chip select and write mode are active.
   always @ (negedge clk0)
   begin : MEM_WRITE0
     if ( !csb0_reg && !web0_reg ) begin

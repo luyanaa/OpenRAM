@@ -1,3 +1,10 @@
+# See LICENSE for licensing information.
+#
+# Copyright (c) 2016-2026 Regents of the University of California and The Board
+# of Regents for the Oklahoma Agricultural and Mechanical College
+# (acting for and on behalf of Oklahoma State University)
+# All rights reserved.
+#
 """Fail-closed, file-backed contracts for memory architecture searches.
 
 This module has no dependency on OpenRAM's global options or on an EDA tool.

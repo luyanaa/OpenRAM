@@ -1,3 +1,10 @@
+# See LICENSE for licensing information.
+#
+# Copyright (c) 2016-2026 Regents of the University of California and The Board
+# of Regents for the Oklahoma Agricultural and Mechanical College
+# (acting for and on behalf of Oklahoma State University)
+# All rights reserved.
+#
 """Pure behavioral contract and cycle model for a replicated 2R1W register file.
 
 The public model represents ordered ``[R, R, W]`` ports on one common clock.

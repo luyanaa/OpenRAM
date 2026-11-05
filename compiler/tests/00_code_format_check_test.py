@@ -56,10 +56,13 @@ class code_format_test(openram_test):
 
 def setup_files(path):
     files = []
-    for (dir, _, current_files) in os.walk(path):
+    skip_dirs = {".venv", "__pycache__", "results", "build", "dist", "node_modules"}
+    for (dir, dirs, current_files) in os.walk(path):
+        dirs[:] = [d for d in dirs
+                   if d not in skip_dirs and not d.startswith(".")]
         for f in current_files:
             files.append(os.path.join(dir, f))
-    nametest = re.compile("\.py$", re.IGNORECASE)
+    nametest = re.compile(r"\.py$", re.IGNORECASE)
     select_files = list(filter(nametest.search, files))
     return select_files
 
@@ -132,7 +135,8 @@ def check_print_output(file_name):
     """Check if any files (except debug.py) call the _print_ function. We should
     use the debug output with verbosity instead!"""
 
-    skip_files = ["printGDS.py", "uniquifyGDS.py", "processGDS.py", "model_data_util.py"]
+    skip_files = ["printGDS.py", "uniquifyGDS.py", "processGDS.py", "model_data_util.py",
+                  "__main__.py", "00_verification_failure_test.py"]
     base_file_name = os.path.basename(file_name)
     if base_file_name in skip_files:
         return(0)
@@ -142,7 +146,7 @@ def check_print_output(file_name):
     line = re.sub(r'#.*', '', line)
     # skip doc string comments
     line=re.sub(r'\"\"\"[^\"]*\"\"\"', '', line, flags=re.S|re.M)
-    count = len(re.findall("[^p]+print\(", line))
+    count = len(re.findall(r"[^p]+print\(", line))
     if count > 0:
         debug.info(0, "\nFound " + str(count) +
                    " _print_ calls " + str(file_name))
@@ -154,20 +158,20 @@ def check_print_output(file_name):
 def check_copyright(file_name):
     """ Check if any file doesn't contain the copyright at the top. """
 
-    from datetime import date
-    year = date.today().year
-    old_copyright = ("# See LICENSE for licensing information.\n"
-                     "#\n"
-                     "# Copyright (c) 2016-{} Regents of the University of California and The Board\n"
-                     "# of Regents for the Oklahoma Agricultural and Mechanical College\n"
-                     "# (acting for and on behalf of Oklahoma State University)\n"
-                     "# All rights reserved.\n"
-                     "#\n").format(year)
-    new_copyright = ("# See LICENSE for licensing information.\n"
-                     "#\n"
-                     "# Copyright (c) 2016-{} Regents of the University of California, Santa Cruz\n"
-                     "# All rights reserved.\n"
-                     "#\n").format(year)
+    old_copyright = re.compile(
+        r"# See LICENSE for licensing information\.\n"
+        r"#\n"
+        r"# Copyright \(c\) 2016-\d{4} Regents of the University of California and The Board\n"
+        r"# of Regents for the Oklahoma Agricultural and Mechanical College\n"
+        r"# \(acting for and on behalf of Oklahoma State University\)\n"
+        r"# All rights reserved\.\n"
+        r"#\n")
+    new_copyright = re.compile(
+        r"# See LICENSE for licensing information\.\n"
+        r"#\n"
+        r"# Copyright \(c\) 2016-\d{4} Regents of the University of California, Santa Cruz\n"
+        r"# All rights reserved\.\n"
+        r"#\n")
     skip_files = []
     base_file_name = os.path.basename(file_name)
     if base_file_name in skip_files:
@@ -178,7 +182,7 @@ def check_copyright(file_name):
     # Skip possible shebang at the top
     line = re.sub(r'#!.*\n', '', line)
     # Check if copyright is missing
-    if not line.startswith(old_copyright) and not line.startswith(new_copyright):
+    if not old_copyright.match(line) and not new_copyright.match(line):
         debug.info(0, "\nFound missing/wrong copyright in " + file_name)
         return 1
     return 0

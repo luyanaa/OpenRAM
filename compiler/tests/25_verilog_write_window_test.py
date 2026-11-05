@@ -9,6 +9,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -302,4 +303,6 @@ endmodule
 
 
 if __name__ == "__main__":
+    (OPTS, args) = openram.parse_args()
+    del sys.argv[1:]
     unittest.main()
