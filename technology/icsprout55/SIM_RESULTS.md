@@ -873,6 +873,14 @@ finish in 90 minutes; the original `l2n_data.compare` path had timed out at
 neither pass nor mismatch. The bounded TG leaf/pair/array evidence is unchanged;
 a hierarchical or partitioned full-macro comparison is still required.
 
+A name-based hierarchical attempt was also negative: flattening contact and
+device-wrapper circuits makes the circuit-name sets 75/75, but same-named
+layout cells are merged variants (for example layout `pinv_9` has 26 local
+devices while reference `pinv_9` has 2), and the circuit-signature multisets
+differ. Lowering `max_branch_complexity` to 64 completed in 1,436 s but produced
+a false mismatch. A cell-unmerging or otherwise partitioned comparator is still
+needed; the current full-macro TG verdict remains fail-closed.
+
 ## Capability-gated SRAM timing search：首次执行
 
 新增本地入口 `python -m compiler.architecture`，由

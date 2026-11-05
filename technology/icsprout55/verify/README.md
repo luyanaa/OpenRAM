@@ -393,11 +393,15 @@ The current rebuilt 256x8 TG artifact (`f7e70c...` / `376e3d...`) has pinned
 full-hierarchy macro-profile DRC 0/0/0 and extracts 16,150 MOS / 6,133 nets /
 29 pins, matching the reference population. The strict flat comparison did not
 finish within 90 minutes with the direct `NetlistComparer#compare` path (the
-original `l2n_data.compare` path timed out at 3,600 s), so the full-macro TG
-native verdict remains inconclusive, neither pass nor mismatch. Bounded TG
-leaf, abutted-pair, and eight-column artifacts separately have native DRC/LVS
-matches with exact model/W/L pairs; those bounded results do not qualify the
-full macro.
+original `l2n_data.compare` path timed out at 3,600 s); lowering
+`max_branch_complexity` to 64 finished in 1,436 s but produced a false
+mismatch. A name-based hierarchical attempt also fails: flattening contact and
+device-wrapper circuits gives 75/75 circuit names, but same-named layout cells
+are merged variants (layout `pinv_9` has 26 local devices versus reference 2)
+and the signature multisets differ. The full-macro TG native verdict therefore
+remains inconclusive, neither pass nor mismatch. Bounded TG leaf, abutted-pair,
+and eight-column artifacts separately have native DRC/LVS matches with exact
+model/W/L pairs; those bounded results do not qualify the full macro.
 
 No Calibre/Assura result is claimed. The open-source KLayout decks remain
 screening decks, not foundry signoff.
