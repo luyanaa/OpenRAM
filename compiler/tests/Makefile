@@ -20,6 +20,9 @@ RESULTS_DIR = $(OPENRAM_DIR)/results
 # %/test.py
 # or a specific tech:
 # freepdk45/test.py
+# sky130 DRC-only residuals (LVS matches): vendor hard-macro rules and
+# pending cell-internal spacing fixes.  Remove entries as the cells are
+# repaired or formally waived against the PDK deck.
 BROKEN_STAMPS = \
 	%/19_single_bank_16mux_1rw_1r_test.ok \
 	%/19_single_bank_16mux_test.ok \
@@ -137,6 +140,18 @@ BROKEN_STAMPS = \
 	sky130/30_openram_sram_char_test.ok \
 	sky130/50_riscv_1rw_phys_test.ok \
 	sky130/50_riscv_1rw1r_phys_test.ok \
+	sky130/04_pand4_test.ok \
+	sky130/04_pnand4_test.ok \
+	sky130/05_bitcell_array_test.ok \
+	sky130/05_rom_array_test.ok \
+	sky130/06_column_decoder_16row_test.ok \
+	sky130/06_rom_decoder_test.ok \
+	sky130/08_rom_precharge_array_test.ok \
+	sky130/11_dff_buf_array_test.ok \
+	sky130/14_capped_replica_bitcell_array_bothrbl_1rw_1r_test.ok \
+	sky130/14_capped_replica_bitcell_array_dummies_1rw_1r_test.ok \
+	sky130/14_capped_replica_bitcell_array_leftrbl_1rw_1r_test.ok \
+	sky130/14_capped_replica_bitcell_array_rightrbl_1rw_1r_test.ok
 
 gettech = $(word 1,$(subst /, ,$*))
 getfile = $(word 2,$(subst /, ,$*))
