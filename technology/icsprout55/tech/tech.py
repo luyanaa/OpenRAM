@@ -319,6 +319,9 @@ spice["lvs_uses_mos_cards"] = True
 # The vendor model wrappers use relative .LIB/.INC paths next to the model
 # library; stage those siblings in the simulation temp directory.
 spice["stage_model_includes"] = True
+# Imported standard-cell SPICE uses MOS cards while the wrappers expose the
+# same device names as subcircuits; rewrite them for simulation only.
+spice["mos_cards_to_subckts"] = True
 spice["power"] = "vdd"
 spice["ground"] = "gnd"
 

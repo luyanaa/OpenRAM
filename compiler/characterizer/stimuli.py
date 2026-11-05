@@ -12,6 +12,7 @@ simulations as well.
 """
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -54,6 +55,81 @@ class stimuli():
 
         if tech.spice.get("stage_model_includes", False):
             self.stage_model_includes()
+
+    def mos_cards_to_subckts(self, netlist=None):
+        """Rewrite imported MOS cards as model-wrapper subcircuit calls.
+
+        Foundry standard-cell SPICE (for example the ICsprout55 DFF) uses
+        ``M... model`` cards while the PDK model wrappers expose the same
+        names as ``.subckt`` definitions with an ``mr`` multiplier.  LVS
+        consumes the M form; simulation needs the X form.
+        """
+        if not tech.spice.get("mos_cards_to_subckts", False):
+            return netlist
+        model_dir = os.environ.get("SPICE_MODEL_DIR")
+        if not model_dir or not os.path.isdir(model_dir):
+            debug.warning("SPICE_MODEL_DIR is invalid; model cards may fail: {}".format(model_dir))
+            return netlist
+        if netlist is None:
+            netlist = os.path.join(OPTS.openram_temp, "sram.sp")
+        if not os.path.isfile(netlist):
+            return netlist
+        subckts = set()
+        for entry in sorted(os.listdir(model_dir)):
+            if not entry.casefold().endswith(".lib"):
+                continue
+            try:
+                with open(os.path.join(model_dir, entry), errors="replace") as handle:
+                    for line in handle:
+                        match = re.match(r"\s*\.subckt\s+(\S+)", line, re.IGNORECASE)
+                        if match:
+                            subckts.add(match.group(1).casefold())
+            except OSError:
+                continue
+        if not subckts:
+            return netlist
+        pattern = re.compile(
+            r"^(?P<indent>\s*)M(?P<name>\S+)\s+(?P<d>\S+)\s+(?P<g>\S+)\s+"
+            r"(?P<s>\S+)\s+(?P<b>\S+)\s+(?P<model>\S+)(?P<params>.*)$",
+            re.IGNORECASE)
+        converted, output = 0, []
+        try:
+            with open(netlist, errors="replace") as handle:
+                for line in handle:
+                    match = pattern.match(line)
+                    if match is None or match.group("model").casefold() not in subckts:
+                        output.append(line)
+                        continue
+                    params, seen = [], set()
+                    for token in match.group("params").split():
+                        if "=" not in token:
+                            continue
+                        key, value = token.split("=", 1)
+                        key = "mr" if key.casefold() == "m" else key
+                        folded = key.casefold()
+                        if folded in seen:
+                            continue
+                        seen.add(folded)
+                        params.append("{}={}".format(key, value))
+                    for key, value in (("nf", "1"), ("mismod", "0")):
+                        if key not in seen:
+                            params.append("{}={}".format(key, value))
+                    output.append("{}X{} {} {} {} {} {} {}\n".format(
+                        match.group("indent"), match.group("name"),
+                        match.group("d"), match.group("g"), match.group("s"),
+                        match.group("b"), match.group("model"), " ".join(params)))
+                    converted += 1
+        except OSError as exc:
+            debug.warning("cannot rewrite MOS cards in {}: {}".format(netlist, exc))
+            return netlist
+        if not converted:
+            return netlist
+        temporary = netlist + ".tmp"
+        with open(temporary, "w") as handle:
+            handle.writelines(output)
+        os.replace(temporary, netlist)
+        debug.info(2, "Converted {} MOS cards to model-wrapper subcircuits".format(converted))
+        return netlist
 
     def stage_model_includes(self):
         """Expose model-wrapper siblings in the simulation temp directory.
@@ -344,6 +420,8 @@ class stimuli():
             else:
                 debug.error("Could not find spice library: {0}\nSet SPICE_MODEL_DIR to over-ride path.\n".format(item[0]), -1)
 
+        if isinstance(circuit, (str, os.PathLike)):
+            circuit = self.mos_cards_to_subckts(circuit)
         includes = self.device_models + [circuit]
 
         for item in list(includes):
