@@ -307,6 +307,33 @@ def write_lvs_script(cell_name, gds_name, sp_name, final_verification=False, out
     os.system("chmod u+x {}".format(run_file))
 
 
+def _normalize_sky130_narrow_nfets(cell_name, sp_name, output_path):
+    """Treat Magic's narrow nfet class as the standard sky130 nfet for LVS.
+
+    Magic's sky130 tech extracts devices below 0.42um as
+    ``sky130_fd_pr__special_nfet_01v8``, while the signed-off hard-macro
+    netlists (and the KLayout LVS deck) use ``sky130_fd_pr__nfet_01v8``.
+    The terminal geometry is identical, so compare them as one device class.
+    The extracted/saved netlists are left untouched outside this LVS run.
+    """
+    if OPTS.tech_name != "sky130":
+        return
+
+    paths = [os.path.join(output_path or OPTS.openram_temp,
+                          cell_name + ".spice"),
+             sp_name]
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        with open(path, "r") as netlist:
+            text = netlist.read()
+        updated = text.replace("sky130_fd_pr__special_nfet_01v8",
+                               "sky130_fd_pr__nfet_01v8")
+        if updated != text:
+            with open(path, "w") as netlist:
+                netlist.write(updated)
+
+
 def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=None):
     """Run LVS check on a given top-level name which is
     implemented in gds_name and sp_name. Final verification will
@@ -318,6 +345,7 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
     if not output_path:
         output_path = OPTS.openram_temp
 
+    _normalize_sky130_narrow_nfets(cell_name, sp_name, output_path)
     write_lvs_script(cell_name, gds_name, sp_name, final_verification)
 
     (outfile, errfile, resultsfile) = run_script(cell_name, "lvs")
