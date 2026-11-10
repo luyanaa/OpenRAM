@@ -103,20 +103,55 @@ class rom_wordline_driver_array(design):
         # Route together all internal supply pins
         self.connect_col_pins(layer=self.supply_layer, pins=vdd_pins, name="vdd_tmp")
         self.connect_col_pins(layer=self.supply_layer, pins=gnd_pins, name="gnd_tmp")
+        # connect_col_pins stores the column rails only in the pin map; the
+        # rails are not real geometry until they are emitted as pins.  Turn
+        # them into plain rectangles before dropping the temporary pin names,
+        # otherwise remove_layout_pin() erases the m2 rails and the m4 stitch
+        # below taps empty space.
+        self.copy_layout_pin_shapes("vdd_tmp")
+        self.copy_layout_pin_shapes("gnd_tmp")
         self.remove_layout_pin("gnd_tap")
         self.remove_layout_pin("vdd_tap")
 
-        # Place the top level supply pins on the edge of the module
-        for pin in self.get_pins("gnd_tmp"):
-            bottom = vector(pin.cx(), pin.by())
-            top = vector(pin.cx(), pin.uy())
-            self.add_layout_pin_rect_ends(layer=self.supply_layer, start=bottom, end=top, name="gnd")
-
-        for pin in self.get_pins("vdd_tmp"):
-            bottom = vector(pin.cx(), pin.by())
-            top = vector(pin.cx(), pin.uy())
-            self.add_layout_pin_rect_ends(layer=self.supply_layer, start=bottom, end=top, name="vdd")
-
+        # connect_col_pins only ties rails that share an x position.  A buffer
+        # that draws one rail per stage therefore leaves several same-net
+        # columns behind, which an ``extract unique all`` flow reports as
+        # separate vdd/gnd islands.  Stitch them on m4, which is unused inside
+        # the ROM sub-blocks, and expose exactly one pin per net there: the
+        # top-level supply router finds every labelled vdd/gnd shape, so one
+        # pin per rail would make it route through the block interior.
+        vdd_cols = list(self.get_pins("vdd_tmp"))
+        gnd_cols = list(self.get_pins("gnd_tmp"))
+        cols = vdd_cols + gnd_cols
+        lo = min(pin.by() for pin in cols)
+        hi = max(pin.uy() for pin in cols)
+        # Tap in the middle of the rails.  The intermediate via landing pad is
+        # 0.38um wide and the well-tap/driver supply pads run down the same x
+        # every row; tapping at either end of the rail (which is where a tap
+        # row places its well tap) violates Metal2 spacing.
+        mid = 0.5 * (lo + hi)
+        # Prefer a well-tap row for the m4 tap.  The driver cells put a 0.38um
+        # wide via landing pad on the supply rail every row, so an arbitrary
+        # mid-rail tap can land 0.065um from one of them (Metal2 spacing) and,
+        # when it overlaps a driver signal pad, shorts the supply to the
+        # wordline.  The well tap added by place_taps sits exactly on a clean
+        # m2 pad, so a via stack centred there coincides with it.
+        vdd_tap_y = (min(self.vdd_taps, key=lambda p: abs(p.cy() - mid)).cy()
+                     if getattr(self, "vdd_taps", None) else mid)
+        gnd_tap_y = (min(self.gnd_taps, key=lambda p: abs(p.cy() - mid)).cy()
+                     if getattr(self, "gnd_taps", None) else mid)
+        self.stitch_supply_pins("vdd",
+                                "m4",
+                                pins=vdd_cols,
+                                tap_y=vdd_tap_y,
+                                bus_y=lo - 0.15,
+                                pin=True)
+        self.stitch_supply_pins("gnd",
+                                "m4",
+                                pins=gnd_cols,
+                                tap_y=gnd_tap_y,
+                                bus_y=hi + 0.15,
+                                pin=True)
 
         self.remove_layout_pin("gnd_tmp")
         self.remove_layout_pin("vdd_tmp")

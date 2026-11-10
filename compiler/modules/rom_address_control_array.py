@@ -46,7 +46,21 @@ class rom_address_control_array(design):
 
 
     def create_layout(self):
-        self.width = self.cols * self.addr_control.width
+        # Every buffer is an independent standard-cell-like block whose drawn
+        # wells are inset from its right edge.  Tiling the buffers at their
+        # declared width alone leaves the n-well/p-well strips of neighbouring
+        # buffers closer than the well-to-well spacing rule (NW.2a on gf180mcu).
+        # Add the largest same-well spacing rule as an explicit gap so the
+        # tiled row is DRC clean on every technology.
+        well_gap = 0.0
+        for rule in ("nwell_to_nwell", "pwell_to_pwell"):
+            if rule in drc:
+                well_gap = max(well_gap, drc[rule])
+        self.pitch = self.addr_control.width + well_gap
+
+        # Provisional size for the horizontal supply/clk routing; the final
+        # boundary is recomputed from the placed geometry in add_boundary().
+        self.width = (self.cols - 1) * self.pitch + self.addr_control.width
         self.height = self.addr_control.height
         self.setup_layout_constants()
         self.place_instances()
@@ -54,6 +68,21 @@ class rom_address_control_array(design):
         self.route_sources()
         self.copy_pins()
         self.add_boundary()
+
+    def add_boundary(self):
+        """Size the row of address buffers from its real contents.
+
+        The buffers are tiled with the pitch of their own boundary, so the
+        array boundary must contain all of them (including the well taps and
+        sub-cell well overhangs that can stick out past a buffer origin).  As
+        in rom_address_control_buf, use the true drawn geometry rather than the
+        declared boundaries of the sub-cells.
+        """
+        (minx, miny, maxx, maxy) = self.get_true_bbox()
+        self.translate_all(vector(minx, miny))
+        self.width = maxx - minx
+        self.height = maxy - miny
+        super().add_boundary()
 
 
     def create_modules(self):
@@ -92,7 +121,10 @@ class rom_address_control_array(design):
 
     def place_instances(self):
         for col in range(self.cols):
-            base = vector((col+1)*(self.addr_control.width), 0)
+            # Mirror "MY" maps a buffer of width W placed at offset o to
+            # [o - W, o].  Put buffer col at [col*pitch, col*pitch + W] so a
+            # well-spacing gap is left between neighbours.
+            base = vector(self.addr_control.width + col * self.pitch, 0)
 
             self.buf_insts[col].place(offset=base, mirror="MY")
 
@@ -107,27 +139,22 @@ class rom_address_control_array(design):
 
     def route_sources(self):
 
-        self.route_horizontal_pins("vdd", insts=self.buf_insts, layer=self.route_layer)
-        self.route_horizontal_pins("gnd", insts=self.buf_insts, layer=self.route_layer)
+        self.route_horizontal_pins("clk", insts=self.buf_insts, layer=self.route_layer)
 
-        tmp_pins = []
-        for pin in self.get_pins("vdd"):
-            edge = vector(pin.lx() + 0.5 * self.route_width, pin.cy())
-            tmp_pins.append(self.add_layout_pin_rect_center("vdd_edge", layer=self.route_layer, offset=edge))
-        self.copy_layout_pin_shapes("vdd")
-        self.remove_layout_pin("vdd")
-
-        for pin in tmp_pins:
-            self.copy_layout_pin(self, "vdd_edge", "vdd")
-        self.remove_layout_pin("vdd_edge")
-
-        tmp_pins = []
-        for pin in self.get_pins("gnd"):
-            edge = vector(pin.rx() + 0.5 * self.route_width, pin.cy())
-            tmp_pins.append(self.add_layout_pin_rect_center("gnd_edge", layer=self.route_layer, offset=edge))
-        self.copy_layout_pin_shapes("gnd")
-        self.remove_layout_pin("gnd")
-
-        for pin in tmp_pins:
-            self.copy_layout_pin(self, "gnd_edge", "gnd")
-        self.remove_layout_pin("gnd_edge")
+        # Each buffer already ties its own supply rails together and exposes
+        # one pin per net on m4.  Join the buffers on that same layer; using
+        # the m2 rails here put a full-width m2 bar at the same y for both
+        # nets (the old route_horizontal_pins("vdd"/"gnd") calls) and shorted
+        # vdd to gnd.
+        for pin_name in ("vdd", "gnd"):
+            pins = [p for inst in self.buf_insts
+                    for p in inst.get_pins(pin_name)]
+            if not pins:
+                continue
+            layer = pins[0].layer
+            self.connect_row_pins(layer, pins, name=pin_name)
+            # connect_row_pins skips lone pins; still expose the net.
+            if not self.get_pins(pin_name):
+                p = pins[0]
+                self.add_layout_pin(pin_name, p.layer, p.ll(),
+                                    p.width(), p.height())

@@ -42,13 +42,36 @@ class rom_address_control_buf(design):
         self.create_instances()
 
     def create_layout(self):
-        self.width =  self.cell.height * 2
-        self.height = self.inv.width + 2 * self.nand.width
         self.setup_layout_constants()
         self.place_instances()
         self.route_gates()
         self.route_sources()
         self.add_boundary()
+
+    def add_boundary(self):
+        """
+        Size the cell from its actual contents.
+
+        The rotated inverter and NAND gates are laid out across the width of
+        the cell.  That width is set by the tallest logic cell, not by the ROM
+        bitcell size: on gf180mcu the bitcell is much smaller than the decoder
+        gates, so `rom_base_cell.height * 2` under-sized the cell.  Address
+        control buffers are then placed at that (too small) pitch next to each
+        other, which makes neighbouring wells, diffusion and metal overlap and
+        triggers DRC errors.  Deriving the boundary from the real geometry
+        keeps the tiling pitch correct on every technology.
+
+        We use get_true_bbox() rather than find_lowest_coords()/find_highest_coords()
+        because the well taps and the sub-cell well overhangs stick out past the
+        declared boundaries of the logic cells.  Those overhangs are part of the
+        drawn cell and must be contained inside the buffer boundary, otherwise
+        the next tiled buffer overlaps them.
+        """
+        (minx, miny, maxx, maxy) = self.get_true_bbox()
+        self.translate_all(vector(minx, miny))
+        self.width = maxx - minx
+        self.height = maxy - miny
+        super().add_boundary()
 
     def create_modules(self):
 
@@ -96,9 +119,29 @@ class rom_address_control_buf(design):
         self.interconnect_width = drc["minwidth_{}".format(self.inv_layer)]
 
     def place_instances(self):
-        self.inv_inst.place(offset=vector(self.inv_inst.height,0), rotate=90)
-        self.addr_nand.place(offset=vector(self.addr_nand.height , self.inv_inst.width + self.route_width ), rotate=90)
-        self.addr_bar_nand.place(offset=vector( self.addr_bar_nand.height, self.addr_nand.width + self.inv_inst.width + self.route_width), rotate=90)
+        self.inv_inst.place(offset=vector(self.inv_inst.height, 0), rotate=90)
+
+        # The gf180mcu pgate/well of the rotated gates is drawn past the
+        # declared cell boundary (the same overhang that
+        # layer_properties.port_address.decoder_driver_spacing compensates for
+        # in the SRAM row decoder).  Stacking the gates at their declared pitch
+        # leaves the inverter's n-well overlapping the first NAND's p-well in a
+        # *different* sub-cell, which Magic reports as "Can't overlap those
+        # layers".  Align the NAND's drawn bottom edge with the inverter's drawn
+        # n-well top so the wells abut (n-well to n-well under the left half,
+        # p-well to n-well under the right half, which pwell_to_nwell allows).
+        inv_nwell_top = self.inv_inst.offset.y + self.inv.find_highest_layer_coords("nwell").x
+        nand_bottom = self.nand.get_true_bbox()[0]
+        nand_y = inv_nwell_top - nand_bottom
+
+        # Fall back to the original declared pitch on technologies where the
+        # well does not overhang (or if it would move the gates down).
+        nand_y = max(nand_y, self.inv_inst.width + self.route_width)
+
+        self.addr_nand.place(offset=vector(self.addr_nand.height, nand_y), rotate=90)
+        self.addr_bar_nand.place(offset=vector(self.addr_bar_nand.height,
+                                                nand_y + self.addr_nand.width),
+                                 rotate=90)
 
     def route_gates(self):
         clk1_pin = self.addr_nand.get_pin("A")
@@ -136,7 +179,17 @@ class rom_address_control_buf(design):
         self.add_layout_pin_rect_center("clk", offset=clk_offset, layer=self.route_layer)
 
         self.add_via_stack_center(from_layer=self.inv_layer, to_layer=self.route_layer, offset=self.addr_bar_nand.get_pin("A").center())
-        self.add_segment_center(self.route_layer, clk_offset, vector(clk_offset.x, clk2_pin.cy()))
+        # The two NAND clk inputs are the A gates of the two stacked gates.
+        # Their far ends are joined by a poly strap, but the lower gate's own
+        # B-gate poly lies between the two clk gates, so that strap cannot
+        # reach the lower A gate (it stops just above the B poly).  Carry the
+        # clk net down to the first NAND's A pin on the route layer instead;
+        # the two A pins share the same x, so this is one straight vertical.
+        self.add_via_stack_center(from_layer=self.inv_layer, to_layer=self.route_layer,
+                                  offset=clk1_pin.center())
+        self.add_segment_center(self.route_layer,
+                                vector(clk_offset.x, clk1_pin.cy()),
+                                vector(clk_offset.x, clk2_pin.cy()))
 
         # Route first NAND output to second NAND input
         start = A_out.center()
@@ -168,6 +221,29 @@ class rom_address_control_buf(design):
         self.copy_layout_pin(self.addr_bar_nand, "gnd")
         self.copy_layout_pin(self.addr_nand, "gnd")
         self.copy_layout_pin(self.inv_inst, "gnd")
+
+        # The NAND gates expose their supplies on m1 columns near the cell
+        # edges while the inverter's source rails are m2 bars at a different
+        # height; without a strap vdd (and gnd) is two separate physical
+        # nodes.  Tie each net together on m4, which is unused inside the
+        # decoder cells: the vdd strap runs above the cell and the gnd strap
+        # below it so the two never meet.
+        vdd_pins = list(self.get_pins("vdd"))
+        gnd_pins = list(self.get_pins("gnd"))
+        # Replace the per-instance pins with a single pin per net on the
+        # stitching layer.  The top-level supply router finds every labelled
+        # supply shape, so leaving one pin per gate rail makes it route
+        # through the decoder interior instead of around the block.
+        self.remove_layout_pin("vdd")
+        self.remove_layout_pin("gnd")
+        if vdd_pins:
+            vdd_bus_y = max(p.uy() for p in vdd_pins) + 0.3
+            self.stitch_supply_pins("vdd", "m4", pins=vdd_pins, bus_y=vdd_bus_y,
+                                    pin=True, wide_tap_edge="left")
+        if gnd_pins:
+            gnd_bus_y = min(p.by() for p in gnd_pins) - 1.0
+            self.stitch_supply_pins("gnd", "m4", pins=gnd_pins, bus_y=gnd_bus_y,
+                                    pin=True, wide_tap_edge="left")
 
 
         """ Add n/p well taps to the layout and connect to supplies """

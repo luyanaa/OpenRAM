@@ -241,7 +241,73 @@ class rom_base_array(bitcell_base_array):
             self.add_segment_center(layer=self.bitline_layer, start=gnd_l, end=vector(min_x, gnd_l.y))
             self.add_segment_center(layer=self.bitline_layer, start=gnd_r, end=vector(max_x, gnd_r.y))
 
+            # The loop above exposes one gnd pin per column.  Collapse them to
+            # a single pin on m4 (unused inside the array) so the parent's
+            # supply router sees one endpoint per net instead of one per column.
+            gnd_pins = list(self.get_pins("gnd"))
+            # The column straps live only in the pin map; keep them as real
+            # geometry before the pin names are dropped.
+            if gnd_pins:
+                self.copy_layout_pin_shapes("gnd")
+            self.remove_layout_pin("gnd")
+            if gnd_pins:
+                bus_y = 0.5 * (min(p.by() for p in gnd_pins) +
+                               max(p.uy() for p in gnd_pins))
+                self.stitch_supply_pins("gnd", "m4", pins=gnd_pins,
+                                        bus_y=bus_y, pin=True)
+
         self.copy_layout_pin(self.precharge_inst, "vdd")
+
+        if self.tap_direction == "row":
+            self.stitch_row_supplies()
+
+    def stitch_row_supplies(self):
+        """Tie the row gnd rails into one physical node on m4.
+
+        In row mode ``connect_row_pins`` only joins the gnd taps within each
+        tap row, so the array is left with one m2 rail per tap row plus the
+        top m1 rail as separate nodes.  A vertical m4 bus just inside the left
+        edge of the rails joins them all; m4 is otherwise unused in the array.
+        The single vdd rail is brought up to m4 as well so the bank never has
+        to punch a blind m2->m4 stack at the array corner.
+
+        All the per-row pins are then replaced by exactly one pin per net on
+        m4: the top-level supply router routes *every* labelled supply shape,
+        so one pin per tap row would make it thread wires through the array.
+        """
+        gnd_pins = list(self.get_pins("gnd"))
+        vdd_pins = list(self.get_pins("vdd"))
+        wordline_pins = [p for p in gnd_pins if p.layer == self.wordline_layer]
+        bus_x = None
+        if wordline_pins:
+            bus_x = min(p.lx() for p in wordline_pins) + 0.5 * self.route_width
+
+        if gnd_pins:
+            self.copy_layout_pin_shapes("gnd")
+        if vdd_pins:
+            self.copy_layout_pin_shapes("vdd")
+        self.remove_layout_pin("gnd")
+        self.remove_layout_pin("vdd")
+
+        if gnd_pins and bus_x is not None:
+            self.stitch_supply_pins("gnd", "m4", pins=gnd_pins,
+                                    orientation="v", bus_x=bus_x,
+                                    width=self.route_width, pin=True)
+        elif gnd_pins:
+            p = gnd_pins[0]
+            self.add_layout_pin("gnd", p.layer, p.ll(), p.width(), p.height())
+
+        if vdd_pins:
+            # Prefer the full-width rail over the small precharge pin copies.
+            vdd_pin = max(vdd_pins, key=lambda p: p.width())
+            # A lane between the m3 column straps that live at the array
+            # bottom (about 1.69um apart on gf180mcu).
+            at = vector(bus_x + 1.69 if bus_x is not None else vdd_pin.cx(),
+                        vdd_pin.cy())
+            self.add_via_stack_center(from_layer=vdd_pin.layer,
+                                      to_layer="m4",
+                                      offset=at)
+            self.expose_supply_pin("vdd", "m4", at=at)
 
     def place_array(self):
         self.cell_pos = {}

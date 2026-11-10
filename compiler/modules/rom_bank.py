@@ -15,7 +15,17 @@ from openram.base import lef
 from openram import OPTS, print_time
 from openram.sram_factory import factory
 from openram.tech import spice
-from openram.tech import drc, layer, parameter, lef_rom_interconnect
+from openram.tech import drc, layer, parameter
+
+try:
+    from openram.tech import lef_rom_interconnect
+except ImportError:
+    # Some technologies do not define a ROM LEF interconnect list; fall back
+    # to the generic metal range instead of failing the tech import.
+    from openram.tech import layer_indices
+    lef_rom_interconnect = ["m1", "m2", "m3", "m4", "m5"]
+    lef_rom_interconnect = [name for name in lef_rom_interconnect
+                            if name in layer_indices]
 
 
 class rom_bank(design, rom_verilog, lef):
@@ -46,7 +56,7 @@ class rom_bank(design, rom_verilog, lef):
         except ImportError:
             # if no power_grid is specified by tech we use sensible defaults
             # Route a M3/M4 grid
-            self.supply_stack = self.m3_stack
+            self.supply_stack = self.top_stack
 
         self.interconnect_layer = "m1"
         self.bitline_layer = "m1"
@@ -55,7 +65,7 @@ class rom_bank(design, rom_verilog, lef):
         if "li" in layer:
             self.route_stack = self.m1_stack
         else:
-            self.route_stack = self.m2_stack
+            self.route_stack = getattr(self, "m2_stack", self.m1_stack[::-1])
         self.route_layer = self.route_stack[0]
 
         if OPTS.is_unit_test:
@@ -88,10 +98,9 @@ class rom_bank(design, rom_verilog, lef):
             print_time("Routing", datetime.datetime.now(), start_time)
 
         start_time = datetime.datetime.now()
-        if not OPTS.is_unit_test:
-            # We only enable final verification if we have routed the design
-            # Only run this if not a unit test, because unit test will also verify it.
-            self.DRC_LVS(final_verification=OPTS.route_supplies, force_check=OPTS.check_lvsdrc)
+        if not OPTS.is_unit_test and OPTS.check_lvsdrc:
+            # Match the SRAM top-level verification policy.
+            self.DRC_LVS(final_verification=bool(OPTS.route_supplies), force_check=True)
             print_time("Verification", datetime.datetime.now(), start_time)
 
     def add_boundary(self):
@@ -298,7 +307,13 @@ class rom_bank(design, rom_verilog, lef):
 
 
     def place_row_decoder(self):
-        self.decode_offset = vector(0, self.control_inst.height )
+        # Both decoders opened an internal routing channel to fix the address
+        # pin shorts, which raised the top of the column decoder.  Keep the
+        # historical escape corridor between the column decoder and the row
+        # decoder bottom; without it the perimeter escape router can no
+        # longer reach the row decoder's address pins.
+        escape_gap = self.column_decode.route_channel_height()
+        self.decode_offset = vector(0, self.control_inst.height + escape_gap)
         self.decode_inst.place(offset=self.decode_offset)
 
     def place_data_array(self):
@@ -386,7 +401,16 @@ class rom_bank(design, rom_verilog, lef):
         # Route precharge to col decoder
         start = prechrg_control.center()
 
-        path_x = self.control_inst.rx() + 1.2 * self.route_layer_pitch
+        # The vertical precharge trunk runs in the channel between the
+        # control logic and the column decoder.  The column decoder's instance
+        # boundary (`lx`) sits 0.8um to the right of its drawn geometry, and
+        # its left-edge supply landing pads (m2 + via2/via3 stacks) are drawn
+        # right on that left edge.  Anchoring the trunk to `lx` therefore drops
+        # it straight through those pads and shorts precharge to gnd.  Anchor
+        # it just outside the control logic instead: the control logic draws no
+        # m2 near its right boundary, so this leaves a clean channel of roughly
+        # 0.4um to the decoder's landing pads.
+        path_x = self.control_inst.rx() + 0.5 * self.route_layer_width
 
         mid1 = vector(path_x, prechrg_control.cy())
         mid2 = vector(path_x, col_decode_prechrg.cy())
@@ -421,13 +445,38 @@ class rom_bank(design, rom_verilog, lef):
                                   to_layer=clk_out.layer,
                                   offset=clk_out.center())
 
-        # Route clock to row decoder
-        mid = vector(self.control_inst.rx() + self.m1_pitch, clk_out.cy())
+        # Route clock to row decoder.  The column decoder draws a gnd supply tap
+        # (m2/m3 landing pad plus via stack) on its left edge, so the clock must
+        # stay at least one spacing rule to the left of that while it crosses
+        # the column-decoder band.  Above the column decoder the row decoder has
+        # its own m3 landing pads a little further right, so use two vertical
+        # lanes and step between them in the gap between the two decoder blocks.
+        col_lane_x = self.control_inst.rx() + 0.5 * self.route_layer_width - self.route_layer_pitch
+        row_lane_x = self.control_inst.rx() + self.m1_pitch
+        gap_y = 0.5 * (self.col_decode_inst.uy() + self.decode_inst.by())
 
-        addr_control_clk = row_decode_clk.rc() + vector( 2 * self.route_layer_pitch + self.route_layer_width, 0)
+        # Land on the row decoder's m2 clock rail vertically with a via.  A
+        # horizontal m3 run at the rail's y would instead cross the decoder's
+        # internal m3 buffer-output drops (A5/A4) and short the clock to those
+        # address nets.
+        addr_control_clk = vector(row_lane_x, row_decode_clk.cy())
         row_decode_prechrg = self.decode_inst.get_pin("precharge")
 
-        self.add_path(self.route_stack[2], [clk_out.center(), mid, addr_control_clk, row_decode_prechrg.center()])
+        # The row decoder's decode array taps its vdd rail up to m4 right next
+        # to the precharge pin.  Approaching that pin along its own y would run
+        # the m3 clock/precharge lane across the array's m2->m4 landing pad and
+        # short clock to vdd.  Jog the last horizontal run above those pads and
+        # drop onto the pin at its own x.
+        jog_y = max(addr_control_clk.y, row_decode_prechrg.cy() + 0.75)
+        clock_path = [clk_out.center(),
+                      vector(col_lane_x, clk_out.cy()),
+                      vector(col_lane_x, gap_y),
+                      vector(row_lane_x, gap_y),
+                      addr_control_clk,
+                      vector(addr_control_clk.x, jog_y),
+                      vector(row_decode_prechrg.cx(), jog_y),
+                      row_decode_prechrg.center()]
+        self.add_path(self.route_stack[2], clock_path)
 
         self.add_via_stack_center(from_layer=self.route_stack[2],
                                   to_layer=row_decode_clk.layer,
@@ -476,11 +525,62 @@ class rom_bank(design, rom_verilog, lef):
             pin_num = msb - self.col_bits
             self.add_io_pin(self.decode_inst, "A{}".format(pin_num), name)
 
+    def get_supply_representative(self, inst, pin_name, center):
+        """Return the supply pin that best faces the outside of the macro.
+
+        ROM sub-blocks (in particular the decoder arrays) expose many layout
+        pins for a supply net that their own route_supplies() already ties
+        together on the lower layers.  Copying all of them to the top level
+        makes the supply router thread new wires between redundant pins
+        through the wordline/bitline metal; with a multi-layer power grid
+        such as gf180mcu's m3/m4 stack it eventually finds no path.  A single
+        pin per instance and net is enough to connect the block's internal
+        supply network to the ring, so pick the one furthest from the macro
+        centre to leave the block on its outer edge.
+        """
+        pins = inst.get_pins(pin_name)
+        if not pins:
+            return None
+
+        # Prefer a pin already on the top of the supply stack (m4 on
+        # gf180mcu).  Copying a lower-layer pin makes copy_power_pin punch a
+        # blind via stack at that point, which can land on unrelated routing
+        # in the middle layers; the blocks now expose their whole supply node
+        # on the stitching layer, so take that pin when there is one.
+        def rank(p):
+            try:
+                depth = self.supply_stack.index(p.layer)
+            except ValueError:
+                depth = -1
+            return (depth,
+                    (p.cx() - center.x) ** 2 + (p.cy() - center.y) ** 2)
+
+        return max(pins, key=rank)
+
+    def copy_supply_representative(self, inst, pin_name, center):
+        """Copy one supply pin of an instance up to the power grid layer."""
+        pin = self.get_supply_representative(inst, pin_name, center)
+        if pin is None:
+            return
+        # Keep the internal names ("vdd"/"gnd") so that the supply router's
+        # find_pins() call matches; the final perimeter pins are renamed to
+        # the technology's external supply names afterwards.
+        if pin.layer in self.pwr_grid_layers:
+            self.add_layout_pin(pin.name,
+                                pin.layer,
+                                pin.ll(),
+                                pin.width(),
+                                pin.height())
+        else:
+            self.copy_power_pin(pin, new_name=pin.name)
+
     def route_supplies(self, bbox):
 
+        center = vector((bbox[0].x + bbox[1].x) * 0.5,
+                        (bbox[0].y + bbox[1].y) * 0.5)
         for pin_name in ["vdd", "gnd"]:
             for inst in self.insts:
-                self.copy_power_pins(inst, pin_name, self.ext_supply[pin_name])
+                self.copy_supply_representative(inst, pin_name, center)
 
         if OPTS.route_supplies:
 
@@ -528,7 +628,7 @@ class rom_bank(design, rom_verilog, lef):
         pins_to_route.append("clk0")
         pins_to_route.append("cs0")
         from openram.router import signal_escape_router as router
-        rtr = router(layers=self.m3_stack,
+        rtr = router(layers=self.top_stack,
                      bbox=bbox,
                      design=self)
         rtr.route(pins_to_route)

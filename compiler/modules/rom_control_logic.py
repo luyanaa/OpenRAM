@@ -48,6 +48,29 @@ class rom_control_logic(design):
         self.place_instances()
         self.route_insts()
 
+    def add_boundary(self):
+        """Size the control logic block from its actual drawn contents.
+
+        The buffer, NAND and precharge driver are standard-cell-like blocks
+        whose drawn wells and metal overhang their declared cell boundaries.
+        Sizing the block from `driver_inst.height + buf_inst.height` and the
+        sub-cell widths therefore leaves the real drawn geometry sticking out
+        of the boundary.  The bank places the control logic at a fixed gap from
+        the column decoder using `self.width`, so an undersized boundary makes
+        the drawn control logic (and its supply rail) much closer to the column
+        decoder than intended - close enough to violate the Metal2 spacing
+        rule on gf180mcu.
+
+        Deriving the boundary from get_true_bbox() makes `self.width` include
+        those overhangs, so the gap the bank reserves is respected by the drawn
+        shapes as well.
+        """
+        (minx, miny, maxx, maxy) = self.get_true_bbox()
+        self.translate_all(vector(minx, miny))
+        self.width = maxx - minx
+        self.height = maxy - miny
+        super().add_boundary()
+
     def add_modules(self):
         self.buf_mod = factory.create(module_type="pdriver",
                                       module_name="rom_clock_driver",
@@ -139,3 +162,19 @@ class rom_control_logic(design):
         self.add_via_stack_center(from_layer=driver_A.layer,
                                 to_layer=self.route_stack[2],
                                 offset=driver_A.center())
+
+        # Strap the two gnd pins (opposite corners of the block) on m4, which
+        # is unused inside the control logic, and expose exactly one pin per
+        # net on m4 so the bank's supply router has a single endpoint.
+        vdd_pins = list(self.get_pins("vdd"))
+        gnd_pins = list(self.get_pins("gnd"))
+        self.remove_layout_pin("vdd")
+        self.remove_layout_pin("gnd")
+        if gnd_pins:
+            self.stitch_supply_pins("gnd", "m4", pins=gnd_pins,
+                                    bus_y=min(p.cy() for p in gnd_pins),
+                                    pin=True)
+        if vdd_pins:
+            self.stitch_supply_pins("vdd", "m4", pins=vdd_pins,
+                                    bus_y=min(p.cy() for p in vdd_pins),
+                                    pin=True)

@@ -428,8 +428,11 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
         else:
             total_errors += len(propertyerrors)
 
-    # Top level pins mismatch
-    test = re.compile("The top level cell failed pin matching.")
+    # Top level pins mismatch.
+    # Netgen prints "Final result: Top level cell failed pin matching."
+    # (the old pattern expected a leading "The", so real pin failures were
+    # silently accepted and reported as "LVS matches").
+    test = re.compile("Top level cell failed pin matching")
     pins_incorrectly = list(filter(test.search, final_results))
 
     # Fail if the pins mismatched
@@ -490,8 +493,13 @@ def run_pex(name, gds_name, sp_name, output=None, final_verification=False, outp
     pex_nelist = open(output, 'r')
     s = pex_nelist.read()
     pex_nelist.close()
-    s = s.replace('pfet', 'p')
-    s = s.replace('nfet', 'n')
+    # Only the bare "nfet"/"pfet" model tokens (used by technologies whose
+    # SPICE models are literally named n/p) should be renamed.  A plain
+    # substring replace also corrupts real device names such as
+    # "nfet_05v0"/"pfet_05v0" or "sky130_fd_pr__special_nfet_pass" into
+    # non-existent models.
+    s = re.sub(r'\bnfet\b', 'n', s)
+    s = re.sub(r'\bpfet\b', 'p', s)
     f = open(output, 'w')
     f.write(s)
     f.close()
@@ -570,6 +578,12 @@ def write_script_pex_rule(gds_name, cell_name, sp_name, output):
         f.write("port makeall\n")
     else:
         f.write("readspice {}\n".format(sp_name))
+        # readspice annotates port orders and leaves the netlist cell set to the
+        # last subcircuit it touched (a leaf such as the final inverter).  If we
+        # do not re-select the top cell, ext2spice writes that leaf instead of
+        # the whole design.  The annotations themselves are required: without
+        # readspice, extresist skips the custom bitcell array entirely.
+        f.write("select top cell\n")
     f.write("extract\n")
     f.write("ext2sim labels on\n")
     f.write("ext2sim\n")
@@ -608,8 +622,13 @@ def find_error(results):
 def correct_port(name, output_file_name, ref_file_name):
     pex_file = open(output_file_name, "r")
     contents = pex_file.read()
-    # locate the start of circuit definition line
-    match = re.search(r'^\.subckt+[^M]*', contents, re.MULTILINE)
+    # Locate the extracted top-level subckt declaration.  Magic writes the
+    # declaration as a ".subckt ..." line plus "+" continuation lines; the
+    # device body follows it and must be preserved.  The previous pattern
+    # ("[^M]*") ran until the first capital M, which in this technology never
+    # appears, so it swallowed the entire netlist and emitted only the header.
+    match = re.search(r'^\.subckt\b[^\n]*(?:\n\+[^\n]*)*', contents,
+                      re.MULTILINE)
     match_index_start = match.start()
     match_index_end = match.end()
     # store the unchanged part of pex file in memory
@@ -618,8 +637,13 @@ def correct_port(name, output_file_name, ref_file_name):
     pex_file.seek(match_index_end)
     part2 = pex_file.read()
 
-    bitcell_list = "+ "
-    if OPTS.words_per_row:
+    # These extra top-level nets are an SRAM-specific port-matching aid: the
+    # schematic top cell lists every bitcell/control net as a port.  Other
+    # designs (ROM) have no bank/bitcell port list and do not define the SRAM
+    # options (num_words, num_banks, ...), so emit them only for SRAM.
+    is_ram = hasattr(OPTS, "num_words") and getattr(OPTS, "words_per_row", None)
+    if is_ram:
+        bitcell_list = "+ "
         for bank in range(OPTS.num_banks):
             for bank in range(OPTS.num_banks):
                 row = int(OPTS.num_words / OPTS.words_per_row) - 1
@@ -630,12 +654,14 @@ def correct_port(name, output_file_name, ref_file_name):
                 for port in range(OPTS.num_r_ports + OPTS.num_w_ports + OPTS.num_rw_ports):
                     bitcell_list += "bl{0}_{1} ".format(bank, col)
                     bitcell_list += "br{0}_{1} ".format(bank, col)
-    bitcell_list += "\n"
-    control_list = "+ "
-    if OPTS.words_per_row:
+        bitcell_list += "\n"
+        control_list = "+ "
         for bank in range(OPTS.num_banks):
             control_list += "bank_{}/s_en0".format(bank)
-    control_list += '\n'
+        control_list += '\n'
+    else:
+        bitcell_list = ""
+        control_list = ""
 
     part2 = bitcell_list + control_list + part2
 
@@ -644,7 +670,13 @@ def correct_port(name, output_file_name, ref_file_name):
     # obtain the correct definition line from the original spice file
     sp_file = open(ref_file_name, "r")
     contents = sp_file.read()
-    circuit_title = re.search(".SUBCKT " + str(name) + ".*", contents)
+    # Match the top-level .SUBCKT block exactly.  The old prefix match picked
+    # the first subcircuit whose name merely *started* with the design name
+    # (e.g. "_pinv_12"), because OpenRAM emits subcircuits bottom-up and the
+    # top cell is last.
+    circuit_title = re.search(
+        r'^\.SUBCKT\s+' + re.escape(str(name)) + r'(?=\s|$)[^\n]*(?:\n\+[^\n]*)*',
+        contents, re.MULTILINE)
     circuit_title = circuit_title.group()
     sp_file.close()
 
