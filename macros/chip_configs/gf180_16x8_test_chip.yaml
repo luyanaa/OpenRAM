@@ -1,0 +1,30 @@
+# Example chip: OpenRAM-generated gf180mcu 16x8 macros in a 1x0.5 MPW slot.
+#
+#   chip_compiler.py check macros/chip_configs/gf180_16x8_test_chip.yaml
+#   chip_compiler.py gen  macros/chip_configs/gf180_16x8_test_chip.yaml -o gf180_work/chip_16x8
+chip:
+  name: gf180_16x8_test
+  description: Four OpenRAM gf180mcu 16x8 macros on a 1x0.5 slot
+
+slot: 1x0p5
+
+memory:
+  macro: gf180_16x8_pdn_pex
+  count: 4           # power of two so the address decode is exact
+  arrangement:
+    prefer: square
+
+interface:
+  scheme: unified_bus
+  unified_bus:
+    data_width: 8
+    output_routing: mux
+    write_mask: false
+
+clock:
+  frequency_mhz: 25
+
+power:
+  core_voltage: 3.3
+
+halo_um: 10

@@ -10,6 +10,7 @@ from bisect import bisect_left
 from openram import debug
 from openram.base import design
 from openram.base import vector
+from openram.base.utils import round_to_grid
 from openram.tech import layer, drc
 from openram.tech import cell_properties as cell_props
 from openram import OPTS
@@ -51,13 +52,27 @@ class pgate(design):
 
         # This is a result of the m1 extend contact drc rule being really long in comparison to sky130.
         # Currently the "extend" drc rule acts to fulfil minimum metal areas on contacts and isnt reflective of an actual drc rule
-        if OPTS.tech_name == "gf180mcu":
+        # The extra M1 allowance is a gf180mcu rule; every derived technology
+        # (e.g. the 5 V thick-oxide variant) needs it too.
+        if OPTS.tech_name.startswith("gf180mcu"):
             contact_to_vdd_rail_space += 0.5 * self.route_layer_space
         # This is a poly-to-poly of a flipped cell
         poly_to_poly_gate_space = self.poly_extend_active + 0.5 * self.poly_space
 
         self.top_bottom_space = max(contact_to_vdd_rail_space,
                                     poly_to_poly_gate_space)
+
+        # The space above the PMOS is also the well enclosure of the PMOS
+        # diffusion at the top edge of the row.  A thick-oxide technology asks
+        # for a large n-well enclosure (gf180 5 V DF.7 is 0.60 um), larger
+        # than the ordinary rail/contact clearance, so place the PMOS lower
+        # while keeping the NMOS at `top_bottom_space` above the bottom rail.
+        # Derived technologies without a dual-gate marker keep the historical
+        # symmetric placement.
+        self.pmos_top_space = self.top_bottom_space
+        if "dualgate" in layer:
+            self.pmos_top_space = max(self.pmos_top_space,
+                                      drc("nwell_enclose_active"))
 
         self.create_netlist()
         if not OPTS.netlist_only:
@@ -109,7 +124,19 @@ class pgate(design):
         debug.check(nmos_gate_pin.ll().x == pmos_gate_pin.ll().x,
                     "Connecting unaligned gates not supported. See unaligned_gates.gds.")
 
-        # Pick point on the left of NMOS and up to PMOS
+        # The gate poly stripe/gate pin is drawn at the transistor's poly
+        # width.  That is the interconnect minimum (`self.poly_width`) on
+        # 3.3 V, but a thick-oxide technology draws it at the channel length
+        # (`nmos_inst.mod.poly_width`, e.g. 0.60 um on 5 V).  Center the input
+        # route and contact on the *drawn* gate, otherwise the contact pad
+        # overhangs the stripe and leaves too little field-poly clearance to
+        # the marked diffusion (PL.5a) as well as poly notches (PL.3a).
+        gate_width = getattr(nmos_inst.mod, "poly_width", self.poly_width)
+
+        # Pick point on the left of NMOS and up to PMOS.  Keep the vertical
+        # gate route on the interconnect grid relative to the gate pin edge
+        # (the original 3.3 V behaviour): the far-left contact only meets the
+        # gate through this route's left edge, so it must not be re-centred.
         nmos_gate_pos = nmos_gate_pin.ul() + vector(0.5 * self.poly_width, 0)
         pmos_gate_pos = vector(nmos_gate_pos.x, pmos_gate_pin.bc().y)
         self.add_path("poly", [nmos_gate_pos, pmos_gate_pos])
@@ -122,16 +149,16 @@ class pgate(design):
 
         if position == "center":
             contact_offset = left_gate_offset \
-                             + vector(0.5 * self.poly_width, 0)
+                             + vector(0.5 * gate_width, 0)
         elif position == "farleft":
             contact_offset = left_gate_offset \
                              - vector(0.5 * self.poly_contact.width, 0)
         elif position == "left":
             contact_offset = left_gate_offset \
-                             - vector(0.5 * contact_width - 0.5 * self.poly_width, 0)
+                             - vector(0.5 * contact_width - 0.5 * gate_width, 0)
         elif position == "right":
             contact_offset = left_gate_offset \
-                             + vector(0.5 * contact_width + 0.5 * self.poly_width, 0)
+                             + vector(0.5 * contact_width + 0.5 * gate_width, 0)
         else:
             debug.error("Invalid contact placement option.", -1)
 
@@ -146,13 +173,15 @@ class pgate(design):
                                         width=via.mod.second_layer_width,
                                         height=via.mod.second_layer_height)
         # This is to ensure that the contact is
-        # connected to the gate
-        mid_point = contact_offset.scale(0.5, 1) \
-                    + left_gate_offset.scale(0.5, 0)
+        # connected to the gate.  The contact may sit inside or outside
+        # the gate stripe depending on the gate width, so size/position the
+        # bridge from the absolute edge distance.
+        mid_point = vector(0.5 * (contact_offset.x + left_gate_offset.x),
+                           contact_offset.y)
         self.add_rect_center(layer="poly",
                              offset=mid_point,
                              height=self.poly_contact.first_layer_width,
-                             width=left_gate_offset.x - contact_offset.x)
+                             width=abs(left_gate_offset.x - contact_offset.x))
 
         return via
 
@@ -161,8 +190,56 @@ class pgate(design):
 
         # This should match the cells in the cell library
         self.nwell_yoffset = 0.48 * self.height
-        full_height = self.height + 0.5 * self.m1_width
+        # Thick-oxide / 5 V technologies mark the diffusion with DUALGATE and
+        # require the n-well to enclose the PMOS diffusion (DF.7, 0.60 um for
+        # marked/MV diffusion) and to clear the NMOS diffusion (DF.8, 0.60 um).
+        # DF.7 is larger than the default 0.48*height split, so a cell whose
+        # PMOS sits low in the row may have to move the boundary *down*
+        # towards the NMOS; DF.8 forces it above the tallest NMOS the row can
+        # hold.  Do not push the boundary up to keep the NMOS DUALGATE marker
+        # inside the p-well: the vendor 5 V library deliberately draws the
+        # marker across both wells (gf180mcu_fd_sc_mcu7t5v0__inv_1: well split
+        # at 1.76, DUALGATE from -0.28 to 4.20).  The split must only depend on
+        # the row height (plus the two clamps), because abutting cells of the
+        # same row share it through the horizontal `well_extend_active` strip;
+        # a per-device value would make pnand2 and pinv disagree and Magic
+        # reports the resulting NWELL/PWELL overlap as "Can't overlap those
+        # layers" (a 1.2 x 0.155 um sliver per pnand2|pinv seam).
+        if "dualgate" in layer:
+            nmos_top = 0.0
+            for inst in self.get_tx_insts("nmos"):
+                nmos_top = max(nmos_top, inst.offset.y + inst.mod.active_height)
+            pmos_bottom = self.height
+            for inst in self.get_tx_insts("pmos"):
+                pmos_bottom = min(pmos_bottom, inst.offset.y)
+            # DF.8 also constrains the split from *below*: the MV n-diffusion
+            # must be at least `nwell_enclose_active` away from the n-well.
+            # The split is shared by every abutting cell in a row (the wells
+            # of adjacent cells meet inside the horizontal
+            # `well_extend_active` strip), so a cell cannot use its own NMOS
+            # only: it has to reserve room for the tallest NMOS the row can
+            # hold.  The NMOS starts `top_bottom_space` above the row origin
+            # and a series stack (pnand/pnor) uses two minimum-width fingers.
+            split_floor = (self.top_bottom_space
+                           + 2 * drc("minwidth_tx")
+                           + drc("nwell_enclose_active"))
+            self.nwell_yoffset = max(self.nwell_yoffset,
+                                     round_to_grid(split_floor))
+            yoffset_high = pmos_bottom - drc("nwell_enclose_active")
+            self.nwell_yoffset = min(self.nwell_yoffset, yoffset_high)
+            # Safety net: if the sizing of this cell ever exceeds the
+            # reservation above, fail loudly instead of shipping a DF.8
+            # violation (the DRC assert would be far less informative).
+            debug.check(self.nwell_yoffset + 1e-3
+                        >= nmos_top + drc("nwell_enclose_active"),
+                        "DF.8: n-well split {0:.3f} in {1} is too low for the "
+                        "NMOS top {2:.3f}.".format(self.nwell_yoffset,
+                                                   self.name,
+                                                   nmos_top))
+            debug.info(3, "wells {0}: nmos_top={1:.3f} pmos_bottom={2:.3f} split={3:.3f}".format(
+                self.name, nmos_top, pmos_bottom, self.nwell_yoffset))
 
+        full_height = self.height + 0.5 * self.m1_width
 
         # FIXME: float rounding problem
         if "nwell" in layer:

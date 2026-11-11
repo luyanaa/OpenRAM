@@ -1,0 +1,30 @@
+# Example chip: one 128x32 OpenRAM macro array on a full 1x1 MPW slot.
+#
+#   chip_compiler.py check macros/chip_configs/gf180_128x32_test_chip.yaml
+#   chip_compiler.py gen  macros/chip_configs/gf180_128x32_test_chip.yaml -o gf180_work/chip_128x32
+chip:
+  name: gf180_128x32_test
+  description: Eight OpenRAM gf180mcu 128x32 macros on a 1x1 slot
+
+slot: 1x1
+
+memory:
+  macro: gf180_128x32_pdn_pex
+  count: 8
+  arrangement:
+    prefer: square
+
+interface:
+  scheme: unified_bus
+  unified_bus:
+    data_width: 32
+    output_routing: mux
+    write_mask: false
+
+clock:
+  frequency_mhz: 25
+
+power:
+  core_voltage: 3.3
+
+halo_um: 10
