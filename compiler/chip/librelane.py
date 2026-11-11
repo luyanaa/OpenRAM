@@ -225,19 +225,21 @@ def build_config(cfg, slot, macro, fit, out_dir, signoff=True):
         "MAGIC_EXT_UNIQUE": "notopports",
         "LVS_FLATTEN_CELLS": [macro.class_name],
     }
-    # Block signal routing on the top metal over the macro array.  The chip PDN
-    # runs its top-layer straps across the whole core, i.e. straight over the
-    # macros, and a macro LEF whose own stack stops at Metal4 leaves its Metal5
-    # "free" for the router, which then crosses the straps and shorts VDD/VSS.
-    # Odb.AddRoutingObstructions applies this before global placement and
-    # Odb.RemoveRoutingObstructions removes it again after detailed routing, so
-    # it only constrains the router and never the PDN.
-    if cfg.macro_top_obstruction and fit.placements:
+    # Cut the top-metal PDN straps back to the edge of the macro array.  The
+    # chip PDN runs its top-layer straps across the whole core, i.e. straight
+    # over the macros, and a macro LEF whose own stack stops at Metal4 leaves
+    # its Metal5 "free" for the router, which then crosses the straps and
+    # shorts to them (38 Metal5 shorts in the 2x4 run1).  Blocking Metal5 over
+    # the array for the router is not an option - the array has to stay
+    # traversable - so instead the straps themselves are clipped: a PDN
+    # obstruction is only consumed by pdngen, and Odb.RemovePDNObstructions
+    # drops it again right after the PDN, leaving the top metal free to route.
+    if cfg.clip_pdn_top_over_array and fit.placements:
         x0 = min(p.x for p in fit.placements)
         y0 = min(p.y for p in fit.placements)
         x1 = max(p.x for p in fit.placements) + fit.macro_width_um
         y1 = max(p.y for p in fit.placements) + fit.macro_height_um
-        config["ROUTING_OBSTRUCTIONS"] = [[
+        config["PDN_OBSTRUCTIONS"] = [[
             "Metal5", round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)]]
     # Supply the SCL/pad Liberty + corner names that the PDK config.tcl fails
     # to expose to LibreLane 3 (see _pdk_corner_config).
