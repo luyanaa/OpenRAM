@@ -340,10 +340,22 @@ class ChipConfig:
     reset: bool = True
     reserved_area_um2: Optional[float] = None
     signoff: bool = True
+    # Block signal routing on the macro array's top metal layer.  The chip PDN
+    # runs its top-layer straps across the whole core, i.e. straight over the
+    # macros; without the blockage the router happily crosses those straps
+    # inside a macro (the macro's own LEF stops at Metal4, so its Metal5 is
+    # "empty" and therefore routable).  Opt-in because a design that has a
+    # routing channel over the array does not need it.
+    macro_top_obstruction: bool = False
+    # Hold slack margin for the placement/global-route resizers.  The default
+    # 0.35 ns is enough for the 16x8 array; a taller macro stack (more clock
+    # insertion delay through the array) needs a larger margin.
+    hold_slack_margin_ns: Optional[float] = None
 
     ALLOWED_KEYS = {"chip", "slot", "memory", "interface", "clock", "power",
                     "io", "features", "halo_um", "density_target_pct",
-                    "reserved_area_um2", "signoff"}
+                    "reserved_area_um2", "signoff", "macro_top_obstruction",
+                    "hold_slack_margin_ns"}
 
     @classmethod
     def from_dict(cls, d, where="chip config"):
@@ -424,6 +436,10 @@ class ChipConfig:
                                          where + ".reserved_area_um2", 0.0)
                                if "reserved_area_um2" in d else None),
             signoff=bool(d.get("signoff", True)),
+            macro_top_obstruction=bool(d.get("macro_top_obstruction", False)),
+            hold_slack_margin_ns=(_as_float(d["hold_slack_margin_ns"],
+                                            where + ".hold_slack_margin_ns", 0.0)
+                                  if "hold_slack_margin_ns" in d else None),
         )
         cfg._prefer = prefer
         cfg._data_width = data_width
@@ -455,4 +471,6 @@ class ChipConfig:
             "halo_um": self.halo_um,
             "density_target_pct": self.density_target_pct,
             "reserved_area_um2": self.reserved_area_um2,
+            "macro_top_obstruction": self.macro_top_obstruction,
+            "hold_slack_margin_ns": self.hold_slack_margin_ns,
         }

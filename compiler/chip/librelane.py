@@ -182,8 +182,12 @@ def build_config(cfg, slot, macro, fit, out_dir, signoff=True):
         "PL_TARGET_DENSITY_PCT": (cfg.density_target_pct
                                   if cfg.density_target_pct is not None
                                   else placement_density_pct(fit.utilization)),
-        "PL_RESIZER_HOLD_SLACK_MARGIN": 0.35,
-        "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.3,
+        "PL_RESIZER_HOLD_SLACK_MARGIN": (cfg.hold_slack_margin_ns
+                                         if cfg.hold_slack_margin_ns is not None
+                                         else 0.35),
+        "GRT_RESIZER_HOLD_SLACK_MARGIN": (round(max(cfg.hold_slack_margin_ns - 0.05, 0.0), 3)
+                                          if cfg.hold_slack_margin_ns is not None
+                                          else 0.3),
         "GRT_ALLOW_CONGESTION": True,
         "DRT_ANTENNA_REPAIR_ITERS": 10,
         "DRT_ANTENNA_MARGIN": 10,
@@ -221,6 +225,20 @@ def build_config(cfg, slot, macro, fit, out_dir, signoff=True):
         "MAGIC_EXT_UNIQUE": "notopports",
         "LVS_FLATTEN_CELLS": [macro.class_name],
     }
+    # Block signal routing on the top metal over the macro array.  The chip PDN
+    # runs its top-layer straps across the whole core, i.e. straight over the
+    # macros, and a macro LEF whose own stack stops at Metal4 leaves its Metal5
+    # "free" for the router, which then crosses the straps and shorts VDD/VSS.
+    # Odb.AddRoutingObstructions applies this before global placement and
+    # Odb.RemoveRoutingObstructions removes it again after detailed routing, so
+    # it only constrains the router and never the PDN.
+    if cfg.macro_top_obstruction and fit.placements:
+        x0 = min(p.x for p in fit.placements)
+        y0 = min(p.y for p in fit.placements)
+        x1 = max(p.x for p in fit.placements) + fit.macro_width_um
+        y1 = max(p.y for p in fit.placements) + fit.macro_height_um
+        config["ROUTING_OBSTRUCTIONS"] = [[
+            "Metal5", round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)]]
     # Supply the SCL/pad Liberty + corner names that the PDK config.tcl fails
     # to expose to LibreLane 3 (see _pdk_corner_config).
     config.update(_pdk_corner_config(cfg))
