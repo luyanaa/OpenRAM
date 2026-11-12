@@ -163,9 +163,15 @@ if { $::env(PDN_CORE_RING) == 1 } {
 }
 
 # The macro power pins are boundary rails (Metal4 along the top and bottom
-# edges, Metal3 along the left and right edges).  The vertical Metal4 straps of
-# the core grid are cut at the macro obstructions and therefore land exactly on
-# the Metal4 rails, so the macro is connected by abutment.  Defining an
-# OpenROAD macro grid here would ask for a via between the Metal4 rail and a
-# Metal5 shape of the macro grid, and the macro has no Metal5 at all, so
-# pdngen aborts (PDN-0232/PDN-0233).
+# edges, Metal3 along the left and right edges), nested so that vssd1 is
+# enclosed by vccd1 on every side.  Defining an OpenROAD macro grid here would
+# ask for a via between the Metal4 rail and a Metal5 shape of the macro grid,
+# and the macro has no Metal5 at all, so pdngen aborts (PDN-0232/PDN-0233).
+#
+# The macros are therefore connected by post_pdn.tcl, which wraps pdngen: their
+# rails are reached from above on Metal5, which the macro does not use.  See
+# that file for the measurements and the geometry.
+
+# Sourced last: installs the pdngen wrapper that runs chip_post_pdn after the
+# grid has been generated.
+source [file join [file dirname [info script]] post_pdn.tcl]

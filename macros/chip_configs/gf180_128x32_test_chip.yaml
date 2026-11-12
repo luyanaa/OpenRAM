@@ -35,6 +35,7 @@ halo_um: 10
 # array edge: clipping them for the router instead starves the array crossing
 # (run2: ~1200 DRC violations, 7-25 min per DRT iteration).
 clip_pdn_top_over_array: true
+macro_power_pin_band_obstruction: true
 
 # Taller array -> more clock insertion delay into the macro inputs; the default
 # 0.35 ns hold margin left 2 hold violations (-0.271 ns) after detailed
