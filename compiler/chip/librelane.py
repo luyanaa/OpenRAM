@@ -247,41 +247,6 @@ def build_config(cfg, slot, macro, fit, out_dir, signoff=True):
         y1 = max(p.y for p in fit.placements) + fit.macro_height_um
         config["PDN_OBSTRUCTIONS"] = [[
             "Metal5", round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3)]]
-    # Keep signal Metal4 out of each macro's open power-pin band.  The macro
-    # LEF leaves the rail bands free of OBS so the vccd1/vssd1 rails can be
-    # reached: M4 OBS stops at local y 386.955 and only resumes at 389.775 /
-    # 390.355, leaving three 0.56 um open channels (one routing track each)
-    # at the top edge, mirrored at the bottom.  post_pdn drops a Via4_VH on
-    # each rail inside that band; on the 2x4 chip the router threads vertical
-    # signal Metal4 through the channels and shorts to the via pads (155
-    # Metal4.Shorts + 4 spacings, all VDD/VSS<->signal inside macro bboxes,
-    # measured on 128x32 run4 DRT).  A routing obstruction is a dbObstruction:
-    # it steers the router away but does not touch the already-placed
-    # special-net via, and no macro signal pin sits on M4 in the band (dout
-    # are M3 at the bottom edge), so connectivity and LVS are unaffected.
-    # The band is blocked across each macro's interior x only; the inter-row
-    # and inter-column channels stay free for the signal detour.
-    if cfg.macro_power_pin_band_obstruction and fit.placements:
-        w = fit.macro_width_um
-        h = fit.macro_height_um
-        # Local open M4 window where the LEF stops OBS over the rail band:
-        # bottom edge y 0 .. 5.66, top edge h-5.66 .. h.  Cover the whole
-        # window (not just the 1.7 um rail) so a signal cannot sit beside or
-        # above the via pad inside the band.  Overhang ~1 um in x because a
-        # via dropped every 20 um can land within M4 spacing of the macro's
-        # left/right edge, where a band-y signal just outside the bbox would
-        # otherwise still be legal.
-        band = 5.66
-        xover = 1.0
-        obs = []
-        for p in fit.placements:
-            xlo = round(p.x - xover, 3)
-            xhi = round(p.x + w + xover, 3)
-            obs.append(["Metal4", xlo, round(p.y, 3),
-                        xhi, round(p.y + band, 3)])
-            obs.append(["Metal4", xlo, round(p.y + h - band, 3),
-                        xhi, round(p.y + h, 3)])
-        config["ROUTING_OBSTRUCTIONS"] = obs
     # Supply the SCL/pad Liberty + corner names that the PDK config.tcl fails
     # to expose to LibreLane 3 (see _pdk_corner_config).
     config.update(_pdk_corner_config(cfg))

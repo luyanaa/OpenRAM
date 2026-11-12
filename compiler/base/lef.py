@@ -11,6 +11,7 @@ from openram import debug
 from openram.base import vector
 from openram.base import pin_layout
 from openram.tech import layer_names
+from openram.tech import layer as tech_layer
 from openram import OPTS
 
 
@@ -79,8 +80,10 @@ class lef:
 
         if OPTS.detailed_lef:
             debug.info(3, "Writing detailed LEF to {0}".format(lef_name))
+            self.lef_layers = self.used_lef_layers()
         else:
             debug.info(3, "Writing abstract LEF to {0}".format(lef_name))
+            self.lef_layers = self.used_lef_layers()
             self.compute_abstract_blockages()
 
         self.lef  = open(lef_name, "w")
@@ -92,6 +95,38 @@ class lef:
         self.lef_write_obstructions(OPTS.detailed_lef)
         self.lef_write_footer()
         self.lef.close()
+
+    def used_lef_layers(self):
+        """ Return the obstruction layers that this design actually draws on.
+
+        Abstract LEF blockages are full-block rectangles.  Emitting one on a
+        layer that the block never uses (e.g. Metal5 on a macro whose top
+        routing layer is Metal4) tells the P&R tool that the whole layer is
+        occupied above the macro and makes the chip power grid unroutable
+        there.  Only keep layers with real geometry, including geometry that
+        lives in a sub-instance.
+        """
+        used = set()
+
+        def collect(design, seen):
+            if id(design) in seen:
+                return
+            seen.add(id(design))
+            for obj in getattr(design, "objs", []):
+                used.add((obj.layerNumber, obj.layerPurpose))
+            for inst in getattr(design, "insts", []):
+                collect(inst.mod, seen)
+
+        collect(self, set())
+
+        layers = []
+        for layer_name in self.lef_layers:
+            lpp = tech_layer[layer_name]
+            if (lpp[0], lpp[1]) in used:
+                layers.append(layer_name)
+            else:
+                debug.info(2, "No {0} geometry: skipping obstruction layer.".format(layer_name))
+        return layers
 
     def compute_abstract_blockages(self):
         # Start with blockages on all layers the size of the block
@@ -108,8 +143,25 @@ class lef:
                                                          [ll, ur],
                                                          layer_name))
 
-        # For each pin, remove the blockage and add the pin
+        # For each pin, remove the blockage and add the pin.
+        # Exception: power/ground rails do NOT carve a hole.  They are
+        # boundary abutment rails reached top-down by a special-wire via, not
+        # by in-band signal routing; carving their hole leaves an open
+        # corridor through which the router threads a signal wire across the
+        # rail pin shape itself (a hard power<->signal short - 156 Metal4
+        # shorts on the 128x32 chip).  The pin PORT is still written, so the
+        # rail stays a real pin for LVS/connectivity; only the OBS-free band
+        # disappears.  dbObstruction is insufficient (TritonRoute treats it as
+        # soft), so the coverage has to come from the master's own OBS.
         for pin_name in self.pins:
+            if self.get_pin_type(pin_name) in ["POWER", "GROUND"]:
+                # Still cover the pin's own footprint: the base blockages are
+                # inset by perimeter_margin for signal-pin escapes, so the
+                # rail band that protrudes into that inset ring would stay
+                # exposed.  Adding the pin's own bbox (uninflated) closes it.
+                for pin in self.get_pins(pin_name):
+                    self.blockages[pin.layer].append(pin)
+                continue
             pins = self.get_pins(pin_name)
             for pin in pins:
                 inflated_pin = pin.inflated_pin(multiple=2)

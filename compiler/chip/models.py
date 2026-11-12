@@ -350,10 +350,6 @@ class ChipConfig:
     # an option, the array has to stay traversable.  Opt-in because a design
     # with a routing channel over the array does not need it.
     clip_pdn_top_over_array: bool = False
-    # Block signal Metal4 over each macro's open power-pin band so the router
-    # cannot place a wire where post_pdn's rail via lands (the LEF leaves the
-    # band OBS-free for the pin; see librelane.build_config).
-    macro_power_pin_band_obstruction: bool = False
     # Hold slack margin for the placement/global-route resizers.  The default
     # 0.35 ns is enough for the 16x8 array; a taller macro stack (more clock
     # insertion delay through the array) needs a larger margin.
@@ -362,7 +358,6 @@ class ChipConfig:
     ALLOWED_KEYS = {"chip", "slot", "memory", "interface", "clock", "power",
                     "io", "features", "halo_um", "density_target_pct",
                     "reserved_area_um2", "signoff", "clip_pdn_top_over_array",
-                    "macro_power_pin_band_obstruction",
                     "hold_slack_margin_ns"}
 
     @classmethod
@@ -445,8 +440,6 @@ class ChipConfig:
                                if "reserved_area_um2" in d else None),
             signoff=bool(d.get("signoff", True)),
             clip_pdn_top_over_array=bool(d.get("clip_pdn_top_over_array", False)),
-            macro_power_pin_band_obstruction=bool(
-                d.get("macro_power_pin_band_obstruction", False)),
             hold_slack_margin_ns=(_as_float(d["hold_slack_margin_ns"],
                                             where + ".hold_slack_margin_ns", 0.0)
                                   if "hold_slack_margin_ns" in d else None),
