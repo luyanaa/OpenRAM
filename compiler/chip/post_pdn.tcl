@@ -217,6 +217,43 @@ proc chip_post_pdn {} {
         }
     }
 
+    # ------------------------------------------------------------------
+    # Block Metal5 in a thin band around each rail strap.
+    #
+    # The straps are die-wide horizontal Metal5 wires at the rail ys.  GRT is
+    # free to use any M5 gcell row as an E-W highway, and the rows whose
+    # y-interval contains a strap are precisely the ones it picks - then DRT
+    # has no legal path in that row and shorts to the strap.  A macro LEF OBS
+    # cannot stop this: the strap sits inside the macro at the rail ys, but
+    # the offending signals run in the adjacent channel/halo *outside* the
+    # macro, where no macro OBS exists, and jog across the strap.  A
+    # design-level routing obstruction (dbObstruction) covers the whole strap
+    # footprint including the channel, so GRT sees ~zero M5 capacity on the
+    # strap rows and detours into the hundreds of free rows.
+    #
+    # The band must cover the *whole* GRT gcell row(s) the strap touches, not
+    # just the strap outline: a partially-covered row still shows capacity in
+    # its free slice, so GRT keeps assigning a guide through it and DRT still
+    # shorts (measured: an outline-sized band left 7/450 rows crossing).  GRT
+    # gcell height here is 8.4 um (16800 dbdu), origin 0 and uniform (every
+    # M5 guide box in after_grt.guide is 8.4 um tall on that grid), so snap
+    # each band to the containing rows.
+    set gph 16800
+    set nobs 0
+    foreach key [array names strap_of] {
+        lassign [split $key " "] nn y
+        # Rows that the strap (rail_center +/- 1.6 um = 3200 dbdu) touches.
+        set gy0 [expr {int(($y - 1600) / $gph) * $gph}]
+        set gy1 [expr {int(($y + 1600) / $gph) * $gph + $gph}]
+        # Note: the `isExceptPGNetsObstruction` setter is unusable from Tcl in
+        # this build (wrong-arity binding), so the band also nominally covers
+        # the PG nets.  That is harmless: the strap and its vias are special-
+        # net sboxes placed before routing, and GRT/DRT do not route them.
+        odb::dbObstruction_create $blk $l5 $xlo $gy0 $xhi $gy1
+        incr nobs
+    }
+    puts "\[INFO\] post_pdn: $nobs Metal5 strap-band obstructions"
+
     puts "\[INFO\] post_pdn: $nstrap macro rail straps, $nvia Via4"
 }
 
