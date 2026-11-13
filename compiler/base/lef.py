@@ -126,27 +126,7 @@ class lef:
                 layers.append(layer_name)
             else:
                 debug.info(2, "No {0} geometry: skipping obstruction layer.".format(layer_name))
-        # A power pin on the block's top routing layer is also reached by a
-        # chip-level strap on the metal one layer up; that band must be a
-        # blockage on the upper layer or signals cross the strap and short.
-        # Ensure the layer above each power pin is emitted even when the block
-        # draws nothing on it.
-        for pin_name in self.pins:
-            if self.get_pin_type(pin_name) in ["POWER", "GROUND"]:
-                for pin in self.get_pins(pin_name):
-                    above = self._layer_above(pin.layer)
-                    if above is not None and above not in layers:
-                        layers.append(above)
         return layers
-
-    def _layer_above(self, layer):
-        """ Routing layer one above `layer`, or None at the top of the stack. """
-        names = [l for l in self.lef_layers]
-        try:
-            idx = names.index(layer)
-        except ValueError:
-            return None
-        return names[idx + 1] if idx + 1 < len(names) else None
 
     def compute_abstract_blockages(self):
         # Start with blockages on all layers the size of the block
@@ -173,45 +153,20 @@ class lef:
         # rail stays a real pin for LVS/connectivity; only the OBS-free band
         # disappears.  dbObstruction is insufficient (TritonRoute treats it as
         # soft), so the coverage has to come from the master's own OBS.
-        # Seal the power rail bands on the layer *above* each rail, inflated
-        # ~17 um into the block.  A rail is reached top-down by a chip-level
-        # special-net strap on that upper layer; the thin pin-height OBS used
-        # earlier left a ~5.7 um stripe inside each ~16.8 um gcell, so GRT
-        # still counted the straddling gcell as routable and assigned guide
-        # edges across the strap.  DRT then had no legal path and shorted to
-        # the strap/pins - and re-rolled the same infeasible guides every
-        # pass, which is why runs oscillated instead of converging (run6/run7,
-        # 128x32).  Inflating the OBS to cover a full gcell height makes the
-        # band gcells show ~zero capacity so GRT detours around them; the
-        # ~20 um is under one routing track pitch below what a gcell spans.
-        # The pin layer itself keeps the original carve: the rail is a pin,
-        # and signals legally crossing it are the strap-ducking jogs DRT makes
-        # - they disappear once the M5 guides stop demanding the crossing.
-        band_h = 5.66 + self.m3_pitch
-        inflate = 17.0
-        top_edge = self.height - band_h
+        # Power/ground rails do NOT carve, and their own bbox is added as OBS
+        # so the perimeter-inset ring over the rail is covered too (the base
+        # blockage starts at perimeter_margin, leaving the outer sliver open).
+        # No OBS is emitted on the layer above the rail: the chip-level
+        # special-net strap is now kept off the M5 gcell rows at the design
+        # level (post_pdn.tcl dbObstruction), which also covers the channel/
+        # halo the macro OBS cannot reach.  A macro OBS skirt there only made
+        # DRT graze its edge (97 Metal5 markers in the 128x32 run13) without
+        # stopping the guide-level crossing.
         for pin_name in self.pins:
             if self.get_pin_type(pin_name) in ["POWER", "GROUND"]:
                 for pin in self.get_pins(pin_name):
-                    above = self._layer_above(pin.layer)
-                    if above is None or above not in self.blockages:
-                        continue
-                    # Cover the band the strap rides in, plus ~17 um inward,
-                    # on the layer above the rail.  Both top and bottom rails:
-                    # the bottom strap suffers the same guide-crossing, and a
-                    # 17 um skirt there is cheap because the bottom-edge
-                    # signal pins escape on the *rail* layer (M3/M4), not on
-                    # the layer above (their via lands below the band).
-                    (llx, lly), (urx, ury) = pin.rect[0], pin.rect[1]
-                    if lly > top_edge:               # top band
-                        ny1, ny2 = lly - inflate, self.height
-                    elif ury < band_h:               # bottom band
-                        ny1, ny2 = 0.0, ury + inflate
-                    else:                            # interior rail, skip
-                        continue
-                    self.blockages[above].append(pin_layout(
-                        "", [vector(llx, max(0.0, ny1)),
-                             vector(urx, min(self.height, ny2))], above))
+                    self.blockages[pin.layer].append(pin)
+                continue
             pins = self.get_pins(pin_name)
             for pin in pins:
                 inflated_pin = pin.inflated_pin(multiple=2)
