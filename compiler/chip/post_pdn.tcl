@@ -68,6 +68,38 @@ proc chip_post_pdn {} {
         }
         set bb [$inst getBBox]
 
+        # Collect the x-extents of every *signal* pin on this macro (bottom-
+        # edge dout/din/addr M3 slivers).  The strap->rail Via4 pads below are
+        # dropped on a fixed grid; a via landing within a pin column blocks
+        # that pin's vertical escape and produced 353 of run9's inst-source
+        # shorts.  Pre-compute the columns to avoid so the via loop can skip
+        # them; the grid pitch drops to 40 um (still >=2x denser than the
+        # ~154 um M4 core-strap feed) so density is not the constraint.
+        array unset sig_cols
+        array set sig_cols {}
+        foreach iterm [$inst getITerms] {
+            set net [$iterm getNet]
+            if {$net == "NULL"} {
+                continue
+            }
+            if {[lsearch -exact {VDD VSS} [$net getName]] >= 0} {
+                continue
+            }
+            foreach mpin [[$iterm getMTerm] getMPins] {
+                foreach box [$mpin getGeometry] {
+                    set x1 [expr {[$bb xMin] + [$box xMin]}]
+                    set x2 [expr {[$bb xMin] + [$box xMax]}]
+                    # Merge into a sorted list of [x1 x2] forbidden columns.
+                    set sig_cols($x1) $x2
+                }
+            }
+        }
+        # Flatten to a list of {x1 x2} pairs sorted by x1.
+        set forbidden {}
+        foreach x1 [lsort -real [array names sig_cols]] {
+            lappend forbidden [list $x1 $sig_cols($x1)]
+        }
+
         foreach iterm [$inst getITerms] {
             set net [$iterm getNet]
             if {$net == "NULL"} {
@@ -126,15 +158,33 @@ proc chip_post_pdn {} {
                     }
 
                     # Tie the rail to the strap along the whole macro so the
-                    # connection is distributed and not a single point.
+                    # connection is distributed and not a single point.  Skip
+                    # any candidate x that falls inside (or within ~2 um of) a
+                    # signal-pin column: the via pad would block that pin's
+                    # escape and DRT shorts to it instead.  The Via4 pad is
+                    # ~0.38 um wide on M4, so use the via half-width + a 2 um
+                    # escape margin as the keep-out radius.
+                    set keepout 6000
                     set x [expr {[$bb xMin] + 5000}]
                     while {$x <= [$bb xMax] - 2000} {
-                        if {![info exists via_done($key,$x)]} {
+                        set blocked 0
+                        foreach col $forbidden {
+                            set cx1 [expr {[lindex $col 0] - $keepout}]
+                            set cx2 [expr {[lindex $col 1] + $keepout}]
+                            if {$x >= $cx1 && $x <= $cx2} {
+                                set blocked 1
+                                break
+                            }
+                            if {$cx1 > $x} {
+                                break
+                            }
+                        }
+                        if {!$blocked && ![info exists via_done($key,$x)]} {
                             odb::dbSBox_create $strap_of($key) $via $x $y STRIPE
                             set via_done($key,$x) 1
                             incr nvia
                         }
-                        set x [expr {$x + 40000}]
+                        set x [expr {$x + 80000}]
                     }
                 }
             }
