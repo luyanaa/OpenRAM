@@ -7,7 +7,6 @@
 #
 import datetime
 from math import ceil
-from importlib import import_module, reload
 from openram import debug
 from openram.base import vector
 from openram.base import channel_route
@@ -16,6 +15,9 @@ from openram.base import verilog
 from openram.base import lef
 from openram.sram_factory import factory
 from openram.tech import spice
+from openram.tech import parameter
+from openram.tech import layer_indices
+from openram.tech import layer_properties as layer_props
 from openram import OPTS, print_time
 
 
@@ -25,8 +27,9 @@ class sram_1bank(design, verilog, lef):
     """
     def __init__(self, name, sram_config):
         design.__init__(self, name)
-        lef_layers = ["m1", "m2", "m3", "m4"]
-        if OPTS.tech_name == "icsprout55":
+        lef_layers = [name for name in ["m1", "m2", "m3", "m4"]
+                      if name in layer_indices]
+        if "m5" in layer_indices:
             lef_layers.append("m5")
         lef.__init__(self, lef_layers)
         verilog.__init__(self)
@@ -49,7 +52,7 @@ class sram_1bank(design, verilog, lef):
         except ImportError:
             # if no power_grid is specified by tech we use sensible defaults
             # Route a M3/M4 grid
-            self.supply_stack = self.m3_stack
+            self.supply_stack = self.top_stack
 
         # delay control logic does not have RBLs
         self.has_rbl = OPTS.control_logic != "control_logic_delay"
@@ -188,8 +191,11 @@ class sram_1bank(design, verilog, lef):
                 pin.transform([0, 0], instance.mirror, instance.rotate)
                 offset = [control_logic_offset[0] + pin.center()[0],
                           control_logic_offset[1] + pin.center()[1]]
+                # Label the pin on its own layer: the control outputs are on
+                # m2 in this technology, so a hard-coded m1 pad would be an
+                # isolated (min-area) m1 island instead of tagging the net.
                 self.add_layout_pin_rect_center("{0}{1}".format(pin.name, i),
-                                                storage_layer_name,
+                                                pin.layer,
                                                 offset)
 
     def create_netlist(self):
@@ -229,18 +235,26 @@ class sram_1bank(design, verilog, lef):
         highest_coord = self.find_highest_coords()
         self.width = highest_coord[0]
         self.height = highest_coord[1]
-        if OPTS.use_pex and OPTS.pex_exe[0] != "calibre":
-            debug.info(2, "adding global pex labels")
-            self.add_global_pex_labels()
         self.add_boundary(ll=vector(0, 0),
                           ur=vector(self.width, self.height))
 
         start_time = datetime.datetime.now()
-        if not OPTS.is_unit_test:
-            # We only enable final verification if we have routed the design
-            # Only run this if not a unit test, because unit test will also verify it.
-            self.DRC_LVS(final_verification=OPTS.route_supplies, force_check=OPTS.check_lvsdrc)
+        if not OPTS.is_unit_test and OPTS.check_lvsdrc:
+            # Check the complete macro even when inline checks are disabled.
+            # Physical supply connectivity is required only after supply routing.
+            # This check must run before the PEX probe labels are added: Magic
+            # turns those labels into top-level ports in the extracted netlist,
+            # which makes the top-level pin lists differ from the generated
+            # schematic ("Top level cell failed pin matching").
+            self.DRC_LVS(final_verification=bool(OPTS.route_supplies), force_check=True)
             print_time("Verification", datetime.datetime.now(), start_time)
+
+        # Add the PEX probe labels only after DRC/LVS has passed.  They are
+        # included in the final GDS written by sram.save() and give the
+        # extracted netlist readable bitcell storage and bitline node names.
+        if OPTS.use_pex and OPTS.pex_exe[0] != "calibre":
+            debug.info(2, "adding global pex labels")
+            self.add_global_pex_labels()
 
     def create_modules(self):
         debug.error("Must override pure virtual function.", -1)
@@ -265,6 +279,11 @@ class sram_1bank(design, verilog, lef):
                      bbox=bbox,
                      pin_type=OPTS.supply_pin_type)
         rtr.route()
+
+        # Technology-specific cleanup of the routed supply geometry.
+        from openram import tech
+        if hasattr(tech, "post_supply_route"):
+            tech.post_supply_route(self)
 
         if OPTS.supply_pin_type in ["left", "right", "top", "bottom", "ring"]:
             # Find the lowest leftest pin for vdd and gnd
@@ -369,11 +388,54 @@ class sram_1bank(design, verilog, lef):
                     for bit in range(self.num_spare_cols):
                         pins_to_route.append("spare_wen{0}[{1}]".format(port, bit))
 
+        # Keep hierarchy_layout's default escape stack: source pins may be on
+        # a lower metal than the highest available stack.
+        if self.top_layer == "m2":
+            # Strict two-metal technology: the generic escape router expects
+            # a third metal for its crossing layer.  Escape every top pin on
+            # m2 with a straight run to the nearest boundary instead.
+            self._escape_pins_2m(pins_to_route, bbox)
+            return
         from openram.router import signal_escape_router as router
-        rtr = router(layers=self.m3_stack,
+        rtr = router(layers=self.top_stack,
                      bbox=bbox,
                      design=self)
         rtr.route(pins_to_route)
+
+    def _escape_pins_2m(self, pin_names, bbox):
+        """Straight m2 escape for every top-level pin to the nearest edge."""
+        if bbox is None:
+            (nll, nur) = self.get_bbox(margin=0)
+        else:
+            (nll, nur) = bbox
+        seen = set()
+        for name in pin_names:
+            # snapshot: adding perimeter pins mutates the pin map
+            pins = list(self.get_pins(name))
+            for pin in pins:
+                c = pin.center()
+                if (name, round(c.x, 2), round(c.y, 2)) in seen:
+                    continue
+                seen.add((name, round(c.x, 2), round(c.y, 2)))
+                dist = {"left": c.x - nll.x, "right": nur.x - c.x,
+                        "bottom": c.y - nll.y, "top": nur.y - c.y}
+                side = min(dist, key=dist.get)
+                if side in ("left", "right"):
+                    x_edge = nll.x if side == "left" else nur.x
+                    self.add_path("m2", [c, vector(x_edge, c.y)],
+                                  width=self.m2_width)
+                    self.add_layout_pin_rect_center(text=name, layer="m2",
+                                                    offset=vector(x_edge, c.y),
+                                                    width=self.m2_width,
+                                                    height=self.m2_width)
+                else:
+                    y_edge = nll.y if side == "bottom" else nur.y
+                    self.add_path("m2", [c, vector(c.x, y_edge)],
+                                  width=self.m2_width)
+                    self.add_layout_pin_rect_center(text=name, layer="m2",
+                                                    offset=vector(c.x, y_edge),
+                                                    width=self.m2_width,
+                                                    height=self.m2_width)
 
     def compute_bus_sizes(self):
         """ Compute the independent bus widths shared between two and four bank SRAMs """
@@ -430,7 +492,7 @@ class sram_1bank(design, verilog, lef):
 
             # Horizontal data bus
             self.data_bus_names = ["DATA{0}[{1}]".format(port, i) for i in range(self.word_size)]
-            self.data_bus_positions = self.create_horizontal_pin_bus(layer="m3",
+            self.data_bus_positions = self.create_horizontal_pin_bus(layer=self.top_layer,
                                                                      pitch=self.m3_pitch,
                                                                      offset=self.data_bus_offset,
                                                                      names=self.data_bus_names,
@@ -470,7 +532,8 @@ class sram_1bank(design, verilog, lef):
         self.row_addr_dff = factory.create("dff_array", module_name="row_addr_dff", rows=self.row_addr_size, columns=1)
 
         if self.col_addr_size > 0:
-            self.col_addr_dff = factory.create("dff_array", module_name="col_addr_dff", rows=1, columns=self.col_addr_size)
+            self.col_addr_dff = factory.create("dff_array", module_name="col_addr_dff", rows=1, columns=self.col_addr_size,
+                                               dout_pin_extend=parameter.get("dff_dout_pin_extend", 0.0))
         else:
             self.col_addr_dff = None
 
@@ -484,31 +547,31 @@ class sram_1bank(design, verilog, lef):
 
         self.bank_count = 0
 
-        c = reload(import_module("." + OPTS.control_logic, "openram.modules"))
-        self.mod_control_logic = getattr(c, OPTS.control_logic)
-
         # Create the control logic module for each port type
         if len(self.readwrite_ports) > 0:
-            self.control_logic_rw = self.mod_control_logic(num_rows=self.num_rows,
-                                                           words_per_row=self.words_per_row,
-                                                           word_size=self.word_size,
-                                                           spare_columns=self.num_spare_cols,
-                                                           sram=self,
-                                                           port_type="rw")
+            self.control_logic_rw = factory.create(module_type=OPTS.control_logic,
+                                                    num_rows=self.num_rows,
+                                                    words_per_row=self.words_per_row,
+                                                    word_size=self.word_size,
+                                                    spare_columns=self.num_spare_cols,
+                                                    sram=self,
+                                                    port_type="rw")
         if len(self.writeonly_ports) > 0:
-            self.control_logic_w = self.mod_control_logic(num_rows=self.num_rows,
-                                                          words_per_row=self.words_per_row,
-                                                          word_size=self.word_size,
-                                                          spare_columns=self.num_spare_cols,
-                                                          sram=self,
-                                                          port_type="w")
+            self.control_logic_w = factory.create(module_type=OPTS.control_logic,
+                                                   num_rows=self.num_rows,
+                                                   words_per_row=self.words_per_row,
+                                                   word_size=self.word_size,
+                                                   spare_columns=self.num_spare_cols,
+                                                   sram=self,
+                                                   port_type="w")
         if len(self.readonly_ports) > 0:
-            self.control_logic_r = self.mod_control_logic(num_rows=self.num_rows,
-                                                          words_per_row=self.words_per_row,
-                                                          word_size=self.word_size,
-                                                          spare_columns=self.num_spare_cols,
-                                                          sram=self,
-                                                          port_type="r")
+            self.control_logic_r = factory.create(module_type=OPTS.control_logic,
+                                                   num_rows=self.num_rows,
+                                                   words_per_row=self.words_per_row,
+                                                   word_size=self.word_size,
+                                                   spare_columns=self.num_spare_cols,
+                                                   sram=self,
+                                                   port_type="r")
 
     def create_bank(self, bank_num):
         """ Create a bank  """
@@ -1080,7 +1143,8 @@ class sram_1bank(design, verilog, lef):
         self.add_layout_pins()
 
         # Some technologies have an isolation
-        self.add_dnwell(inflate=2.5)
+        if getattr(layer_props, "sram_dnwell_isolation", True):
+            self.add_dnwell(inflate=2.5)
 
         init_bbox = self.get_bbox()
         # Route the supplies together and/or to the ring/stripes.
@@ -1128,6 +1192,19 @@ class sram_1bank(design, verilog, lef):
             if port == 0:
                 offset = vector(self.control_logic_insts[port].rx() + self.dff.width,
                                 - self.data_bus_size[port] + 2 * self.m3_pitch)
+            else:
+                offset = vector(0,
+                                self.bank.height + self.m3_pitch)
+
+            # A technology whose dff row is sandwiched between m1 supply buses
+            # cannot use the m1_stack channel route: its via stacks land on
+            # those buses and its bank-side m1 leg crosses the decoder's own
+            # supply rail.  Both endpoints are clear on m2, so route the net
+            # there instead (see the technology's layer_properties).
+            if port == 0 and getattr(layer_props.bank, "col_addr_m2_route", False):
+                for bank_pin, dff_pin in route_map:
+                    self.route_col_addr_m2(bank_pin, dff_pin, offset)
+            elif port == 0:
                 cr = channel_route(netlist=route_map,
                                    offset=offset,
                                    layer_stack=layer_stack,
@@ -1138,8 +1215,6 @@ class sram_1bank(design, verilog, lef):
                 self.connect_inst([])
                 # self.add_flat_inst(cr.name, cr)
             else:
-                offset = vector(0,
-                                self.bank.height + self.m3_pitch)
                 cr = channel_route(netlist=route_map,
                                    offset=offset,
                                    layer_stack=layer_stack,
@@ -1149,6 +1224,30 @@ class sram_1bank(design, verilog, lef):
                 self.add_inst(cr.name, cr)
                 self.connect_inst([])
                 # self.add_flat_inst(cr.name, cr)
+
+    def route_col_addr_m2(self, bank_pin, dff_pin, offset):
+        """Route one column-address net on m2 from the bank input pad to the
+        column-address dff output pin.
+
+        The bank pad is m1 and the dff output is m2.  Keeping the whole run on
+        m2 and placing the only via directly on the bank pad avoids both the
+        dff-row m1 supply buses and the decoder's own m1 supply rails.
+        """
+        bank_pos = bank_pin.center()
+        dff_pos = dff_pin.center()
+
+        # Down from the pad, across on the (empty) m2 row just below the dff
+        # row, then onto the dff's m2 output pin.
+        self.add_path("m2",
+                      [bank_pos,
+                       vector(bank_pos.x, offset.y),
+                       vector(dff_pos.x, offset.y),
+                       dff_pos])
+
+        # Drop from the m1 pad to the m2 run at the pad itself.
+        self.add_via_stack_center(from_layer=bank_pin.layer,
+                                  to_layer="m2",
+                                  offset=bank_pos)
 
     def route_data_dffs(self, port, add_routes):
         route_map = []
@@ -1180,13 +1279,41 @@ class sram_1bank(design, verilog, lef):
         if len(route_map) > 0:
 
             # This layer stack must be different than the column addr dff layer stack
-            layer_stack = self.m4_stack if OPTS.tech_name == "icsprout55" else self.m3_stack
+            layer_stack = self.m4_stack if OPTS.tech_name == "icsprout55" else self.top_stack
             # Keep ICS55 data-DFF trunks off the M3 supply mesh.
             route_directions = ("V", "H") if OPTS.tech_name == "icsprout55" else None
+            if OPTS.tech_name == "gf180mcu" and OPTS.bitcell == "pbitcell":
+                # channel_route's default "pref" mapping puts the vertical
+                # escapes on m3 (m3 is vertical-preferred) and the tracks on
+                # m4.  On a write-only port the control-logic outputs have no
+                # s_en pin and therefore sit inside the vertical span of those
+                # escapes: the m3 w_en horizontal and the m3 pad of its via
+                # stack then touch the m3 data-channel verticals (DRC-invisible
+                # overlap, LVS reports din0 bus shorted to w_en).  Swap the
+                # mapping for the multiport path only: tracks on m3, escapes
+                # on m4, so the control layer is clear.
+                route_directions = ("H", "V")
             if port == 0:
                 # This is relative to the bank at 0,0 or the s_en which is routed on M3 also
                 if "s_en" in self.control_logic_insts[port].mod.pin_map:
                     y_bottom = min(0, self.control_logic_insts[port].get_pin("s_en").by())
+                elif OPTS.tech_name == "gf180mcu" and OPTS.bitcell == "pbitcell":
+                    # A write-only port has no s_en output, so all of its
+                    # control horizontals sit above the bank bottom.  The
+                    # band top is y_bottom + 2*m3_pitch; with y_bottom = 0 it
+                    # lands on the w_en horizontal (the top data track
+                    # touched w_en's m3 route and shorted din0_0 to w_en).
+                    # Place the band below the lowest control output.
+                    ctl_ys = []
+                    for sig in self.control_logic_outputs[port]:
+                        if "clk" in sig:
+                            continue
+                        try:
+                            ctl_ys.append(self.control_logic_insts[port].get_pin(sig).by())
+                        except Exception:
+                            pass
+                    y_bottom = ((min(0, min(ctl_ys)) if ctl_ys else 0)
+                                - 2 * self.m3_pitch - self.m3_width - self.m3_space)
                 else:
                     y_bottom = 0
 
@@ -1241,15 +1368,27 @@ class sram_1bank(design, verilog, lef):
 
             # This uses a metal2 track to the right (for port0) of the control/row addr DFF
             # to route vertically. For port1, it is to the left.
+            # Strict two-metal technologies may need extra escape room on the
+            # clk rail; keep the historical placement for the technologies
+            # that define an m3 stack.
+            strict_2m = "m3" not in layer_indices
             row_addr_clk_pin = self.row_addr_dff_insts[port].get_pin("clk")
             if port % 2:
                 control_clk_buf_pos = control_clk_buf_pin.lc()
-                row_addr_clk_pos = row_addr_clk_pin.lc()
+                if strict_2m:
+                    row_addr_clk_pos = vector(row_addr_clk_pin.lx() + 25.0,
+                                              row_addr_clk_pin.cy())
+                else:
+                    row_addr_clk_pos = row_addr_clk_pin.lc()
                 mid1_pos = vector(self.row_addr_dff_insts[port].lx() - self.m2_pitch,
                                   row_addr_clk_pos.y)
             else:
                 control_clk_buf_pos = control_clk_buf_pin.rc()
-                row_addr_clk_pos = row_addr_clk_pin.rc()
+                if strict_2m:
+                    row_addr_clk_pos = vector(row_addr_clk_pin.lx() + 25.0,
+                                              row_addr_clk_pin.cy())
+                else:
+                    row_addr_clk_pos = row_addr_clk_pin.rc()
                 mid1_pos = vector(self.row_addr_dff_insts[port].rx() + self.m2_pitch,
                                   row_addr_clk_pos.y)
 
@@ -1260,15 +1399,30 @@ class sram_1bank(design, verilog, lef):
                                       to_layer="m2",
                                       offset=clk_steiner_pos)
 
-            # Note, the via to the control logic is taken care of above
-            self.add_wire(self.m2_stack[::-1],
+            clk_wire_stack = getattr(self, "m2_stack", self.m1_stack[::-1])[::-1]
+            if row_addr_clk_pin.layer != clk_wire_stack[0]:
+                self.add_via_stack_center(from_layer=row_addr_clk_pin.layer,
+                                          to_layer=clk_wire_stack[0],
+                                          offset=row_addr_clk_pos)
+            self.add_wire(clk_wire_stack,
                           [row_addr_clk_pos, mid1_pos, clk_steiner_pos])
+            if strict_2m:
+                # Land the wire on the ML2 clk pin and merge the via pad with
+                # the ML2 clk rail (their 0.5 um slit is below the ML2 space
+                # rule; only tight two-metal technologies need this).
+                self.add_via_stack_center(from_layer=row_addr_clk_pin.layer,
+                                          to_layer=self.top_layer,
+                                          offset=row_addr_clk_pos)
+                self.add_rect(layer="m2",
+                              offset=row_addr_clk_pos - vector(1.0, 1.0),
+                              width=2.0,
+                              height=2.0)
 
             if self.col_addr_dff:
                 dff_clk_pin = self.col_addr_dff_insts[port].get_pin("clk")
                 dff_clk_pos = dff_clk_pin.center()
                 mid_pos = vector(clk_steiner_pos.x, dff_clk_pos.y)
-                self.add_wire(self.m2_stack[::-1],
+                self.add_wire(getattr(self, "m2_stack", self.m1_stack[::-1])[::-1],
                               [dff_clk_pos, mid_pos, clk_steiner_pos])
             elif port in self.write_ports:
                 data_dff_clk_pin = self.data_dff_insts[port].get_pin("clk")
@@ -1278,9 +1432,13 @@ class sram_1bank(design, verilog, lef):
                 # so make the wire as wide as the contacts
                 self.add_path("m2",
                               [mid_pos, clk_steiner_pos],
-                              width=max(self.m2_via.width, self.m2_via.height))
-                self.add_wire(self.m2_stack[::-1],
+                              width=max(getattr(self, "m2_via", self.m1_via).width, getattr(self, "m2_via", self.m1_via).height))
+                self.add_wire(getattr(self, "m2_stack", self.m1_stack[::-1])[::-1],
                               [data_dff_clk_pos, mid_pos, clk_steiner_pos])
+                if strict_2m:
+                    self.add_via_stack_center(from_layer=data_dff_clk_pin.layer,
+                                              to_layer=self.top_layer,
+                                              offset=data_dff_clk_pos)
 
     def route_control_logic(self):
         """
@@ -1294,21 +1452,57 @@ class sram_1bank(design, verilog, lef):
                     continue
                 src_pin = self.control_logic_insts[port].get_pin(signal)
                 dest_pin = self.bank_inst.get_pin(signal + "{}".format(port))
-                self.connect_vbus(src_pin, dest_pin)
+                if signal == "wl_en":
+                    # The bank exposes wl_en on a short m2 stub buried inside
+                    # its own footprint.  The default connect_vbus m2 vertical
+                    # would run straight through the bank's internal m2 supply
+                    # bands and silently short wl_en to vdd.  Route the whole
+                    # L on the top routing layer and only drop to the stub at
+                    # its far (upper) end, away from the supply bands.
+                    self.connect_control_buried(src_pin, dest_pin)
+                else:
+                    self.connect_vbus(src_pin, dest_pin)
 
         if self.has_rbl:
             for port in self.all_ports:
                 # Only input (besides pins) is the replica bitline
                 src_pin = self.control_logic_insts[port].get_pin("rbl_bl")
                 dest_pin = self.bank_inst.get_pin("rbl_bl_{0}_{0}".format(port))
-                self.add_wire(self.m3_stack,
+                self.add_wire(self.top_stack,
                               [src_pin.center(), vector(src_pin.cx(), dest_pin.cy()), dest_pin.rc()])
                 self.add_via_stack_center(from_layer=src_pin.layer,
-                                          to_layer="m4",
+                                          to_layer=self.top_stack[2],
                                           offset=src_pin.center())
                 self.add_via_stack_center(from_layer=dest_pin.layer,
-                                          to_layer="m3",
+                                          to_layer=self.top_stack[0],
                                           offset=dest_pin.center())
+
+    def connect_control_buried(self, src_pin, dest_pin):
+        """
+        Connect a control-logic output to a bank pin that is buried inside the
+        bank footprint, without crossing the bank's internal m2 shapes.
+
+        The L-shaped route is drawn entirely on the top routing layer and the
+        final drop to the destination pin is made at the far end of the pin,
+        which sits clear of any internal m2 supply bands.
+        """
+        if src_pin.cx() < dest_pin.cx():
+            in_pos = src_pin.rc()
+        else:
+            in_pos = src_pin.lc()
+        # Approach from the far (upper) end of the destination pin so the
+        # vertical run never passes over the bank's internal m2 metal.
+        out_pos = dest_pin.uc()
+        mid_pos = vector(out_pos.x, in_pos.y)
+        self.add_via_stack_center(from_layer=src_pin.layer,
+                                  to_layer=self.top_layer,
+                                  offset=in_pos)
+        # One polyline so wire_path inserts a corner square at the bend
+        # (two separate segments would leave a sub-minimum-width notch).
+        self.add_path(self.top_layer, [in_pos, mid_pos, out_pos])
+        self.add_via_stack_center(from_layer=self.top_layer,
+                                  to_layer=dest_pin.layer,
+                                  offset=out_pos)
 
     def route_row_addr_dff(self):
         """
@@ -1324,11 +1518,11 @@ class sram_1bank(design, verilog, lef):
                 bank_pos = bank_pin.center()
                 mid_pos = vector(bank_pos.x, flop_pos.y)
                 self.add_via_stack_center(from_layer=flop_pin.layer,
-                                          to_layer="m3",
+                                          to_layer=self.top_layer,
                                           offset=flop_pos)
-                self.add_path("m3", [flop_pos, mid_pos])
+                self.add_path(self.top_layer, [flop_pos, mid_pos])
                 self.add_via_stack_center(from_layer=bank_pin.layer,
-                                          to_layer="m3",
+                                          to_layer=self.top_layer,
                                           offset=mid_pos)
                 self.add_path(bank_pin.layer, [mid_pos, bank_pos])
 
