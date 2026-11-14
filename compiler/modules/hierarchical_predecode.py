@@ -15,6 +15,7 @@ from openram.tech import layer_indices
 from openram.tech import layer_stacks
 from openram.tech import preferred_directions
 from openram.tech import drc
+from openram.tech import layer
 from openram import OPTS
 
 
@@ -113,6 +114,8 @@ class hierarchical_predecode(design):
 
     def route_rails(self):
         """ Create all of the rails for the inputs and vdd/gnd/inputs_bar/inputs """
+        # Landing vias per rail, so stacked pads can be coalesced later.
+        self._rail_vias = {}
         input_names = ["in_{}".format(x) for x in range(self.number_of_inputs)]
         # Offsets for the perimeter spacing to other modules
         # This uses m3 pitch to leave space for power routes
@@ -190,6 +193,84 @@ class hierarchical_predecode(design):
         self.route_inputs_to_rails()
         self.route_output_ands()
         self.route_supplies()
+        self.merge_rail_vias()
+
+    def _track_rail_via(self, rail_x, y, via):
+        """Remember a via landing on a bus rail for later coalescing."""
+        if via is None:
+            return
+        if not hasattr(self, "_rail_vias"):
+            self._rail_vias = {}
+        self._rail_vias.setdefault(round(rail_x, 4), []).append((round(y, 4), via))
+
+    def merge_rail_vias(self):
+        """Coalesce stacked via landings that share one bus rail.
+
+        Several routes land on the same minimum-width decode rail at y offsets
+        that differ by less than the via pad height plus the layer spacing.
+        Each pad overhangs the rail, so the two pads leave narrow notches
+        between their overhanging corners.  On thick-oxide rules (gf180mcu
+        M2.2a) that 0.05 um notch is a spacing error.  The vias are all on the
+        same rail and therefore the same net, so one continuous pad spanning
+        them is always legal.
+        """
+        bus_space = getattr(self, self.bus_layer + "_space", None)
+        if bus_space is None:
+            return
+        for rail_x, entries in getattr(self, "_rail_vias", {}).items():
+            if len(entries) < 2:
+                continue
+            ys = sorted(y for y, _ in entries)
+            pad_w = entries[0][1].mod.second_layer_width
+            pad_h = entries[0][1].mod.second_layer_height
+            too_close = False
+            for i in range(len(ys) - 1):
+                gap = (ys[i + 1] - 0.5 * pad_h) - (ys[i] + 0.5 * pad_h)
+                if gap < bus_space - 1e-6:
+                    too_close = True
+                    break
+            if not too_close:
+                continue
+            lo = ys[0] - 0.5 * pad_h
+            hi = ys[-1] + 0.5 * pad_h
+            self.add_rect(layer=self.bus_layer,
+                          offset=vector(rail_x - 0.5 * pad_w, lo),
+                          width=pad_w,
+                          height=hi - lo)
+
+    def _input_y_offset(self, pin, index, inst=None):
+        """
+        Return the horizontal track y for gate input ``index`` of an AND cell.
+
+        Usually each input can be routed straight in at its own pin centre.
+        Some technologies, however, draw several AND inputs closer than a wire
+        plus spacing (gf180 and2_dec puts the A and B centres 0.07 um apart).
+        A later input drawn on the same layer would then overlap the earlier
+        track, so it is stepped to the cell-local side away from the gate's
+        internal gnd; a mirrored instance flips the local direction.  Both
+        route_inputs_to_rails and route_input_ands use this so their segments
+        land on the same decode rail.
+
+        A pin that the gate exposes on a different layer (the escaped and2_dec
+        B) is already clear of the input layer and is routed straight in.
+
+        The 1RW (cell1rw height) layout is signed off with this rule, so it is
+        kept as-is.  Technologies whose parameterized bitcell changes the gate
+        pin geometry can override this in a tech subclass (gf180mcu does for
+        its pbitcell path; see technology/gf180mcu/custom/
+        gf180_hierarchical_predecode3x8.py).
+        """
+        if pin.layer != self.input_layer:
+            return pin.cy()
+        if index == 0 or inst is None:
+            return pin.cy()
+        first_pin = inst.get_pin("A")
+        if abs(pin.cy() - first_pin.cy()) >= pin.height() + self.m1_space:
+            return pin.cy()
+        step = max(0.8, pin.height() + self.m1_space)
+        if getattr(inst, "mirror", "R0") == "MX":
+            return pin.cy() - index * step
+        return pin.cy() + index * step
 
     def route_inputs_to_rails(self):
         """ Route the uninverted inputs to the second set of rails """
@@ -207,7 +288,11 @@ class hierarchical_predecode(design):
             else:
                 debug.error("Too many inputs for predecoder.", -1)
 
-            y_offset = pin.cy()
+            # The AND cell may put several input pins at the same y (the gf180
+            # pnand2/and2_dec has A and B within 0.1 um).  Route each input on
+            # its own cell-local track above the pin so the jogs stay clear of
+            # the cell's internal m1 and the row-boundary supply strap.
+            y_offset = self._input_y_offset(pin, num, top_and_gate)
             in_pin = "in_{}".format(num)
             a_pin = "A_{}".format(num)
             in_pos = vector(self.input_rails[in_pin].cx(), y_offset)
@@ -215,23 +300,20 @@ class hierarchical_predecode(design):
             self.add_path(self.input_layer, [in_pos, a_pos])
 
             if(layer_props.hierarchical_predecode.force_horizontal_input_contact):
-                self.add_via_stack_center(from_layer=self.input_layer,
-                                        to_layer=self.bus_layer,
-                                        offset=[self.input_rails[in_pin].cx(), y_offset],
-                                        directions= ("H", "H"))
-
-                self.add_via_stack_center(from_layer=self.input_layer,
-                                        to_layer=self.bus_layer,
-                                        offset=[self.decode_rails[a_pin].cx(), y_offset],
-                                        directions=("H", "H"))
+                dirs = ("H", "H")
             else:
-                self.add_via_stack_center(from_layer=self.input_layer,
-                                        to_layer=self.bus_layer,
-                                        offset=[self.input_rails[in_pin].cx(), y_offset])
+                dirs = None
 
-                self.add_via_stack_center(from_layer=self.input_layer,
-                                        to_layer=self.bus_layer,
-                                        offset=[self.decode_rails[a_pin].cx(), y_offset])
+            in_via = self.add_via_stack_center(from_layer=self.input_layer,
+                                               to_layer=self.bus_layer,
+                                               offset=[self.input_rails[in_pin].cx(), y_offset],
+                                               directions=dirs)
+            a_via = self.add_via_stack_center(from_layer=self.input_layer,
+                                              to_layer=self.bus_layer,
+                                              offset=[self.decode_rails[a_pin].cx(), y_offset],
+                                              directions=dirs)
+            self._track_rail_via(self.input_rails[in_pin].cx(), y_offset, in_via)
+            self._track_rail_via(self.decode_rails[a_pin].cx(), y_offset, a_via)
     def route_output_ands(self):
         """
         Route all conections of the outputs and gates
@@ -287,7 +369,14 @@ class hierarchical_predecode(design):
             # since this is where the p/n devices are and there are no
             # pins in the and gates.
             inv_out_pos = inv_out_pin.rc()
-            y_offset = (inv_num + 1) * self.inv.height - self.output_layer_pitch
+            # Some technologies draw the AND cell supplies as horizontal straps
+            # centred on the cell boundary (the ``else`` branch of
+            # route_supplies).  Those straps are added *after* this route, so
+            # leave extra room below the boundary for the via landing to clear
+            # them; the default of 0 keeps the historical behaviour.
+            supply_clearance = getattr(layer_props.hierarchical_predecode,
+                                       "output_route_supply_clearance", 0)
+            y_offset = (inv_num + 1) * self.inv.height - self.output_layer_pitch - supply_clearance
             rail_pos = vector(self.decode_rails[out_pin].cx(), y_offset)
 
             # create via for dimensions
@@ -332,10 +421,11 @@ class hierarchical_predecode(design):
             self.add_via_stack_center(from_layer=inv_out_pin.layer,
                                       to_layer=self.output_layer,
                                       offset=inv_out_pos)
-            self.add_via_stack_center(from_layer=self.output_layer,
-                                      to_layer=self.bus_layer,
-                                      offset=rail_pos,
-                                      directions=self.bus_directions)
+            out_rail_via = self.add_via_stack_center(from_layer=self.output_layer,
+                                                     to_layer=self.bus_layer,
+                                                     offset=rail_pos,
+                                                     directions=self.bus_directions)
+            self._track_rail_via(rail_pos.x, rail_pos.y, out_rail_via)
 
     def route_input_ands(self):
         """
@@ -358,15 +448,26 @@ class hierarchical_predecode(design):
                 debug.error("Invalid number of nand inputs for decode", -1)
 
             # this will connect pins A,B or A,B,C or A,B,C,D
-            for rail_pin, gate_pin in zip(index_lst, gate_lst):
-                pin = self.and_inst[k].get_pin(gate_pin)
+            for gate_index, (rail_pin, gate_pin) in enumerate(zip(index_lst, gate_lst)):
+                inst = self.and_inst[k]
+                pin = inst.get_pin(gate_pin)
                 pin_pos = pin.center()
-                rail_pos = vector(self.decode_rails[rail_pin].cx(), pin_pos.y)
-                self.add_path(self.input_layer, [rail_pos, pin_pos])
-                self.add_via_stack_center(from_layer=self.input_layer,
-                                          to_layer=self.bus_layer,
-                                          offset=rail_pos,
-                                          directions=self.bus_directions)
+                # Give every gate input its own horizontal track so two inputs
+                # drawn at the same y cannot short their rails.  The offset must
+                # be in cell-local space (a mirrored instance flips it), and the
+                # segment jogs into the pin centre.  An input the gate exposes
+                # on another layer (the escaped and2_dec B) is routed straight
+                # at its pin centre and via-ed down to the input layer.
+                y_offset = self._input_y_offset(pin, gate_index, inst)
+                rail_pos = vector(self.decode_rails[rail_pin].cx(), y_offset)
+                self.add_path(self.input_layer, [rail_pos,
+                                                 vector(pin_pos.x, y_offset),
+                                                 pin_pos])
+                rail_via = self.add_via_stack_center(from_layer=self.input_layer,
+                                                     to_layer=self.bus_layer,
+                                                     offset=rail_pos,
+                                                     directions=self.bus_directions)
+                self._track_rail_via(rail_pos.x, rail_pos.y, rail_via)
                 self.input_and_rail_pos.append(rail_pos)
                 if gate_pin == "A":
                     direction = None

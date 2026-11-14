@@ -7,6 +7,7 @@
 #
 import os
 from openram import drc as d
+from openram import OPTS
 
 """
 File containing the process technology parameters for Global Foundaries 180nm
@@ -24,7 +25,33 @@ File containing the process technology parameters for Global Foundaries 180nm
 tech_modules = d.module_type()
 
 tech_modules["bitcell_1port"] = "gf180_bitcell"
-tech_modules["nand2_dec"] = "nand2_dec"
+# The parameterized multiport bitcell needs two gf180-local fixes (storage
+# cross-couple contact separation; see custom/gf180_pbitcell.py).  The
+# replica/dummy wrappers instantiate this through the factory, so both pick
+# the subclass up automatically once the cell is selected.
+tech_modules["pbitcell"] = "gf180_pbitcell"
+# Use the parameterized NAND for the decoders.  The legacy hard cell in
+# gds_lib (gf180mcu_3v3__nand2_1_dec) is only 2.71 um tall, while the
+# parameterized inverter/NAND gate needs >= ~4.1 um at this technology's
+# 0.57 um minimum diffusion width; the decoder cells are sized to the bitcell
+# height (4.84 um), so the hard cell cannot be paired with them.
+tech_modules["nand2_dec"] = "pnand2"
+# No extracted sense-amp macro exists for this process; the PDK only ships
+# the large single-ended column blocks of the GF 018SRAM IP.  Use the
+# parameterized latch amplifier in custom/gf180_sense_amp.py instead.
+tech_modules["sense_amp"] = "gf180_sense_amp"
+tech_modules["write_driver"] = "gf180_write_driver"
+# The vdd tap of the generic precharge sits 0.27 um from the br stripe, just
+# under this technology's 0.28 um m2 spacing; shift the tap 0.03 um left.
+tech_modules["precharge"] = "gf180_precharge"
+# The array keeps its vdd/gnd rails on the leaf m1 layer: a via stack up to
+# the m4 power grid at the pin centre would collide with the amp's own m3
+# bitline trunks and m1 output straps (see custom/gf180_sense_amp_array.py).
+tech_modules["sense_amp_array"] = "gf180_sense_amp_array"
+# The write-driver/sense-amp bitline bridge must run on m3: the generic
+# port_data route uses the sense amp's m2 bitline pin and would cross (and
+# short to) the amp's m2 supply trunks.  See custom/gf180_port_data.py.
+tech_modules["port_data"] = "gf180_port_data"
 
 ###################################################
 # Custom cell properties
@@ -34,14 +61,12 @@ cell_properties = d.cell_properties()
 # is there a better way to tell if the user overrode the port order than this?
 # this is needed to correctly create the bitcell_pins list in the bitcell_base_array
 cell_properties.override_bitcell_1port_order = True
-cell_properties.bitcell_1port.port_order = ['bl', 'br', 'gnd', 'vdd', 'vpb', 'vnb', 'wl']
-cell_properties.bitcell_1port.port_types = ["OUTPUT", "OUTPUT", "GROUND", "POWER", "BIAS", "BIAS", "INPUT"]
+cell_properties.bitcell_1port.port_order = ['bl', 'br', 'wl', 'vdd', 'gnd']
+cell_properties.bitcell_1port.port_types = ["OUTPUT", "OUTPUT", "INPUT", "POWER", "GROUND"]
 cell_properties.bitcell_1port.port_map = {'bl': 'BL',
                                           'br': 'BR',
                                           'wl': 'WL',
                                           'vdd': 'VDD',
-                                          'vnb': 'pwell',
-                                          'vpb': 'nwell',
                                           'gnd': 'GND'}
 
 cell_properties.bitcell_1port.wl_layer = "m3"
@@ -49,12 +74,58 @@ cell_properties.bitcell_1port.bl_layer = "m2"
 cell_properties.bitcell_1port.vdd_layer = "m1"
 cell_properties.bitcell_1port.gnd_layer = "m1"
 
+# There is only one physical bitcell (cell1rw) in this technology.  The replica
+# column and the dummy columns use the same 6T cell - the replica bitcell
+# differs only in how the column is biased/used, and the dummy cell only needs
+# to present the same bitline/wordline load.  Point both at the extracted cell
+# instead of shipping byte-identical copies of the GDS/SPICE under other names.
+cell_properties.names["replica_bitcell_1port"] = "cell1rw"
+cell_properties.names["dummy_bitcell_1port"] = "cell1rw"
+tech_modules["replica_bitcell_1port"] = "gf180_replica_bitcell"
+tech_modules["dummy_bitcell_1port"] = "gf180_dummy_bitcell"
+# cell1rw has no room for a well tie inside its pitch, so the outer dummy
+# column uses a tapped copy of the same cell.  The wells are continuous across
+# columns, so one tapped column ties every nwell/pwell band in the array.
+# The multiport (pbitcell) path must NOT register this: the tap cell is a
+# 1-port hard macro (`cell1rw_tap`, five pins) while pbitcell exposes one
+# pair of pins per port, so dummy_array would build it with the wrong pin
+# count.  pbitcell arrays draw their own wells and need no tap cell (this is
+# the contract every other pbitcell technology in the repo follows).
+if getattr(OPTS, "bitcell", "bitcell") != "pbitcell":
+    tech_modules["tap_bitcell"] = "gf180_tap_bitcell"
+# The 3-input predecode is only reached with a row address >= 5 bits.  At the
+# pbitcell height its and3_dec pin pitch collides with the historical input
+# track step, so the pbitcell path uses a subclass with a clearance-based
+# track assignment (custom/gf180_hierarchical_predecode3x8.py).  The 1RW path
+# keeps the historical class and therefore its signed-off layout.
+if getattr(OPTS, "bitcell", "bitcell") == "pbitcell":
+    tech_modules["hierarchical_predecode3x8"] = "gf180_hierarchical_predecode3x8"
+
+# cell1rw is drawn with 0.34 um of well overhang on every side, so its
+# boundary layer (0/0) bbox is 3.68 x 5.18.  The abutment pitch used by the
+# foundry array is 3.0 x 4.5.  Adjacent cells are intended to overlap: the
+# columns share the poly/wordline strapping (0.36 um) and the mirrored row
+# pairs merge their nmos and pmos diffusions (0.42 um each).  Place the array
+# on this logical pitch while keeping the drawn GDS untouched.
+cell_properties.bitcell_1port.array_size = (3.0, 4.5)
+
 cell_properties.nand2_dec.port_order = ['A', 'B', 'Z', 'vdd', 'gnd']
 cell_properties.nand2_dec.port_map = {'A': 'A',
                                       'B': 'B',
                                       'Z': 'Z',
                                       'vdd': 'VDD',
                                       'gnd': 'GND'}
+
+# DFF hard cell: gf180mcu_fd_sc_mcu7t5v0__dffq_1, re-exported as gf180_dff
+# (see gds_lib/gf180_dff.gds and sp_lib/gf180_dff.sp).  The PDK cell labels are
+# D/CLK/Q/VDD/VSS; VSS is renamed to GND in both views.
+cell_properties.dff.port_order = ['D', 'Q', 'clk', 'vdd', 'gnd']
+cell_properties.dff.port_map = {'D': 'D',
+                                'Q': 'Q',
+                                'clk': 'CLK',
+                                'vdd': 'VDD',
+                                'gnd': 'GND'}
+cell_properties.names["dff"] = "gf180_dff"
 
 
 cell_properties.ptx.model_is_subckt = True
@@ -67,6 +138,103 @@ cell_properties.names["nand2_dec"] = ["gf180mcu_3v3__nand2_1_dec"]
 # Custom layer properties
 ###################################################
 layer_properties = d.layer_properties()
+# The channel router drops the bitline pins from m2 to m1 at each cell edge.
+# Its m1 via landing is 0.26 + 2*0.15 = 0.56 um tall, and the precharge's m1
+# vdd rail sits 0.04 um below the cell edge, so the landing shorts to (or at
+# best violates 0.04 um of) the supply rail.  Use the m2 z-jog instead: the
+# precharge-to-sense-amp channel is only ~2.5 um tall and empty on m2.
+layer_properties.port_data.channel_route_bitlines = False
+# The predecoder draws its AND-cell supplies as horizontal m1 straps centred
+# on the cell boundary.  Its output-inverter rail is placed one m1 pitch below
+# that boundary, which leaves only 0.08 um between the m1->m2 via landing and
+# the supply strap (rule: 0.23).  Shift the output rail down 0.16 um so the
+# landing clears the strap while staying inside the row.
+layer_properties.hierarchical_predecode.output_route_supply_clearance = 0.16
+# The generic RBL driver routes its B input to vdd with an m1 jog 3 m1 pitches
+# to the left.  That jog crosses the A input (shorts wl_en to vdd) and lands
+# 0.09 um from the A via stack.  Tie B at its own pin instead.
+layer_properties.port_address.rbl_supply_at_pin = True
+# The pgate of the pnand2/pinv cells is drawn 0.6 um beyond the declared cell
+# width, so the row decoder's n-well reaches its declared right edge + 0.6.
+# Abutting the wordline driver array there leaves only 0.12 um to its n-well
+# (rule: 0.6).  Shift the driver array by the pgate overhang.
+layer_properties.port_address.decoder_driver_spacing = 0.6
+# The wordline via stack landing pad is 0.38 um wide while the minimum m3
+# width is 0.28.  Drawing the via-to-bitcell route at the minimum width leaves
+# a 0.05/0.08 um notch against the pad (rule: 0.28).  Use the pad width.
+layer_properties.bank.wordline_via_strap = True
+# The pinvbuf clock/column buffer exposes its vdd/gnd as full-width m1 rails of
+# 10.16 um.  bank.route_supplies punches an m1->m3 via stack on each one; at the
+# rail centre the 0.26x0.56 m1 pad lands 0.16 um from the second inverter's
+# output strap (M1.2a).  The last ~1.07 um of every rail is empty m1, so put the
+# stack 0.66 um in from the right edge: the pad spans 0.53..0.79 from the edge
+# and keeps 0.28 to the nearest signal strap.  This inset stack is the only
+# supply landing exposed for these rails; copying the full-width m1 pin too
+# would let the top-level router punch a second stack at the rail centre.
+layer_properties.bank.supply_via_inset_from_right = 0.66
+# The bank's control bus is a full-height m2 stripe in the channel between the
+# column decoder and the port data.  Carrying the column-mux select lines
+# across it with the default m1_stack route (m1 trunk, m2 jog) shorts every
+# select line to p_en_bar/s_en/w_en.  Flip the channel to its non-preferred
+# directions instead: m2 vertical trunks in the empty channel, m1 horizontal
+# jogs passing *under* the m2 bus.  (Raising the channel to m3/m4 instead
+# collides with the supply grid.)
+layer_properties.bank.column_select_directions = "nonpref"
+# The column-mux select rails are drawn on m1 at the m1 pitch (0.49), but
+# bank.route_column_address_lines routes each of them to the column decoder
+# with a horizontal m2 run at the rail's y, and each run ends in a 0.38 um m2
+# via pad landing on a 0.56 um tall m1 pad.  Two adjacent runs then sit 0.49
+# apart with 0.38 pads -- i.e. 0.11 of m2 space where 0.28 is required
+# (M2.2a) -- and the pads touch the neighbouring via's enclosure (V1.4).
+# The binding constraint is the m1 landing pad: 0.56 + 0.23 = 0.79.  Use 0.80
+# for the select rails so both the runs and the pads clear.
+layer_properties.column_mux_array.select_pitch = 0.80
+# The dff row is sandwiched between the m1 vdd/gnd buses, and the column
+# decoder's input pad sits above the pinvbuf's own bottom gnd rail.  The
+# default m1_stack column-address channel route therefore lands its via
+# stacks on the dff-row buses and runs its bank-side m1 leg through the gnd
+# rail, shorting every column address to both supplies.  Both endpoints are
+# clear on m2 (the row just below the dff is empty except for the route), so
+# run the whole net on m2 and drop to the bank pad with a single via there.
+layer_properties.bank.col_addr_m2_route = True
+# The gf180mcu foundry SRAM macros do not use a deep n-well isolation plane
+# (their GDS has no 12/0 shapes).  Drawing one over the whole macro with
+# add_dnwell also draws an n-well moat ring, which violates DF.4b/NW.5 against
+# the standard-cell n-wells and adds NW.2a spacing failures.  Skip it.
+layer_properties.sram_dnwell_isolation = False
+# The sense-amp and write-driver cells have their vdd/gnd leaf rails only one
+# m2 pitch apart.  Promoting both to full-width m3 straps puts two 0.38 um
+# tall m3 stripes 0.405 um apart over the whole array (rule: 0.28) and, worse,
+# lays them across the m3 supply mesh.  Keep the leaf rails on their own layer
+# and let the top-level supply router join them with individual via pads,
+# which land at the (much wider) vdd and gnd rail x positions.
+layer_properties.supply_promote_leaf_rails = False
+# The pins A/B/C are staggered by only 0.125 um in y, so m1 runs at the pin y
+# merge the three rails of a row (and through the shared rails all 12 predecode
+# nets); LVS on the 128x32 macro reported exactly that.  The pin columns have no
+# room for an m1 vertical escape (the nand3 m1 plate sits 0.1..0.4 um above each
+# pad), but they accept an m1->m3 via stack.  Place all three horizontally-run
+# m3 tracks above the pin band, ordered A < B < C.  The vertical jog at pin x is
+# only crossed by horizontals of inputs whose pin lies further right, so with
+# this order no jog crosses a foreign track.  Each track also passes over the
+# rail-side via pads of the inputs further right (A over B/C, B over C), so the
+# center-to-center separation must be at least 0.14 (half track) + 0.19 (half
+# via pad) + 0.28 (M3 spacing) = 0.61 um.  The previous 0.60/0.61 spacing left
+# 0.27 between the A track and the B rail pad: 128 M3 spacing errors (two
+# markers per row).  Use 0.66 for B and C.  A is different: the pin jog is the
+# 0.28-wide wire over a 0.38-wide pin pad, which always leaves a 0.05-wide step
+# at the pad edge.  Magic flags that step as an M3 notch while the pocket
+# between the A track and the pin pad is shorter than 0.28 (it was 0.21).  Put
+# A low enough that the track overlaps its own pin pad (pad top is pin y +
+# 0.19, track bottom is offset - 0.14; 2.18 gives a 0.04 um overlap), which
+# removes the pocket.  The higher B/C jogs have pockets taller than 0.28 and
+# are not flagged.  The top track stays at 3.77 so its pad top (3.96) is
+# still more than the 0.66 um bar-avoidance buffer below the predecode bars at
+# the row boundary (4.5), and no bar gets pushed onto a track.  (A first
+# attempt put A above the pins and B/C below; the bar placer then pushed a bar
+# to B's track y and shorted two rails.)
+layer_properties.hierarchical_decoder.input_route_layer = "m3"
+layer_properties.hierarchical_decoder.input_track_offsets = (2.18, 3.11, 3.77)
 
 ###################################################
 # GDS file info
@@ -133,7 +301,7 @@ preferred_directions = {"poly": "V",
 # Power grid
 ###################################################
 # Use M3/M4
-power_grid = m4_stack
+power_grid = m3_stack
 
 ###################################################
 ##GDS Layer Map
@@ -167,27 +335,31 @@ label_purpose = 10
 #use_purpose = {}
 
 # Layer names for external PDKs
+# LEF layer names must match the PDK tech LEF verbatim: OpenROAD is
+# case-sensitive and a macro pin on an undefined layer gets no physical
+# location, which makes the floorplanner fail with "Can not find physical
+# location of iterm".  The PDK names are Pwell/Nwell/Poly2/CON/Metal1..5.
 layer_names = {}
-layer_names["active"]  = "active"
-layer_names["pwell"]   = "pwell"
-layer_names["nwell"]   = "nwell"
-layer_names["dnwell"]   = "dnwell"
-layer_names["nimplant"]= "nimplant"
-layer_names["pimplant"]= "pimplant"
-layer_names["poly"]    = "poly"
-layer_names["contact"] = "contact"
-layer_names["m1"]      = "metal1"
-layer_names["via1"]    = "via1"
-layer_names["m2"]      = "metal2"
-layer_names["via2"]    = "via2"
-layer_names["m3"]      = "metal3"
-layer_names["via3"]    = "via3"
-layer_names["m4"]      = "metal4"
-layer_names["via4"]    = "via4"
-layer_names["m5"]      = "metal5"
-layer_names["text"]    = "text"
+layer_names["active"]  = "Comp"
+layer_names["pwell"]   = "Pwell"
+layer_names["nwell"]   = "Nwell"
+layer_names["dnwell"]   = "DNwell"
+layer_names["nimplant"]= "Nplus"
+layer_names["pimplant"]= "Pplus"
+layer_names["poly"]    = "Poly2"
+layer_names["contact"] = "CON"
+layer_names["m1"]      = "Metal1"
+layer_names["via1"]    = "Via1"
+layer_names["m2"]      = "Metal2"
+layer_names["via2"]    = "Via2"
+layer_names["m3"]      = "Metal3"
+layer_names["via3"]    = "Via3"
+layer_names["m4"]      = "Metal4"
+layer_names["via4"]    = "Via4"
+layer_names["m5"]      = "Metal5"
+layer_names["text"]    = "TEXT"
 layer_names["mem"]     = "SramCore"
-layer_names["boundary"]= "boundary"
+layer_names["boundary"]= "PR_bndry"
 
 ###################################################
 # DRC/LVS Rules Setup
@@ -197,10 +369,92 @@ layer_names["boundary"]= "boundary"
 parameter={}
 
 parameter["min_tx_size"] = 0.250
-parameter["beta"] = 3
+# The parameterized logic gates (pinv/pnand/ptx) are laid out at the bitcell
+# height (4.84 um for cell1rw).  With the gf180 contact-constrained diffusion
+# width (minwidth_tx = 0.57 um) a beta of 3 needs a 1.71 um PMOS, which does
+# not fit in the ~1.55 um of transistor height available per device and forces
+# a second finger - that in turn shrinks the NMOS below the minimum width.
+# beta=2 (1.14 um PMOS) fits a single finger and is the ratio used by the
+# other 180 nm-class technologies in this repo (scn3me/scn4m).
+#
+# The DFF hard macro (gf180mcu_fd_sc_mcu7t5v0__dffq_1) is 3.92 um tall and its
+# rails sit on the cell boundary, so every gate that the control logic builds
+# at dff_height (pinv, pand2, pbuf, pdriver) must fit 3.92 um.  There the
+# single-device height available is ~1.07 um, and the number of fingers is
+# ceil(beta*size*minwidth_tx / 1.07); the finger width then has to stay at or
+# above minwidth_tx, i.e. ceil(0.533*beta*size) <= size.  That holds only for
+# beta <= 1.877, so the global ratio is 1.8 here.  The 4.84 um decoder gates
+# still fit comfortably at this ratio (limit 2.68).
+parameter["beta"] = 1.8
+# The gf180mcu hard DFF is only 3.92 um tall.  Building the control logic
+# parameterized gates at that height puts the pmos n-well 0.265 um from the
+# nmos diffusion (DF.8 requires 0.43) and trips several device rules.  Use the
+# same 4.84 um gate height that the wordline driver/decoder cells are built at.
+parameter["control_logic_height"] = 6.0
+# The column decoder's parameterized gates have the same problem: a generated
+# inverter at the hard flop's height (4.05 um) has its nmos source strap
+# 0.005 um from the output pin, and a supply via punched at the buffer's rail
+# centre lands 0.18 um from an internal signal strap.  Build them at the same
+# 6.0 um height as the control logic.
+parameter["column_decoder_gate_height"] = 6.0
+# Three-input gates exported to a shared m1/m2 bus channel need enough vertical
+# room between their input pins: an exported gate pin is a 0.63 um tall m1
+# rectangle (poly contact + m1 enclosure) and the neighbouring signal's 0.26 um
+# m1 stub is routed at the next pin's y, so the pitch must clear
+# 0.63/2 + 0.13 + 0.23 = 0.675 um, and the m1 landing pads of the m1->m2 vias
+# (0.56 um tall) must clear each other by 0.56 + 0.23 = 0.79 um.  0.80 um
+# satisfies both.  The gate height is raised to 6.0 um so the three contacts
+# still fit below the pmos gate / output route.
+parameter["pnand3_input_pitch"] = 0.8
+# Height (inside the 3.92 um hard flop) of the dff_array's horizontal m3 clock
+# rail.  The flop's D pin (m2) is at y=1.96 and the top level promotes it to a
+# 0.38 um m3 pad at y 1.77-2.15.  The default rail height 2*m3_pitch+m3_width
+# = 1.60 would leave only 0.03 um to that pad (M3.2a).  Putting the rail at
+# 1.25 (1.11-1.39) restores 0.38 um and still clears every m2 pin.
+parameter["dff_clk_rail_y"] = 1.25
+# The hard flop's VDD and GND pins are both centred at x=1.65 (0.38 um wide),
+# so a vdd strap at the pin's left edge and a gnd strap at its right edge
+# abut exactly on m4 (short) and leave the supply router no via3 landing on
+# the vdd strap.  The flop's m1 supply rails span the full 16.24 um cell
+# width, so move the ground strap 0.38 um right of the pin and extend the
+# ground pin to it.  This leaves 0.10 um of margin over the 0.28 um m4
+# spacing rule.
+parameter["dff_gnd_tap_xshift"] = 0.38
+# The hard flop's Q pin (m2, 0.20 um tall at y 1.20-1.40 of the dff_array cell)
+# leaves only 0.26 um to the neighbouring flop's m1 strap above it, so the
+# column-address channel route's via stack at pin.uc() overlapped the flop's
+# Q via1 (hierarchical DRC: "can't abut or partially overlap between
+# subcells").  Grow the exported dout pin by 0.40 um so the route lands its
+# via stack 0.40 um higher, clear of both the flop's m1 strap and its via1.
+# Only the column-address dff array uses this (rows=1, so an upward growth
+# cannot run into a row above).
+parameter["dff_dout_pin_extend"] = 0.40
+# The pgate well tap of a parameterized gate is drawn past the declared cell
+# width; the neighbouring pdriver's tap does not abut it here, so pand2/pand3
+# must give their embedded NAND its own nwell tap (otherwise the nwell is a
+# floating net in extraction).
+parameter["pand_nand_add_wells"] = True
 
+# Parameterized multiport bitcell (pbitcell) device widths.  The gf180mcu port
+# never drew a pbitcell before this point, so the upstream placeholder values
+# (PMOS 0.95) were never tuned: they made the access transistor weaker than the
+# pull-up (access/PU = 0.63), which breaks 6T write-ability.  All three devices
+# are drawn at the pbitcell's single channel length, so the ratios are set by
+# width alone.  Derived from the vendor cell1rw device table
+# (technology/gf180mcu/sp_lib/cell1rw.sp: pull-down nfet w=0.95u, pull-up pfet
+# w=0.6u, access nfet w=0.6u, all >= this technology's 0.57 um minwidth_tx):
+#   - storage-inverter NMOS = num_rw_ports * 6T_inv_nmos_size, so 2RW gives
+#     PD/access = (2*0.6)/0.6 = 2.0 (read stability) and PD/PU = 2.0.
+#   - access/PU = 0.6/0.6 = 1.0 (write-ability; the vendor cell runs a weaker
+#     access only by using a longer 0.77 um access channel, which pbitcell
+#     cannot express).
+#   - the no-RW (1W+1R) branch scales its inverter NMOS as 2*6T_inv_pmos_size
+#     and its dedicated read device the same way, giving the same PD/PU = 2.0
+#     and a 1.2 um read device.
+# Electrical margin (SNM/write margin SPICE) is a follow-up; the characterizer
+# is not part of this entry.
 parameter["6T_inv_nmos_size"] = 0.6
-parameter["6T_inv_pmos_size"] = 0.95
+parameter["6T_inv_pmos_size"] = 0.6
 parameter["6T_access_size"] = 0.6
 drc = d.design_rules("gf180")
 
@@ -238,6 +492,10 @@ drc["poly_to_contact"] = 0
 #drc["active_enclose_gate"] = 0.075
 
 drc["poly_to_active"] = 0.1
+
+# CO.8: space from a Poly2 contact to COMP.  Used for the gate contact that
+# sits between the NMOS and PMOS stripes.
+drc["poly_contact_to_active"] = 0.17
 
 #drc["poly_to_field_poly"] = 0.210
 
@@ -291,7 +549,7 @@ drc.add_enclosure("poly",
                   enclosure=0.07,
                   extension=0.07)
 
-drc["active_contact_to_gate"] = 0.15
+drc["active_contact_to_gate"] = 0.18
 
 drc["poly_contact_to_gate"] = 0.165
 
@@ -373,11 +631,13 @@ drc.add_layer("via4",
               width=0.26,
               spacing=0.26)
 
-# Magic wants 0.36um width but PDK says 0.28
+# gf180mcuD.tech: MT.1 width 0.44, MT.2a spacing 0.46, MT.4 area 0.5265.
+# Metal5 is the thick top metal and is much wider than m1-m4; using the
+# 0.28 um lower-metal value produced MT.1/MT.2a errors on every supply strap.
 drc.add_layer("m5",
-              width=0.36,
-              spacing=0.28,
-              area=0.1444)
+              width=0.44,
+              spacing=0.46,
+              area=0.5265)
 
 drc.add_enclosure("m5",
                   layer="via4",
@@ -418,12 +678,26 @@ spice["pmos"] = "pfet_03v3"
 spice["power"]="vccd1"
 spice["ground"]="vssd1"
 
+# sm141064 wrapper subcircuits expect w/l in microns; see ptx.create_netlist.
+spice["subckt_model_micron_units"] = True
+
 spice["fet_libraries"] = {"TT": [[os.environ.get("SPICE_MODEL_DIR") + "/sm141064.ngspice", "typical"]]}
 
+# design.ngspice defines the matching/Monte-Carlo switches
+# (sw_stat_global, sw_stat_mismatch, mc_skew, ...) that sm141064.ngspice
+# references from its device wrapper subcircuits.  Without it ngspice aborts
+# with "Undefined parameter [sw_stat_mismatch]".
+spice["spice_includes"] = [os.environ.get("SPICE_MODEL_DIR") + "/design.ngspice"]
+
 # spice stimulus related variables
+# NOTE: generated logic uses nfet_03v3/pfet_03v3 (0.28 um thin oxide), so the
+# supply corners must be the 3.3 V class, not 1.8 V.  The current 1RW bitcell
+# (cell1rw) is an extracted thick-oxide cell built from nfet_06v0/pfet_06v0;
+# it is safe to operate that cell at 3.3 V, which is exactly what the GF
+# 5V-green IP SRAM does (same GDS characterized at 1.8/3.3/5.0 V).
 spice["feasible_period"] = 10        # estimated feasible period in ns
-spice["supply_voltages"] = [1.7, 1.8, 1.9] # Supply voltage corners in [Volts]
-spice["nom_supply_voltage"] = 1.8    # Nominal supply voltage in [Volts]
+spice["supply_voltages"] = [3.0, 3.3, 3.6] # Supply voltage corners in [Volts]
+spice["nom_supply_voltage"] = 3.3    # Nominal supply voltage in [Volts]
 spice["rise_time"] = 0.005           # rise time in [Nano-seconds]
 spice["fall_time"] = 0.005           # fall time in [Nano-seconds]
 spice["temperatures"] = [0, 25, 100] # Temperature corners (celcius)
