@@ -10,6 +10,7 @@ from openram.base import design
 from openram.base import vector
 from openram.sram_factory import factory
 from openram.tech import cell_properties
+from openram.tech import layer_properties as layer_props
 from openram import OPTS
 
 
@@ -174,8 +175,15 @@ class sense_amp_array(design):
                                 height=dout_pin.height())
 
     def route_supplies(self):
-        self.route_horizontal_pins("vdd")
-        self.route_horizontal_pins("gnd")
+        if getattr(layer_props, "supply_promote_leaf_rails", True):
+            self.route_horizontal_pins("vdd")
+            self.route_horizontal_pins("gnd")
+        else:
+            # Keep the leaf m2 rails; expose them so the top-level supply
+            # router can connect each one instead of strapping them on m3.
+            for inst in self.local_insts:
+                self.copy_layout_pin(inst, "vdd")
+                self.copy_layout_pin(inst, "gnd")
 
     def route_rails(self):
         # Add enable across the array

@@ -94,11 +94,11 @@ class dff_inv(design):
         mid_x_offset = 0.5*(a1_pin.cx() + q_pin.cx())
         mid1 = vector(mid_x_offset, q_pin.cy())
         mid2 = vector(mid_x_offset, a1_pin.cy())
-        self.add_path("m3",
+        self.add_path(self.top_layer,
                       [q_pin.center(), mid1, mid2, a1_pin.center()])
-        self.add_via_center(layers=self.m2_stack,
+        self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                             offset=q_pin.center())
-        self.add_via_center(layers=self.m2_stack,
+        self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                             offset=a1_pin.center())
         self.add_via_center(layers=self.m1_stack,
                             offset=a1_pin.center())

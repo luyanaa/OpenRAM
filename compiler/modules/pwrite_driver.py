@@ -187,7 +187,7 @@ class pwrite_driver(design):
 
         din_in = vector(track_xoff,0)
 
-        self.add_wire(self.m3_stack, [din_bar_in, din_bar_track, bl_track, bl_in])
+        self.add_wire(self.top_stack, [din_bar_in, din_bar_track, bl_track, bl_in])
 
         self.add_layout_pin_rect_center(text="din",
                                         layer="m4",
@@ -213,10 +213,10 @@ class pwrite_driver(design):
 
 
         # L shape
-        self.add_wire(self.m3_stack,
+        self.add_wire(self.top_stack,
                       [en_bar_loc, en_bar_track, bl_en_track])
         # U shape
-        self.add_wire(self.m3_stack,
+        self.add_wire(self.top_stack,
                       [bl_en_loc, bl_en_track, br_en_track, br_en_loc])
 
 
@@ -228,7 +228,7 @@ class pwrite_driver(design):
         # The en pin will be over the vdd rail
         vdd_yloc = self.en_inst.get_pin("vdd").cy()
         self.add_layout_pin_segment_center(text="en",
-                                           layer="m3",
+                                           layer=self.top_layer,
                                            start=vector(0,vdd_yloc),
                                            end=vector(self.width,vdd_yloc))
 
@@ -251,7 +251,7 @@ class pwrite_driver(design):
         self.add_via_stack_center("m1", "m3", br_en_loc)
 
         # U shape
-        self.add_wire(self.m3_stack,
+        self.add_wire(self.top_stack,
                       [en_track, bl_en_track, bl_en_loc, bl_en_track, br_en_track, br_en_loc])
 
 

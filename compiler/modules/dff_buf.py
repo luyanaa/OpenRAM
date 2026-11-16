@@ -175,10 +175,13 @@ class dff_buf(design):
         # Drop the Q via on inv2's output strap (already the Q net) so its
         # landing pad cannot touch the inverter's other metal.
         dout_pin = self.inv2_inst.get_pin("Z")
-        # Q below the strap centre, Qb above it: parents route the two pins
-        # horizontally, so they must not share a height.
-        q_pos = dout_pin.center() - vector(0, self.pin_offset(dout_pin))
-        self.add_path(dout_pin.layer, [dout_pin.center(), q_pos])
+        # Keep the Q via centred on the inverter output pin.  Offseting it
+        # downwards (below the strap centre) is unsafe for a multi-finger
+        # inverter: the output strap does not extend all the way down, so the
+        # via's m1 landing pad would overlap the middle source strap (gnd).
+        # Qb is placed above the pin instead, so the two pins still have
+        # different heights.
+        q_pos = dout_pin.center()
         self.add_layout_pin_rect_center(text="Q",
                                         layer="m2",
                                         offset=q_pos)

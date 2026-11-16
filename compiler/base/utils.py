@@ -133,6 +133,25 @@ def get_libcell_size(name, units, lpp):
 _GDS_PINS_CACHE = {}
 
 
+def _is_routing_layer(lpp):
+    """True when lpp is one of the technology's routing pin layers."""
+    try:
+        from openram.tech import layer as tech_layer
+        from openram.tech import layer_indices as tech_indices
+    except ImportError:
+        return True
+    needle = (lpp[0], lpp[1] if lpp[1] is not None else 0)
+    for name in tech_indices:
+        candidate = tech_layer[name]
+        if not candidate:
+            continue
+        candidates = candidate if isinstance(candidate, list) else [candidate]
+        for cand in candidates:
+            if tuple(cand) == needle:
+                return True
+    return False
+
+
 def get_gds_pins(pin_names, name, gds_filename, units):
     """
     Open a GDS file and find the pins in pin_names as text on a given layer.
@@ -146,24 +165,36 @@ def get_gds_pins(pin_names, name, gds_filename, units):
 
         cell = {}
         for pin_name in pin_names:
-            cell[str(pin_name)] = []
+            # Collect every label-layer candidate for this pin, then prefer
+            # the shape on a routing layer.  A GDS may carry the same label
+            # twice (TR-1um: 48/0/49/0 text layers next to the M1/M2 shapes),
+            # while other technologies put the pin text only on their label
+            # layers - those must keep working, so fall back to the label
+            # shape when no routing-layer shape exists.
+            entries = []
             pin_list = cell_vlsi.getPinShape(str(pin_name))
             for pin_shape in pin_list:
-                if pin_shape != None:
-                    (lpp, boundary) = pin_shape
-                    rect = [vector(boundary[0], boundary[1]),
-                            vector(boundary[2], boundary[3])]
-                    # this is a list because other cells/designs
-                    # may have must-connect pins
-                    if isinstance(lpp[1], list):
-                        try:
-                            from openram.tech import layer_override
-                            if layer_override[pin_name]:
-                                lpp = layer_override[pin_name.textString]
-                        except:
-                            pass
-                        lpp = (lpp[0], None)
-                    cell[str(pin_name)].append(pin_layout(pin_name, rect, lpp))
+                if pin_shape is None:
+                    continue
+                (lpp, boundary) = pin_shape
+                rect = [vector(boundary[0], boundary[1]),
+                        vector(boundary[2], boundary[3])]
+                # this is a list because other cells/designs
+                # may have must-connect pins
+                if isinstance(lpp[1], list):
+                    try:
+                        from openram.tech import layer_override
+                        if layer_override[pin_name]:
+                            lpp = layer_override[pin_name.textString]
+                    except Exception:
+                        pass
+                    lpp = (lpp[0], None)
+                entries.append((lpp, rect))
+            routing = [entry for entry in entries
+                       if _is_routing_layer(entry[0])]
+            chosen = routing if routing else entries
+            cell[str(pin_name)] = [pin_layout(pin_name, rect, lpp)
+                                   for (lpp, rect) in chosen]
 
         _GDS_PINS_CACHE[k] = cell
         return dict(cell)

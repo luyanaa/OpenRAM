@@ -140,29 +140,25 @@ class layout():
                                        layout.nwell_enclose_active,
                                        layout.active_space)
 
-        # These are for debugging previous manual rules
-        level=99
-        debug.info(level, "poly_width".format(layout.poly_width))
-        debug.info(level, "poly_space".format(layout.poly_space))
-        debug.info(level, "m1_width".format(layout.m1_width))
-        debug.info(level, "m1_space".format(layout.m1_space))
-        debug.info(level, "m2_width".format(layout.m2_width))
-        debug.info(level, "m2_space".format(layout.m2_space))
-        debug.info(level, "m3_width".format(layout.m3_width))
-        debug.info(level, "m3_space".format(layout.m3_space))
-        debug.info(level, "m4_width".format(layout.m4_width))
-        debug.info(level, "m4_space".format(layout.m4_space))
-        debug.info(level, "active_width".format(layout.active_width))
-        debug.info(level, "active_space".format(layout.active_space))
-        debug.info(level, "contact_width".format(layout.contact_width))
-        debug.info(level, "poly_to_active".format(layout.poly_to_active))
-        debug.info(level, "poly_extend_active".format(layout.poly_extend_active))
-        debug.info(level, "poly_to_contact".format(layout.poly_to_contact))
-        debug.info(level, "active_contact_to_gate".format(layout.active_contact_to_gate))
-        debug.info(level, "poly_contact_to_gate".format(layout.poly_contact_to_gate))
-        debug.info(level, "well_enclose_active".format(layout.well_enclose_active))
-        debug.info(level, "implant_enclose_active".format(layout.implant_enclose_active))
-        debug.info(level, "implant_space".format(layout.implant_space))
+        # These are for debugging previous manual rules.  Format the value
+        # only when the technology actually defines the constant: a strict
+        # two-metal technology has no m3/m4, and the Drawing flow has no
+        # implant layer.
+        level = 99
+        for rule_name in ("poly_width", "poly_space",
+                          "m1_width", "m1_space",
+                          "m2_width", "m2_space",
+                          "m3_width", "m3_space",
+                          "m4_width", "m4_space",
+                          "active_width", "active_space",
+                          "contact_width",
+                          "poly_to_active", "poly_extend_active",
+                          "poly_to_contact",
+                          "active_contact_to_gate", "poly_contact_to_gate",
+                          "well_enclose_active",
+                          "implant_enclose_active", "implant_space"):
+            if hasattr(layout, rule_name):
+                debug.info(level, "{0}={1}".format(rule_name, getattr(layout, rule_name)))
 
     @classmethod
     def setup_layer_constants(layout):
@@ -199,6 +195,28 @@ class layout():
             setattr(layout,
                     "{}_nonpref_pitch".format(layer_id),
                     layout.compute_pitch(layer_id, False))
+
+        # Floorplan modules use the top routing layers' pitches (m3/m4) as
+        # jog reservations.  When a technology lacks those layers, alias the
+        # *numeric* pitch/width constants to the top layer it has, so the
+        # generic modules keep their spacing model.  Layer *strings* are
+        # adapted separately by the technology-gated code that draws them.
+        if "m4" not in tech_layer_indices:
+            top = "m3" if "m3" in tech_layer_indices else "m2"
+            if hasattr(layout, top + "_pitch"):
+                layout.m4_pitch = getattr(layout, top + "_pitch")
+                layout.m4_nonpref_pitch = getattr(layout, top + "_nonpref_pitch")
+                layout.m4_width = getattr(layout, top + "_width")
+                layout.m4_space = getattr(layout, top + "_space")
+        if "m3" not in tech_layer_indices:
+            for suffix in ("_pitch", "_nonpref_pitch", "_width", "_space"):
+                setattr(layout, "m3" + suffix, getattr(layout, "m2" + suffix))
+        # The generic floorplan modules route crossings on the top metal.
+        # Three-metal technologies keep m3 (unchanged behaviour); a strict
+        # two-metal technology uses m2.
+        layout.top_layer = "m3" if "m3" in tech_layer_indices else "m2"
+        layout.top_stack = getattr(layout, layout.top_layer + "_stack",
+                                   layout.m1_stack)
 
         level=99
         for name in tech_layer_indices:
@@ -394,6 +412,67 @@ class layout():
                 highesty = max(max(pin.uy() for pin in pin_set), highesty)
 
         return vector(highestx, highesty)
+
+    def get_true_bbox(self):
+        """Return the bounding box of the *drawn* geometry of this layout.
+
+        Unlike find_lowest_coords()/find_highest_coords(), this recurses into
+        sub-instances and uses their drawn shapes rather than their declared
+        boundary.  Some OpenRAM cells (e.g. the gf180mcu decoder gates) draw
+        well/implant shapes that stick out past their declared boundary on
+        purpose so that tiled cells merge.  Tiling such a cell using the
+        declared width lets the overhangs overlap the neighbour and produces
+        DRC errors.  This method is used to derive a matching tile pitch.
+
+        Returns (minx, miny, maxx, maxy) in this layout's coordinate system.
+        """
+        from math import radians
+        inf = float("inf")
+        minx = miny = inf
+        maxx = maxy = -inf
+
+        for obj in self.objs:
+            if getattr(obj, "name", "") == "label":
+                continue
+            if getattr(obj, "lx", None) is None:
+                continue
+            minx = min(minx, obj.lx())
+            miny = min(miny, obj.by())
+            maxx = max(maxx, obj.rx())
+            maxy = max(maxy, obj.uy())
+
+        for inst in self.insts:
+            try:
+                sub = inst.mod.get_true_bbox()
+            except AttributeError:
+                continue
+            pts = [(sub[0], sub[1]), (sub[2], sub[1]),
+                   (sub[0], sub[3]), (sub[2], sub[3])]
+            angle = radians(float(inst.rotate))
+            mirr = 1
+            if inst.mirror == "MY":
+                mirr = -1
+                angle += radians(180)
+            elif inst.mirror == "MX":
+                mirr = -1
+            elif inst.mirror == "XY":
+                angle += radians(180)
+            elif inst.mirror == "R90":
+                angle += radians(90)
+            elif inst.mirror == "R180":
+                angle += radians(180)
+            elif inst.mirror == "R270":
+                angle += radians(270)
+            tc = inst.transform_coords(pts, inst.offset, mirr, angle)
+            for (x, y) in tc:
+                minx = min(minx, x)
+                maxx = max(maxx, x)
+                miny = min(miny, y)
+                maxy = max(maxy, y)
+
+        if minx == inf:
+            return (0, 0, 0, 0)
+        return (minx, miny, maxx, maxy)
 
     def find_highest_layer_coords(self, layer):
         """
@@ -842,11 +921,16 @@ class layout():
         return layer_list
 
 
-    def route_vertical_pins(self, name, insts=None, layer=None, xside="cx", yside="cy", full_width=True):
+    def route_vertical_pins(self, name, insts=None, layer=None, xside="cx", yside="cy", full_width=True, xshift=0.0, yshift=0.0):
         """
         Route together all of the pins of a given name that vertically align.
         Uses local_insts if insts not specified.
         Uses center of pin by default, or right or left if specified.
+        ``xshift`` moves the strap (and its tap vias) sideways by that amount.
+        A technology whose supply pins are too close to separate the two nets
+        with straps at the pin edges (e.g. a hard flop with centred VDD/GND
+        pins) can use it to pull one strap clear; the pin is extended on its
+        own layer to reach the shifted tap.
         TODO: Add equally spaced option for IR drop min, right now just 2
         """
 
@@ -876,6 +960,9 @@ class layout():
                                         pin.height())
                 continue
 
+            # Strap and via x-position (the pin itself may sit elsewhere).
+            tap_x = x + xshift
+
             last_via = None
             pin_layer = None
             for inst,pin in v:
@@ -884,11 +971,25 @@ class layout():
                 else:
                     pin_layer = self.supply_stack[2]
 
-                y = getattr(pin, yside)()
+                y = getattr(pin, yside)() + yshift
+
+                if xshift:
+                    # Extend the pin on its own layer so the shifted via has a
+                    # real physical connection to the pin.
+                    if tap_x > pin.rx():
+                        self.add_rect(layer=pin.layer,
+                                      offset=vector(pin.rx(), pin.cy() - 0.5 * pin.height()),
+                                      width=tap_x - pin.rx(),
+                                      height=pin.height())
+                    elif tap_x < pin.lx():
+                        self.add_rect(layer=pin.layer,
+                                      offset=vector(tap_x, pin.cy() - 0.5 * pin.height()),
+                                      width=pin.lx() - tap_x,
+                                      height=pin.height())
 
                 last_via = self.add_via_stack_center(from_layer=pin.layer,
                                                      to_layer=pin_layer,
-                                                     offset=vector(x, y))
+                                                     offset=vector(tap_x, y))
 
             if last_via:
                 via_width=last_via.mod.second_layer_width
@@ -904,8 +1005,8 @@ class layout():
                 bot_y = min(0, bot_y)
                 top_y = max(self.height, top_y)
 
-            top_pos = vector(x, top_y + 0.5 * via_height)
-            bot_pos = vector(x, bot_y - 0.5 * via_height)
+            top_pos = vector(tap_x, top_y + 0.5 * via_height)
+            bot_pos = vector(tap_x, bot_y - 0.5 * via_height)
 
 #            self.add_layout_pin_rect_ends(name=name,
 #                                          layer=pin_layer,
@@ -1180,8 +1281,20 @@ class layout():
         """Adds a text label on the given layer,offset, and zoom level"""
         debug.info(5, "add label " + str(text) + " " + layer + " " + str(offset))
         lpp = tech_layer[layer]
-        self.objs.append(geometry.label(text, lpp, offset, zoom))
-        return self.objs[-1]
+        metal_label = geometry.label(text, lpp, offset, zoom)
+        self.objs.append(metal_label)
+        # Some technologies keep net-name text on a dedicated layer instead of
+        # the metal itself (TR-1um: M1 text 48/0, M2 text 49/0).  Emit the
+        # extra label so LVS can attach the name; the metal-layer label is
+        # kept because design rules and PEX correspondence read it.
+        try:
+            from openram.tech import label_layer as tech_label_layer
+        except ImportError:
+            tech_label_layer = {}
+        label_lpp = tech_label_layer.get(layer)
+        if label_lpp and tuple(label_lpp) != tuple(lpp):
+            self.objs.append(geometry.label(text, label_lpp, offset, zoom))
+        return metal_label
 
     def add_path(self, layer, coordinates, width=None):
         """Connects a routing path on given layer,coordinates,width."""
@@ -1355,6 +1468,225 @@ class layout():
             cur_layer = curr_stack[next_id]
 
         return via
+
+    def stitch_supply_pins(self,
+                           pin_name,
+                           layer,
+                           pins=None,
+                           bus_y=None,
+                           tap_y=None,
+                           width=None,
+                           orientation="h",
+                           bus_x=None,
+                           tap_x=None,
+                           pin=False,
+                           wide_tap_edge=None):
+        """Physically tie together every layout pin of ``pin_name``.
+
+        Leaf cells in the ROM family draw one vertical supply rail per
+        transistor (or per buffer stage).  Those rails are on the same net in
+        the schematic but on separate physical nodes in the layout, and an
+        ``extract unique all`` flow reports each of them as a ``*_uqN`` port.
+        This helper taps each rail with a via stack and joins the taps with a
+        strap on ``layer`` (normally m4, which is otherwise unused inside the
+        ROM sub-blocks).
+
+        ``pins`` defaults to all layout pins of ``pin_name``.  With
+        ``orientation="h"`` each tap is placed at ``(pin.cx(), tap_y)`` if
+        ``tap_y`` lies inside the pin and at the pin centre otherwise, so a
+        full-height column pin can be tapped at a height where the parent has
+        no same-layer signal routing.  A vertical stub on ``layer`` reaches the
+        horizontal bus at ``bus_y`` and a single horizontal bus joins every
+        tap.
+
+        ``orientation="v"`` builds a vertical bus at ``bus_x`` instead, with
+        each tap at ``(tap_x, pin.cy())`` (``tap_x`` used when it lies inside
+        the pin) and a horizontal stub reaching the bus.  This is used when
+        the supply pins of one net are spread across many rows at different
+        y and a horizontal bus would cross the other net's bus.
+
+        Only pins on distinct x (or y) positions are tapped, which avoids
+        stacking duplicate vias on the two end caps of one column strap.
+
+        With ``pin=True`` a single layout pin of ``pin_name`` is added along
+        the bus.  Sub-blocks should expose exactly one pin per supply net:
+        the top-level supply router finds *every* labelled vdd/gnd shape in
+        the design, so leaving one pin per rail makes it thread long detours
+        through the block interiors (and, on a multi-layer power grid, into
+        unrelated routing).
+        """
+        if pins is None:
+            pins = list(self.get_pins(pin_name))
+        else:
+            pins = list(pins)
+        if len(pins) == 0:
+            return
+        if width is None:
+            width = drc["minwidth_{}".format(layer)]
+
+        horizontal = orientation == "h"
+
+        if horizontal:
+            if bus_y is None:
+                bus_y = pins[0].cy()
+        else:
+            if bus_x is None:
+                bus_x = pins[0].cx()
+
+        taps = []
+        seen = set()
+        for pin in pins:
+            if horizontal:
+                # A wide metal rail pin (e.g. an inverter's m2 supply bar) is
+                # usually tapped at its centre, but that point often coincides
+                # with the leaf cell's own internal via landing.  The two via
+                # pads then sit one spacing-rule apart and hang below the same
+                # rail, which Magic reports as a metal notch.  ``wide_tap_edge``
+                # moves the tap towards one end of such a rail, where it is
+                # clear of the cell's internal taps.
+                if (wide_tap_edge is not None
+                        and (pin.rx() - pin.lx()) > 4.0 * width):
+                    inset = 0.5 * width + 0.2
+                    if wide_tap_edge == "right":
+                        tap = vector(pin.rx() - inset, pin.cy())
+                    else:
+                        tap = vector(pin.lx() + inset, pin.cy())
+                elif tap_y is not None and pin.by() <= tap_y <= pin.uy():
+                    tap = vector(pin.cx(), tap_y)
+                else:
+                    tap = pin.center()
+                key = round(tap.x, 3)
+            else:
+                if tap_x is not None and pin.lx() <= tap_x <= pin.rx():
+                    tap = vector(tap_x, pin.cy())
+                else:
+                    tap = pin.center()
+                key = round(tap.y, 3)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            via = self.add_via_stack_center(from_layer=pin.layer,
+                                            to_layer=layer,
+                                            offset=tap)
+            # Make the strap at least as wide as the via landing pad.  A
+            # narrower strap leaves the pad corners sticking out of the wire
+            # and Magic reports them as sub-minimum width tabs (M4.1).
+            if via is not None:
+                width = max(width, via.mod.second_layer_width)
+                width = max(width, via.mod.width, via.mod.height)
+            taps.append(tap)
+
+        if len(taps) == 0:
+            return
+
+        # Two taps of the same net can end up closer than the bus spacing rule
+        # (e.g. two narrow supply pins whose centres are one via-pad + a few
+        # hundredths apart).  Their straps are then separated by a sub-minimum
+        # slot even though both join the same bus, and Magic reports it as a
+        # spacing/notch violation on the strap layer.  Fill such a slot over
+        # the length the two straps share so they become one contiguous strap.
+        spacing = drc["{0}_to_{0}".format(layer)]
+        if horizontal:
+            ordered = sorted(taps, key=lambda t: t.x)
+        else:
+            ordered = sorted(taps, key=lambda t: t.y)
+        for a, b in zip(ordered, ordered[1:]):
+            gap = (b.x - a.x) if horizontal else (b.y - a.y)
+            if not (width <= gap < width + spacing):
+                continue
+            # Extent shared by both straps along the bus-normal axis.  The via
+            # pad at each tap is a square of side `width`, so it reaches half a
+            # width past the tap on both sides; include that or the slot next
+            # to the pad stays open.
+            half = 0.5 * width
+            if horizontal:
+                a_lo, a_hi = sorted((a.y - half, bus_y))
+                b_lo, b_hi = sorted((b.y - half, bus_y))
+                a_lo, a_hi = min(a_lo, a.y + half), max(a_hi, a.y + half)
+                b_lo, b_hi = min(b_lo, b.y + half), max(b_hi, b.y + half)
+            else:
+                a_lo, a_hi = sorted((a.x - half, bus_x))
+                b_lo, b_hi = sorted((b.x - half, bus_x))
+                a_lo, a_hi = min(a_lo, a.x + half), max(a_hi, a.x + half)
+                b_lo, b_hi = min(b_lo, b.x + half), max(b_hi, b.x + half)
+            lo, hi = max(a_lo, b_lo), min(a_hi, b_hi)
+            if hi - lo <= 1e-9:
+                continue
+            # Slight overlap margin avoids a hairline gap from float rounding.
+            fill = gap - width + 0.005
+            if horizontal:
+                self.add_rect_center(layer,
+                                     vector(0.5 * (a.x + b.x), 0.5 * (lo + hi)),
+                                     width=fill,
+                                     height=hi - lo)
+            else:
+                self.add_rect_center(layer,
+                                     vector(0.5 * (lo + hi), 0.5 * (a.y + b.y)),
+                                     width=hi - lo,
+                                     height=fill)
+
+        if horizontal:
+            for tap in taps:
+                if abs(tap.y - bus_y) > 1e-9:
+                    self.add_segment_center(layer,
+                                            tap,
+                                            vector(tap.x, bus_y),
+                                            width=width)
+
+            xs = [tap.x for tap in taps]
+            # Extend the bus to the outer edge of the end taps.  Stopping the
+            # bus at the tap centre leaves half a strap protruding past the bus
+            # end, which is another sub-minimum-width tab.
+            self.add_segment_center(layer,
+                                    vector(min(xs) - 0.5 * width, bus_y),
+                                    vector(max(xs) + 0.5 * width, bus_y),
+                                    width=width)
+            if pin:
+                self.add_layout_pin_segment_center(pin_name,
+                                                   layer,
+                                                   start=vector(min(xs) - 0.5 * width, bus_y),
+                                                   end=vector(max(xs) + 0.5 * width, bus_y))
+        else:
+            for tap in taps:
+                if abs(tap.x - bus_x) > 1e-9:
+                    self.add_segment_center(layer,
+                                            tap,
+                                            vector(bus_x, tap.y),
+                                            width=width)
+
+            ys = [tap.y for tap in taps]
+            self.add_segment_center(layer,
+                                    vector(bus_x, min(ys) - 0.5 * width),
+                                    vector(bus_x, max(ys) + 0.5 * width),
+                                    width=width)
+            if pin:
+                self.add_layout_pin_segment_center(pin_name,
+                                                   layer,
+                                                   start=vector(bus_x, min(ys) - 0.5 * width),
+                                                   end=vector(bus_x, max(ys) + 0.5 * width))
+
+    def expose_supply_pin(self, pin_name, layer, at=None, width=None, height=None):
+        """Add a layout pin on ``layer`` for a supply net already present there.
+
+        Parents copy exactly one layout pin per child supply net
+        (``copy_supply_representative``); if the only exposed pin sits on m2
+        the parent has to punch a blind m2->m4 via stack at a location where
+        the child may have signal metal on m3.  Exposing the net on the
+        stitching layer (m4) lets the parent copy a pin that is already
+        physically tied to the child's internal supply network.
+        """
+        if width is None:
+            width = drc["minwidth_{}".format(layer)]
+        if height is None:
+            height = width
+        if at is None:
+            at = vector(0, 0)
+        return self.add_layout_pin_rect_center(text=pin_name,
+                                               layer=layer,
+                                               offset=at,
+                                               width=width,
+                                               height=height)
 
     def add_min_area_rect_center(self,
                                  layer,
@@ -1679,23 +2011,30 @@ class layout():
                           [bus_pos, mid_pos, pin_pos],
                           widen_short_wires=False)
 
-            # Connect to the pin on the instances with a via if it is
-            # not on the right layer
-            if pin.layer != route_layer:
-                self.add_via_stack_center(from_layer=pin.layer,
-                                          to_layer=route_layer,
+            # When the pin and the bus are aligned the last wire segment
+            # runs on the bus layer all the way to the pin; otherwise it
+            # runs on the route layer.
+            aligned = ((horizontal and bus_pos.y == pin_pos.y) or
+                       (not horizontal and bus_pos.x == pin_pos.x))
+            last_layer = bus_layer if aligned else route_layer
+            if pin.layer != last_layer:
+                self.add_via_stack_center(from_layer=last_layer,
+                                          to_layer=pin.layer,
                                           offset=pin_pos)
             # FIXME: output pins tend to not be rotate,
             # but supply pins are. Make consistent?
 
-            # We only need a via if they happened to align perfectly
-            # so the add_wire didn't add a via
-            if (horizontal and bus_pos.y == pin_pos.y) or (not horizontal and bus_pos.x == pin_pos.x):
+            # The aligned case also needs the route<->bus via at the bus end.
+            if aligned:
                 self.add_via_stack_center(from_layer=route_layer,
                                           to_layer=bus_layer,
                                           offset=bus_pos)
 
-    def connect_vbus(self, src_pin, dest_pin, hlayer="m3", vlayer="m2"):
+    def connect_vbus(self, src_pin, dest_pin, hlayer=None, vlayer=None):
+        if hlayer is None:
+            hlayer = self.top_layer
+        if vlayer is None:
+            vlayer = "m2" if hlayer != "m2" else "m1"
         """
         Helper routine to connect an instance to a vertical bus.
         Routes horizontal then vertical L shape.
@@ -1724,7 +2063,11 @@ class layout():
                                   to_layer=dest_pin.layer,
                                   offset=out_pos)
 
-    def connect_hbus(self, src_pin, dest_pin, hlayer="m3", vlayer="m2"):
+    def connect_hbus(self, src_pin, dest_pin, hlayer=None, vlayer=None):
+        if hlayer is None:
+            hlayer = self.top_layer
+        if vlayer is None:
+            vlayer = "m2" if hlayer != "m2" else "m1"
         """
         Helper routine to connect an instance to a horizontal bus.
         Routes horizontal then vertical L shape.
@@ -2064,6 +2407,10 @@ class layout():
 
         # Add the taps
         layer_stack = self.active_stack
+        # Technologies without a local interconnect (e.g. gf180mcu, which has
+        # six metal layers but no "li") tap the active area straight to metal1;
+        # the parameterized gates make the same choice in pgate.
+        tap_pin_layer = "li" if "li" in tech_layer else "m1"
         tap_spacing = 2
         nwell_offset = vector(self.nwell_width, self.nwell_width)
 
@@ -2080,13 +2427,13 @@ class layout():
                                 implant_type="n",
                                 well_type="n")
             if count % period:
-                self.add_via_stack_center(from_layer="li",
+                self.add_via_stack_center(from_layer=tap_pin_layer,
                                           to_layer="m1",
                                           offset=loc)
             else:
                 self.add_power_pin(name="vdd",
                                    loc=loc,
-                                   start_layer="li")
+                                   start_layer=tap_pin_layer)
             count += 1
             loc += nwell_offset.scale(tap_spacing, 0)
 
@@ -2100,13 +2447,13 @@ class layout():
                                 implant_type="n",
                                 well_type="n")
             if count % period:
-                self.add_via_stack_center(from_layer="li",
+                self.add_via_stack_center(from_layer=tap_pin_layer,
                                           to_layer="m1",
                                           offset=loc)
             else:
                 self.add_power_pin(name="vdd",
                                    loc=loc,
-                                   start_layer="li")
+                                   start_layer=tap_pin_layer)
             count += 1
             loc += nwell_offset.scale(tap_spacing, 0)
 
@@ -2120,13 +2467,13 @@ class layout():
                                 implant_type="n",
                                 well_type="n")
             if count % period:
-                self.add_via_stack_center(from_layer="li",
+                self.add_via_stack_center(from_layer=tap_pin_layer,
                                           to_layer="m2",
                                           offset=loc)
             else:
                 self.add_power_pin(name="vdd",
                                    loc=loc,
-                                   start_layer="li")
+                                   start_layer=tap_pin_layer)
             count += 1
             loc += nwell_offset.scale(0, tap_spacing)
 
@@ -2140,13 +2487,13 @@ class layout():
                                 implant_type="n",
                                 well_type="n")
             if count % period:
-                self.add_via_stack_center(from_layer="li",
+                self.add_via_stack_center(from_layer=tap_pin_layer,
                                           to_layer="m2",
                                           offset=loc)
             else:
                 self.add_power_pin(name="vdd",
                                    loc=loc,
-                                   start_layer="li")
+                                   start_layer=tap_pin_layer)
             count += 1
             loc += nwell_offset.scale(0, tap_spacing)
 

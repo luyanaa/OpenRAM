@@ -214,6 +214,10 @@ class signal_escape_router(router):
 
         to_route = []
         for name in pin_names:
+            if name not in self.pins or not self.pins[name]:
+                from openram import debug
+                debug.error("escape router: no pin named {0} (have {1})".format(
+                    name, sorted(self.pins)), -1)
             pin = next(iter(self.pins[name]))
             fake = self.create_fake_pin(pin)
             to_route.append((pin, fake, pin.distance(fake)))

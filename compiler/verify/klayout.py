@@ -13,9 +13,11 @@ This is a DRC/LVS/PEX interface file for klayout.
 import os
 import re
 import shutil
+import subprocess
 from openram import debug
 from openram import OPTS
 from .run_script import *
+from .report import (drc_violations, lvs_verdict, lvs_summary, ReportError)
 
 # Keep track of statistics
 num_drc_runs = 0
@@ -32,12 +34,14 @@ def write_drc_script(cell_name, gds_name, extract, final_verification, output_pa
     # DRC:
     # klayout -b -r drc_FreePDK45.lydrc -rd input=sram_8_256_freepdk45.gds -rd topcell=sram_8_256_freepdk45 -rd output=drc_FreePDK45.lyrdb
 
-    # Copy .lydrc file into the output directory
+    # Run the deck where it lives instead of copying it into the temporary
+    # output directory.  A deck may reference sibling files with a relative
+    # %include (the TR-1um Drawing decks do), and the include is resolved
+    # relative to the script, so a copy in the temporary directory would
+    # silently lose its rule bodies.  Absolute paths work for every deck.
     full_drc_file = OPTS.openram_tech + "tech/{}.lydrc".format(OPTS.tech_name)
-    drc_file = os.path.basename(full_drc_file)
-    if os.path.exists(full_drc_file):
-        shutil.copy(full_drc_file, output_path)
-    else:
+    drc_file = full_drc_file
+    if not os.path.exists(full_drc_file):
         debug.warning("Could not locate file: {}".format(full_drc_file))
 
     # Copy .gds file into the output directory
@@ -54,7 +58,7 @@ def write_drc_script(cell_name, gds_name, extract, final_verification, output_pa
     run_file = output_path + "run_drc.sh"
     f = open(run_file, "w")
     f.write("#!/bin/sh\n")
-    cmd = "{0} -b -r {1} -rd input={2} -rd topcell={3} -rd output={3}.drc.report".format(OPTS.drc_exe[1],
+    cmd = "{0} -b -r \"{1}\" -rd input={2} -rd topcell={3} -rd output={3}.drc.report".format(OPTS.drc_exe[1],
                                                                                          drc_file,
                                                                                          gds_name,
                                                                                          cell_name)
@@ -73,7 +77,11 @@ def run_drc(cell_name, gds_name, sp_name=None, extract=True, final_verification=
 
     write_drc_script(cell_name, gds_name, extract, final_verification, OPTS.openram_temp, sp_name=sp_name)
 
-    (outfile, errfile, resultsfile) = run_script(cell_name, "drc")
+    try:
+        (outfile, errfile, resultsfile) = run_script(cell_name, "drc", check=True)
+    except subprocess.CalledProcessError as error:
+        debug.error("{}\tDRC tool exited with {}".format(cell_name, error.returncode))
+        return 1
 
     # Check the result for these lines in the summary:
     # Total DRC errors found: 0
@@ -82,18 +90,18 @@ def run_drc(cell_name, gds_name, sp_name=None, extract=True, final_verification=
     # Cell tri_gate_array has 8 error tiles.
     # etc.
     try:
-        f = open(resultsfile, "r")
-    except FileNotFoundError:
-        debug.error("Unable to load DRC results file from {}. Is klayout set up?".format(resultsfile), 1)
-
-    results = f.readlines()
-    f.close()
-    errors=len([x for x in results if "<visited>" in x])
+        (errors, categories) = drc_violations(resultsfile)
+    except ReportError as error:
+        debug.error("Unable to load DRC results file from {}. "
+                    "Is klayout set up? ({})".format(resultsfile, error), 1)
+        return -1
 
     # always display this summary
     result_str = "DRC Errors {0}\t{1}".format(cell_name, errors)
     if errors > 0:
         debug.warning(result_str)
+        for category, number in sorted(categories.items(), key=lambda item: -item[1]):
+            debug.info(2, "    {0}\t{1}".format(number, category))
     else:
         debug.info(1, result_str)
 
@@ -111,13 +119,12 @@ def write_lvs_script(cell_name, gds_name, sp_name, final_verification=False, out
     if not output_path:
         output_path = OPTS.openram_temp
 
-    # Copy .lylvs file into the output directory
+    # Run the deck in place: relative %includes resolve against the deck's
+    # own directory (see write_drc_script).
     full_lvs_file = OPTS.openram_tech + "tech/{}.lylvs".format(OPTS.tech_name)
-    lvs_file = os.path.basename(full_lvs_file)
+    lvs_file = full_lvs_file
 
-    if os.path.exists(full_lvs_file):
-        shutil.copy(full_lvs_file, output_path)
-    else:
+    if not os.path.exists(full_lvs_file):
         debug.warning("Could not locate file: {}".format(full_lvs_file))
 
     # Copy .gds file into the output directory
@@ -137,7 +144,7 @@ def write_lvs_script(cell_name, gds_name, sp_name, final_verification=False, out
         connect_supplies = ""
     else:
         connect_supplies = "-rd connect_supplies=1"
-    cmd = "{0} -b -r {1} -rd input={2} -rd report={4}.lvs.report -rd schematic={3} -rd target_netlist={4}.spice {5}".format(OPTS.lvs_exe[1],
+    cmd = "{0} -b -r \"{1}\" -rd input={2} -rd report={4}.lvs.report -rd schematic={3} -rd target_netlist={4}.spice {5}".format(OPTS.lvs_exe[1],
                                                                                                                             lvs_file,
                                                                                                                             gds_name,
                                                                                                                             sp_name,
@@ -162,7 +169,14 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
 
     write_lvs_script(cell_name, gds_name, sp_name, final_verification)
 
-    (outfile, errfile, resultsfile) = run_script(cell_name, "lvs")
+    report = os.path.join(OPTS.openram_temp, cell_name + ".lvs.report")
+    if os.path.exists(report):
+        os.remove(report)
+    try:
+        (outfile, errfile, resultsfile) = run_script(cell_name, "lvs", check=True)
+    except subprocess.CalledProcessError as error:
+        debug.error("{}\tLVS tool exited with {}".format(cell_name, error.returncode))
+        return 1
 
     # check the result for these lines in the summary:
     try:
@@ -172,17 +186,28 @@ def run_lvs(cell_name, gds_name, sp_name, final_verification=False, output_path=
 
     results = f.readlines()
     f.close()
-    # Look for CONGRATULATIONS or ERROR
-    congrats = len([x for x in results if "CONGRATULATIONS" in x])
     total_errors = len([x for x in results if "ERROR" in x])
 
-    if total_errors>0:
-        debug.error("{0}\tLVS mismatch (results in {1})".format(cell_name, resultsfile))
-    elif congrats>0:
-        debug.info(1, "{0}\tLVS matches".format(cell_name))
-    else:
-        debug.info(1, "{0}\tNo LVS result".format(cell_name))
+    # The comparison database, not a success banner, is authoritative.
+    try:
+        (compared, matched, circuits) = lvs_verdict(resultsfile)
+    except ReportError as error:
+        (compared, matched, circuits) = (False, False, [])
+        debug.warning("Cannot read LVS report {}: {}".format(resultsfile, error))
+    if compared and matched and total_errors == 0:
+        debug.info(1, "{0}\tLVS matches ({1} circuit(s))".format(cell_name,
+                                                                len(circuits)))
+    elif compared and not matched:
+        debug.error("{0}\tLVS mismatch ({1}; results in {2})".format(
+            cell_name, lvs_summary(resultsfile), resultsfile))
         total_errors += 1
+    elif not compared:
+        debug.error("{0}\tNo LVS comparison (results in {1})".format(cell_name,
+                                                                    resultsfile))
+        total_errors += 1
+    else:
+        debug.error("{0}\tLVS tool errors (results in {1})".format(cell_name,
+                                                                  resultsfile))
 
     return total_errors
 

@@ -65,6 +65,26 @@ class fake_sram(sram_config):
             self.readonly_ports.append(port_number)
             port_number += 1
 
+    def get_cell_name(self, inst_name, row, col):
+        """
+        Name of the bitcell instance at (row, col).  Only used by the
+        non-PEX path; sram_char.py always runs with top_process='memchar'
+        and reads the storage nodes by their extracted label names.
+        """
+        if inst_name.find("x") != 0:
+            inst_name = "x" + inst_name
+        return (inst_name + OPTS.hier_seperator + "bitcell_array"
+                + OPTS.hier_seperator + "bitcell_{0}_{1}".format(row, col))
+
+    def get_bank_num(self, inst_name, row, col):
+        """
+        Bank index for the bitcell at (row, col).  fake_sram only describes a
+        single flat bank (sram_char.py characterizes one macro), so this
+        matches sram_1bank.get_bank_num and always returns 0.  The PEX storage
+        net labels use this value: bitcell_Q_b{bank}_r{row}_c{col}.
+        """
+        return 0
+
     def generate_pins(self):
         self.pins = ['vdd', 'gnd']
         self.pins.extend(['clk{}'.format(port) for port in range(

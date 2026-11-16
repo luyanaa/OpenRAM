@@ -45,11 +45,16 @@ def waves():
 
 
 class NumericTest(unittest.TestCase):
-    def measure(self, cycle_data=None, wave_data=None):
+    def measure(self, cycle_data=None, wave_data=None, domain=None):
         times, data = waves() if wave_data is None else wave_data
-        return charz.measure_port(times, data, cycles() if cycle_data is None else cycle_data,
-                                  0, 1.0, 1.0, "i(vdd)", skew1=0)
-
+        expected = {3: {"dout0": "1"}, 4: {"dout0": "0"}, 5: {"dout0": "0"}}
+        timing_domain = (dict(period_ns=1, load_ff=5, input_slew_ns=.03,
+                              corner="tt", vdd=1, temp=25)
+                         if domain is None else domain)
+        return charz.measure_port(
+            times, data, cycles() if cycle_data is None else cycle_data,
+            0, 1.0, 1.0, "i(vdd)", skew1=0,
+            expected=expected, domain=timing_domain)
     def test_signed_integral_and_both_polarities(self):
         result = self.measure()
         self.assertAlmostEqual(result["e_read_pj"], 2.0)
@@ -58,19 +63,21 @@ class NumericTest(unittest.TestCase):
         self.assertAlmostEqual(result["cell_fall"], .2)
         self.assertAlmostEqual(result["rise_transition"], .16)
         self.assertAlmostEqual(result["fall_transition"], .16)
+        self.assertEqual(result["arc_discovery"]["selected_clock_phase"], "falling")
+        self.assertFalse(result["arc_discovery"]["valid_domain"]["missing_fields"])
         self.assertIsNone(result["leak_mw"])
         self.assertAlmostEqual(result["e_idle_pj"], 2.0)
+        self.assertIn("whole-macro", result["energy_scope"])
+        self.assertIn("not static leakage", result["idle_scope"])
         times, data = waves()
         data["i(vdd)"] = [.002] * len(times)
         self.assertAlmostEqual(self.measure(wave_data=(times, data))["e_read_pj"], -2.0)
-
     def test_clipped_linear_integration_is_exact(self):
         times, data = waves()
         data["i(vdd)"] = [-time * 1e6 for time in times]
         result = self.measure(wave_data=(times, data))
         # Maximum read window is 5..6ns; integral(t*1e6 dt)=5.5pJ.
         self.assertAlmostEqual(result["e_read_pj"], 5.5)
-
     def test_missing_nonfinite_truncated_or_duplicate_data_rejected(self):
         times, data = waves()
         for bad_times, bad_data in ((times, {key: value for key, value in data.items() if key != "i(vdd)"}),
@@ -82,12 +89,10 @@ class NumericTest(unittest.TestCase):
         stop = next(index for index, time in enumerate(times) if time >= 5.9e-9)
         with self.assertRaisesRegex(ValueError, "support"):
             self.measure(wave_data=(times[:stop], {key: values[:stop] for key, values in data.items()}))
-
     def test_skew_is_explicitly_rejected(self):
         times, data = waves()
         with self.assertRaisesRegex(ValueError, "zero"):
             charz.measure_port(times, data, cycles(), 0, 1, 1, "i(vdd)", skew1=.1)
-
     def test_next_half_cycle_input_change_invalidates_energy_isolation(self):
         schedule = cycles()
         schedule[4]["din1"] = "1"
@@ -101,7 +106,6 @@ class NumericTest(unittest.TestCase):
         schedule[2]["csb1"] = "0"
         result = self.measure(cycle_data=schedule)
         self.assertFalse(any(item["cycle"] == 3 for item in result["raw_energy"]["read"]))
-
     def test_same_port_next_input_changes_exclude_contaminated_operation_energy(self):
         for pin, changed in (("din0", "1"), ("wmask0", "0")):
             schedule = cycles()
@@ -115,14 +119,12 @@ class NumericTest(unittest.TestCase):
         schedule = cycles()
         schedule[2]["addr0"] = "1"
         self.assertIsNone(self.measure(cycle_data=schedule)["e_write_pj"])
-
     def test_explicit_operation_cannot_mislabel_electrical_write_enable(self):
         for cycle, web in ((1, "1"), (3, "0")):
             schedule = cycles()
             schedule[cycle].update(web0=web, op0="W" if cycle == 1 else "R")
             with self.assertRaisesRegex(ValueError, "operation disagrees"):
                 self.measure(cycle_data=schedule)
-
     def test_stable_output_and_missing_bit_polarity_are_unknown_not_zero(self):
         times, data = waves()
         data["dout0[0]"] = [1.0] * len(times)
@@ -134,16 +136,83 @@ class NumericTest(unittest.TestCase):
         result = self.measure(wave_data=(times, data))
         self.assertIsNone(result["cell_rise"])
         self.assertIsNone(result["cell_fall"])
-
-    def test_eligible_port_coverage_and_functional_failure_gate_aggregates(self):
-        per_port = {"0": {"e_read_pj": 3, "e_write_pj": 2}, "1": {"e_read_pj": None}}
-        result = characterize.aggregate_energy(per_port, ["RW", "R"], True)
-        self.assertIsNone(result["read_energy_pj"])
-        self.assertEqual(result["write_energy_pj"], 2)
-        per_port["1"]["e_read_pj"] = 4
-        self.assertEqual(characterize.aggregate_energy(per_port, ["RW", "R"], True)["read_energy_pj"], 4)
-        self.assertEqual(characterize.aggregate_energy(per_port, ["RW", "R"], False),
-                         {"read_energy_pj": None, "write_energy_pj": None})
+    def test_precharge_rise_is_not_credited_as_expected_zero_data(self):
+        schedule = {}
+        for cycle in range(6):
+            selected = cycle in (1, 2, 3)
+            schedule[cycle] = dict(role0="RW", csb0="0" if selected else "1",
+                                   web0="1", op0="R" if selected else "I",
+                                   addr0="0", din0="0")
+        times_ns = [index * .05 for index in range(121)]
+        points = [(0, 0), (2.1, 0), (2.3, 1), (2.6, 1), (2.8, 0),
+                  (3.1, 0), (3.3, 1), (4.6, 1), (4.8, 0), (6, 0)]
+        output = []
+        for time in times_ns:
+            for (left, first), (right, second) in zip(points, points[1:]):
+                if left <= time <= right:
+                    output.append(first + (second - first) * (time - left) / (right - left))
+                    break
+        clock = [1 if time % 1 <= .4 else max(0, (.6 - time % 1) / .2)
+                 for time in times_ns]
+        data = {"clk0": clock, "dout0[0]": output,
+                "i(vdd)": [-.002] * len(times_ns)}
+        times = [time * 1e-9 for time in times_ns]
+        result = charz.measure_port(
+            times, data, schedule, 0, 1, 1, "i(vdd)",
+            expected={1: {"dout0": "0"}, 2: {"dout0": "1"}, 3: {"dout0": "0"}},
+            domain=dict(period_ns=1, load_ff=5, input_slew_ns=.03,
+                        corner="tt", vdd=1, temp=25))
+        arcs = result["arc_discovery"]
+        self.assertEqual(arcs["selected_clock_phase"], "falling")
+        self.assertIsNone(result["cell_rise"])
+        self.assertIsNotNone(result["cell_fall"])
+        precharge = [event for event in arcs["precharge_or_phase_mismatch_candidates"]
+                     if event["cycle"] == 1 and event["direction"] == "rise"]
+        self.assertEqual(len(precharge), 1)
+        self.assertEqual(precharge[0]["classification"], "opposes_expected_read_data")
+        mismatched = [event for event in arcs["transition_events"]
+                      if event["cycle"] == 2 and
+                      event["classification"] == "phase_mismatch_not_credited_as_data"]
+        self.assertEqual(len(mismatched), 1)
+        valid = [event for event in arcs["valid_data_arcs"] if event["cycle"] == 3]
+        self.assertEqual(len(valid), 1)
+        self.assertEqual(valid[0]["associated_edge"], "falling")
+        self.assertAlmostEqual(valid[0]["edge_ns"], 4.5, places=6)
+        self.assertAlmostEqual(valid[0]["delay_ns"], .2, places=6)
+        self.assertEqual(valid[0]["expected_direction"], "fall")
+        self.assertTrue(arcs["read_hold"]["passed"])
+    def test_read_hold_failure_is_attached_to_next_observed_rising_edge(self):
+        schedule = {}
+        for cycle in range(6):
+            selected = cycle in (1, 2, 3)
+            schedule[cycle] = dict(role0="RW", csb0="0" if selected else "1",
+                                   web0="1", op0="R" if selected else "I",
+                                   addr0="0", din0="0")
+        times_ns = [index * .05 for index in range(121)]
+        points = [(0, 0), (2.1, 0), (2.3, 1), (2.6, 1), (2.8, 0),
+                  (3.1, 0), (3.3, 1), (4.6, 1), (4.8, 0),
+                  (4.9, 0), (4.95, 1), (6, 1)]
+        output = []
+        for time in times_ns:
+            for (left, first), (right, second) in zip(points, points[1:]):
+                if left <= time <= right:
+                    output.append(first + (second - first) * (time - left) / (right - left))
+                    break
+        clock = [1 if time % 1 <= .4 else max(0, (.6 - time % 1) / .2)
+                 for time in times_ns]
+        times = [time * 1e-9 for time in times_ns]
+        arcs = charz.discover_read_arcs(
+            times, {"clk0": clock, "dout0[0]": output},
+            {1: {"dout0": "0"}, 2: {"dout0": "1"}, 3: {"dout0": "0"}},
+            [1, 2, 3], ["dout0[0]"], 0, 1e-9, 1, "clk0")
+        failures = arcs["read_hold"]["failures"]
+        self.assertEqual([(item["cycle"], item["status"]) for item in failures],
+                         [(3, "read_data_not_valid_at_next_rising_edge")])
+        self.assertAlmostEqual(failures[0]["next_rising_edge_ns"], 4.975, places=6)
+    def test_missing_timing_domains_remain_explicit(self):
+        result = self.measure(domain={"period_ns": 1, "load_ff": 5})
+        self.assertEqual(set(result["arc_discovery"]["valid_domain"]["missing_fields"]),
+                         {"input_slew_ns", "corner", "vdd", "temp"})
 
 
 class DomainTest(unittest.TestCase):
@@ -207,6 +276,35 @@ class DomainTest(unittest.TestCase):
                 self.assertEqual([float(value) for value in values.split(",")], [.655, .7])
                 self.assertIn("fall_transition (delay_tbl0)", output)
                 self.assertIn("dont_use : true", text)
+
+    def test_diagnostic_export_uses_the_measured_clock_edge(self):
+        for phase in ("rising", "falling"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                measurements = measurement_file("SC9T", {0: "RW"})
+                for label in ("m5", "m50"):
+                    measurements["tt"][label]["ports"]["0"]["arc_discovery"][
+                        "selected_clock_phase"] = phase
+                source = root / "measurements.json"
+                source.write_text(json.dumps(measurements))
+                argv = ["mklib", str(source), "macro", str(root), "--words", "16",
+                        "--bits", "8", "--area", "42", "--stdcell-library", "SC9T",
+                        "--port-roles", "0:RW", "--diagnostic-table-only"]
+                with mock.patch("sys.argv", argv):
+                    mklib.main()
+                output = braced_group((root / "macro_tt.lib").read_text(), "bus (dout0)")
+                self.assertIn("timing_type : {}_edge".format(phase), output)
+                self.assertIn("measured on the {} clock edge".format(phase), output)
+
+    def test_clock_phase_is_required_and_must_match_both_loads(self):
+        valid = measurement_file("SC9T", {0: "RW"})["tt"]
+        for mutate in (lambda item: item["m5"]["ports"]["0"].pop("arc_discovery"),
+                       lambda item: item["m50"]["ports"]["0"]["arc_discovery"].update(
+                           selected_clock_phase="rising")):
+            item = deepcopy(valid)
+            mutate(item)
+            with self.assertRaises(ValueError):
+                mklib._read_clock_phase(mklib.measurement_pair(item, 0))
 
     def test_diagnostic_tables_reject_invalid_values_and_totally_unobserved_reads(self):
         valid = measurement_file("SC9T", {0: "RW"})["tt"]

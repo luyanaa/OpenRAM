@@ -154,6 +154,13 @@ class ics55_column_mux_array_tgate(column_mux_array_base):
                                "sel_{}".format(col_num % self.words_per_row),
                                "gnd", "vdd"])
 
+    def setup_layout_constants(self):
+        """Include absolute bank-column offsets in the physical width."""
+        super().setup_layout_constants()
+        if self.offsets:
+            self.width = max(self.width,
+                             max(self.offsets[:self.columns]) + self.mux.width)
+
     def _vdd_via_footprints(self):
         """Build the exact M1/V1/M2/V2/M3 footprints used by add_via_stack_center."""
         via1 = factory.create(module_type="contact", layer_stack=self.m1_stack)

@@ -161,7 +161,7 @@ class multi_delay_chain(design):
                 # Drop a via on each A pin
                 a_pin = load.get_pin("A")
                 self.add_via_stack_center(from_layer=a_pin.layer,
-                                          to_layer="m3",
+                                          to_layer=self.top_layer,
                                           offset=a_pin.center())
 
             # Route an M3 horizontal wire to the furthest
@@ -172,9 +172,9 @@ class multi_delay_chain(design):
                                       to_layer="m2",
                                       offset=a_pin.center())
             self.add_via_stack_center(from_layer=z_pin.layer,
-                                      to_layer="m3",
+                                      to_layer=self.top_layer,
                                       offset=z_pin.center())
-            self.add_path("m3", [z_pin.center(), a_max.center()])
+            self.add_path(self.top_layer, [z_pin.center(), a_max.center()])
 
             # Route Z to the A of the next stage
             if i + 1 < len(self.driver_inst_list):
@@ -209,12 +209,12 @@ class multi_delay_chain(design):
         a_pin = self.driver_inst_list[0].get_pin("A")
         mid_loc = vector(a_pin.cx(), a_pin.cy() - self.m3_pitch)
         self.add_via_stack_center(from_layer=a_pin.layer,
-                                        to_layer="m3",
+                                        to_layer=self.top_layer,
                                         offset=mid_loc)
         self.add_path("m2", [a_pin.center(), mid_loc])
 
         self.add_layout_pin_rect_center(text="in",
-                                        layer="m3",
+                                        layer=self.top_layer,
                                         offset=mid_loc)
 
         for pin_number in self.pinout_list:
@@ -222,8 +222,8 @@ class multi_delay_chain(design):
             output_driver_inst = self.driver_inst_list[pin_number - 1]
             a_pin = self.load_inst_map[output_driver_inst][-1].get_pin("A")
             self.add_via_stack_center(from_layer=a_pin.layer,
-                                      to_layer="m3",
+                                      to_layer=self.top_layer,
                                       offset=a_pin.center())
             self.add_layout_pin_rect_center(text="out{}".format(str(pin_number)),
-                                            layer="m3",
+                                            layer=self.top_layer,
                                             offset=a_pin.center())

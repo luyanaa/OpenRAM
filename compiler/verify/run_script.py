@@ -16,8 +16,8 @@ from openram import debug
 from openram import OPTS
 
 
-def run_script(cell_name, script="lvs"):
-    """ Run script and create output files. """
+def run_script(cell_name, script="lvs", check=False):
+    """Run a verification script; optionally require a successful process exit."""
 
     echo_cmd_output = OPTS.verbose_level > 1
 
@@ -87,6 +87,9 @@ def run_script(cell_name, script="lvs"):
     debug.info(2, "Finished {} with {}".format(scriptpath, p.returncode))
 
     os.chdir(cwd)
+    if check and p.returncode:
+        raise subprocess.CalledProcessError(p.returncode, p_cmd)
+
 
     return (outfile, errfile, resultsfile)
 

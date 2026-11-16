@@ -7,6 +7,7 @@ Usage: charz.py RAWDIR TRACE --period NS --vdd V --stdcell-library LIB
        [--ports 0,1]
 """
 import argparse
+import bisect
 import glob
 import json
 import math
@@ -19,13 +20,262 @@ from check import read_psf
 from mklib import normalize_stdcell_library, ports_argument
 
 
+def trace_records(path):
+    """Read the electrical input trace and the expected read-data identities."""
+    cycles, expected = {}, {}
+    with open(path, encoding="utf-8") as stream:
+        for line in stream:
+            fields = line.split()
+            if not fields:
+                continue
+            if fields[0] == "C":
+                cycles[int(fields[1])] = dict(item.split("=", 1) for item in fields[2:])
+            elif fields[0] == "E":
+                bus, bits = fields[2].split("=", 1)
+                record = expected.setdefault(int(fields[1]), {})
+                if bus in record:
+                    raise ValueError("trace repeats expected output {} on cycle {}".format(
+                        bus, fields[1]))
+                record[bus] = bits
+    return cycles, expected
+
+
 def trace_cycles(path):
-    cycles = {}
-    for line in open(path):
-        fields = line.split()
-        if fields and fields[0] == "C":
-            cycles[int(fields[1])] = dict(item.split("=", 1) for item in fields[2:])
-    return cycles
+    return trace_records(path)[0]
+
+
+def _sample_value(times, values, point):
+    if point < times[0] or point > times[-1]:
+        return None
+    right = bisect.bisect_right(times, point)
+    left = right - 1
+    if times[left] == point or right == len(times):
+        return values[left]
+    fraction = (point - times[left]) / (times[right] - times[left])
+    return values[left] + fraction * (values[right] - values[left])
+
+
+def _output_bit(name, port, width):
+    match = re.fullmatch(r"dout{}(?:\[(\d+)\]|_(\d+)|\.(\d+))?".format(port), name)
+    if match is None:
+        return None
+    indexes = [value for value in match.groups() if value is not None]
+    if not indexes:
+        return 0 if width == 1 else None
+    return int(indexes[0])
+
+
+def discover_read_arcs(times, data, expected, read_cycles, outputs, port,
+                       period, voltage, clock_signal, domain=None, functional=None):
+    """Associate output transitions with expected read bits and actual clock edges."""
+    threshold = voltage / 2
+    clock_values, clock_signs = directed_crossings(times, data[clock_signal], threshold)
+    clock_edges = []
+    for edge, sign in zip(clock_values, clock_signs):
+        clock_edges.append((edge, "rising" if sign > 0 else "falling"))
+    clock_edges.sort()
+    edge_times = [edge for edge, _ in clock_edges]
+    edge_half_window = period / 2 + max(period * .02, 2e-12)
+    crossings = {name: directed_crossings(times, data[name], threshold)
+                 for name in outputs}
+    events, samples, holds = [], [], []
+    phase_events = {"rising": set(), "falling": set()}
+    phase_polarity_events = {
+        phase: {"rise": set(), "fall": set()} for phase in phase_events}
+    for cycle in read_cycles:
+        bits = expected.get(cycle, {}).get("dout{}".format(port))
+        sample_time = (cycle + 2) * period - 10e-12
+        if not isinstance(bits, str) or not bits or re.fullmatch("[01]+", bits) is None:
+            samples.append(dict(cycle=cycle, status="missing_or_unknown_expected_read"))
+            continue
+        for name in outputs:
+            bit = _output_bit(name, port, len(bits))
+            if bit is None or bit >= len(bits):
+                samples.append(dict(cycle=cycle, signal=name, status="unmapped_expected_output_bit"))
+                continue
+            expected_bit = int(bits[-1 - bit])
+            expected_direction = 1 if expected_bit else -1
+            observed = _sample_value(times, data[name], sample_time)
+            margin = None if observed is None else (
+                observed / voltage if expected_bit else 1 - observed / voltage)
+            sample_pass = margin is not None and margin >= .8
+            mids, signs = crossings[name]
+            in_window = [(index, crossing, sign) for index, (crossing, sign)
+                         in enumerate(zip(mids, signs))
+                         if (cycle + 1) * period <= crossing < sample_time]
+            last_crossing = in_window[-1][1] if in_window else None
+            signal_events = []
+            for _, crossing, sign in in_window:
+                edge_index = bisect.bisect_right(edge_times, crossing) - 1
+                associated = clock_edges[edge_index] if edge_index >= 0 else None
+                if associated is not None and crossing - associated[0] > edge_half_window:
+                    associated = None
+                phase = None if associated is None else associated[1]
+                direction = "rise" if sign > 0 else "fall"
+                matches = sign == expected_direction
+                stable = crossing == last_crossing and matches
+                event = dict(cycle=cycle, signal=name, bit=bit, expected=expected_bit,
+                             direction=direction, crossing_ns=crossing * 1e9,
+                             associated_edge=None if associated is None else phase,
+                             edge_ns=None if associated is None else associated[0] * 1e9,
+                             delay_ns=None if associated is None else
+                             (crossing - associated[0]) * 1e9,
+                             expected_direction=("rise" if expected_bit else "fall"),
+                             sample_ns=sample_time * 1e9,
+                             sample_voltage_v=observed, sample_pass=sample_pass,
+                             matches_expected_direction=matches,
+                             last_crossing_before_sample=stable,
+                             valid_data_transition=False)
+                if not matches:
+                    event["classification"] = "opposes_expected_read_data"
+                elif not sample_pass:
+                    event["classification"] = "read_sample_does_not_match_expected_data"
+                elif not stable:
+                    event["classification"] = "not_final_transition_to_expected_data"
+                elif phase is None:
+                    event["classification"] = "no_associated_clock_edge"
+                else:
+                    event["classification"] = "phase_candidate"
+                    phase_events[phase].add((cycle, name))
+                    phase_polarity_events[phase][direction].add((cycle, name))
+                events.append(event)
+                signal_events.append(event)
+            samples.append(dict(cycle=cycle, signal=name, bit=bit, expected=expected_bit,
+                                sample_ns=sample_time * 1e9, sample_voltage_v=observed,
+                                sample_pass=sample_pass,
+                                transition_count=len(signal_events),
+                                target_transition_count=sum(event["matches_expected_direction"]
+                                                            for event in signal_events),
+                                status=("sampled_expected_data" if sample_pass else
+                                        "read_sample_mismatch")))
+
+        edge_target = (cycle + 2) * period
+        rising_targets = [edge for edge, phase in clock_edges
+                          if phase == "rising" and
+                          abs(edge - edge_target) <= period / 4]
+        next_rise = min(rising_targets, key=lambda edge: abs(edge - edge_target)) \
+            if rising_targets else None
+        for name in outputs:
+            bit = _output_bit(name, port, len(bits))
+            if bit is None or bit >= len(bits):
+                continue
+            expected_bit = int(bits[-1 - bit])
+            if next_rise is None:
+                holds.append(dict(cycle=cycle, signal=name, expected=expected_bit,
+                                  status="missing_next_rising_edge"))
+                continue
+            edge_value = _sample_value(times, data[name], next_rise)
+            edge_margin = None if edge_value is None else (
+                edge_value / voltage if expected_bit else 1 - edge_value / voltage)
+            passed = edge_margin is not None and edge_margin >= .8
+            mids, signs = crossings[name]
+            departure = next((crossing for crossing, sign in zip(mids, signs)
+                              if crossing >= next_rise and
+                              crossing < next_rise + period / 2 and
+                              sign != (1 if expected_bit else -1)), None)
+            holds.append(dict(cycle=cycle, signal=name, expected=expected_bit,
+                              next_rising_edge_ns=next_rise * 1e9,
+                              edge_voltage_v=edge_value, passed=passed,
+                              hold_ns=None if departure is None else
+                              (departure - next_rise) * 1e9,
+                              hold_censored=departure is None,
+                              status="held_at_next_rising_edge" if passed else
+                              "read_data_not_valid_at_next_rising_edge"))
+
+    observed_directions = {direction for phase in phase_polarity_events.values()
+                           for direction, items in phase.items() if items}
+    zero_data_phases = [phase for phase, polarities in phase_polarity_events.items()
+                        if polarities["fall"]]
+    selected_phase = zero_data_phases[0] if len(zero_data_phases) == 1 else None
+    if selected_phase is not None:
+        for event in events:
+            if event["classification"] == "phase_candidate":
+                if event["associated_edge"] != selected_phase:
+                    event["classification"] = "phase_mismatch_not_credited_as_data"
+                elif functional is False:
+                    event["classification"] = "functional_failure_not_credited_as_data"
+                else:
+                    event["classification"] = "valid_expected_read_transition"
+                    event["valid_data_transition"] = True
+    else:
+        for event in events:
+            if event["classification"] == "phase_candidate":
+                event["classification"] = (
+                    "clock_phase_no_expected_zero_anchor_not_credited"
+                    if not zero_data_phases else
+                    "clock_phase_ambiguous_not_credited_as_data")
+
+    valid_arcs, precharge_candidates = [], []
+    for event in events:
+        if event["valid_data_transition"]:
+            valid_arcs.append(event)
+        elif (event["direction"] == "rise" and
+              (not event["matches_expected_direction"] or
+               event["associated_edge"] != selected_phase)):
+            event["pre_access_or_phase_mismatch_candidate"] = True
+            precharge_candidates.append(event)
+    threshold_cache = {}
+
+    def threshold_crossings(name, level, direction):
+        key = (name, level, direction)
+        if key not in threshold_cache:
+            crossing_times, signs = directed_crossings(times, data[name], level)
+            threshold_cache[key] = [time for time, sign in zip(crossing_times, signs)
+                                    if sign == direction]
+        return threshold_cache[key]
+
+    for event in valid_arcs:
+        sign = 1 if event["direction"] == "rise" else -1
+        first_level, last_level = ((.1 * voltage, .9 * voltage) if sign > 0
+                                   else (.9 * voltage, .1 * voltage))
+        edge = event["edge_ns"] * 1e-9
+        crossing = event["crossing_ns"] * 1e-9
+        sample = event["sample_ns"] * 1e-9
+        first = [time for time in threshold_crossings(event["signal"], first_level, sign)
+                 if edge <= time <= crossing]
+        last = [time for time in threshold_crossings(event["signal"], last_level, sign)
+                if crossing <= time < sample]
+        event["transition_ns"] = (min(last) - max(first)) * 1e9 if first and last else None
+        event["delay_ns"] = (crossing - edge) * 1e9
+    domain = {} if domain is None else dict(domain)
+    required_domain = ("period_ns", "load_ff", "input_slew_ns", "corner", "vdd", "temp")
+    read_hold_failures = [item for item in holds if item["status"] != "held_at_next_rising_edge"]
+    coverage = {
+        name: {direction: sum(item["signal"] == name and item["direction"] == direction
+                              and item["transition_ns"] is not None for item in valid_arcs)
+               for direction in ("rise", "fall")}
+        for name in outputs}
+    return dict(
+        phase_status=("unique_phase_from_expected_zero_data" if selected_phase is not None else
+                      "ambiguous_expected_zero_phase" if zero_data_phases else
+                      "missing_expected_zero_phase_anchor"),
+        selected_clock_phase=selected_phase,
+        phase_anchor_candidates=zero_data_phases,
+        phase_evidence={
+            phase: dict(read_signal_transitions=len(items),
+                        rise_transitions=len(phase_polarity_events[phase]["rise"]),
+                        fall_transitions=len(phase_polarity_events[phase]["fall"]),
+                        expected_zero_fall_anchor=bool(phase_polarity_events[phase]["fall"]))
+            for phase, items in phase_events.items()},
+        observed_data_directions=sorted(observed_directions),
+        phase_inference="unique observed clock phase of expected-zero output falls anchors the read phase; other output polarities are credited only at that phase, and missing polarity is never inferred",
+        output_coverage=coverage,
+        valid_domain=dict(domain=domain,
+                          missing_fields=[key for key in required_domain if key not in domain],
+                          scope="exact waveform domain and E-trace data identities only; no continuous-domain or STA claim"),
+        functional_pass=functional,
+        expected_read_samples=samples,
+        transition_events=events,
+        valid_data_arcs=valid_arcs,
+        precharge_or_phase_mismatch_candidates=precharge_candidates,
+        read_hold=dict(scope="expected data sampled at the next observed rising clock edge; later departures are censored waveform observations",
+                       samples=holds, failures=read_hold_failures,
+                       passed=bool(holds) and not read_hold_failures),
+        counts=dict(expected_samples=len(samples),
+                    output_events=len(events), valid_data_arcs=len(valid_arcs),
+                    rejected_precharge_or_phase_mismatch=len(precharge_candidates),
+                    held_edge_samples=sum(item.get("passed") is True for item in holds),
+                    failed_hold_samples=len(read_hold_failures)))
 
 
 def port_access_cycles(cycles, port):
@@ -172,7 +422,8 @@ def next_inputs_held(cycles, cycle, port):
 
 
 def measure_port(times, data, cycles, port, period, voltage, power_current,
-                 replica_net=None, *, skew1=0):
+                 replica_net=None, *, skew1=0, expected=None, domain=None,
+                 functional=None):
     validate_waveforms(times, data)
     if (type(period) not in (int, float) or not math.isfinite(period) or period <= 0
             or type(voltage) not in (int, float) or not math.isfinite(voltage) or voltage <= 0):
@@ -205,6 +456,30 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
         outputs = sorted(name for name in data if name.startswith("dout"))
     if read_cycles and not outputs:
         raise ValueError("missing dout{} waveforms".format(port))
+    arc_discovery = None
+    if expected is not None:
+        clock_signal = "clk{}".format(port) if "clk{}".format(port) in data else (
+            clock[0] if len(clock) == 1 else None)
+        if clock_signal is not None:
+            arc_discovery = discover_read_arcs(
+                times, data, expected, read_cycles, outputs, port, period_s,
+                voltage, clock_signal, domain=domain, functional=functional)
+        else:
+            arc_discovery = dict(
+                phase_status="missing_or_ambiguous_clock_signal",
+                selected_clock_phase=None, phase_evidence={},
+                output_coverage={name: {"rise": 0, "fall": 0} for name in outputs},
+                valid_domain=dict(domain={} if domain is None else dict(domain),
+                                  missing_fields=[key for key in
+                                      ("period_ns", "load_ff", "input_slew_ns",
+                                       "corner", "vdd", "temp")
+                                      if domain is None or key not in domain],
+                                  scope="unresolved clock identity; no data arcs credited"),
+                functional_pass=functional, expected_read_samples=[],
+                transition_events=[], valid_data_arcs=[],
+                precharge_or_phase_mismatch_candidates=[],
+                read_hold=dict(samples=[], failures=[], passed=False,
+                               status="unresolved_clock_identity"))
 
     access = []
     transitions_10_90 = []
@@ -300,6 +575,15 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
                                              ("idle", idle_windows))}
     read_energy = [item["energy_pj"] for item in raw_energy["read"]]
     write_energy = [item["energy_pj"] for item in raw_energy["write"]]
+    if arc_discovery is not None:
+        directional = {name: [] for name in
+                       ("cell_rise", "cell_fall", "rise_transition", "fall_transition")}
+        for event in arc_discovery["valid_data_arcs"]:
+            if event["transition_ns"] is None:
+                continue
+            direction = "rise" if event["direction"] == "rise" else "fall"
+            directional["cell_" + direction].append(event["delay_ns"])
+            directional[direction + "_transition"].append(event["transition_ns"])
     result = {
         "role": role,
         "ins_rise": None if insertion is None else insertion * 1e9,
@@ -321,11 +605,15 @@ def measure_port(times, data, cycles, port, period, voltage, power_current,
         "write_cycles": len(write_cycles),
     }
     result.update({name: maximum(values) for name, values in directional.items()})
-    result["output_coverage"] = {
-        name: {direction: sum(item["signal"] == name and item["direction"] == direction
-                              and item["transition_ns"] is not None for item in raw_timing)
-               for direction in ("rise", "fall")}
-        for name in outputs}
+    if arc_discovery is not None:
+        result["arc_discovery"] = arc_discovery
+        result["output_coverage"] = arc_discovery["output_coverage"]
+    if arc_discovery is None:
+        result["output_coverage"] = {
+            name: {direction: sum(item["signal"] == name and item["direction"] == direction
+                                  and item["transition_ns"] is not None for item in raw_timing)
+                   for direction in ("rise", "fall")}
+            for name in outputs}
     for direction, keys in (("rise", ("cell_rise", "rise_transition")),
                             ("fall", ("cell_fall", "fall_transition"))):
         if not outputs or any(result["output_coverage"][name][direction] == 0 for name in outputs):
@@ -361,21 +649,13 @@ def main():
     if len(files) != 1:
         parser.error("expected exactly one transient waveform, found {}".format(len(files)))
     times, data = read_psf(files[0])
-    cycles = trace_cycles(args.trace)
+    cycles, expected = trace_records(args.trace)
     ports = args.ports
     if ports is None:
         ports = sorted({int(name[3:]) for values in cycles.values() for name in values
                         if name.startswith("csb") and name[3:].isdigit()})
     if not ports:
         parser.error("trace contains no port control cycles")
-    try:
-        per_port = {
-            str(port): measure_port(times, data, cycles, port, args.period, args.vdd,
-                                   args.power_current, args.replica_net)
-            for port in ports
-        }
-    except ValueError as error:
-        parser.error(str(error))
     domain = {
         "period_ns": args.period,
         "load_ff": args.load_ff,
@@ -384,6 +664,16 @@ def main():
         "vdd": args.vdd,
         "temp": args.temp,
     }
+    try:
+        per_port = {
+            str(port): measure_port(
+                times, data, cycles, port, args.period, args.vdd,
+                args.power_current, args.replica_net, expected=expected,
+                domain=domain)
+            for port in ports
+        }
+    except ValueError as error:
+        parser.error(str(error))
     if len(ports) == 1:
         result = per_port[str(ports[0])]
         result.update({"schema_version": 3, "port": ports[0], "domain": domain})

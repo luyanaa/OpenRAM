@@ -70,6 +70,7 @@ def measurement_metrics(role, port, load):
     }
     if role in ("RW", "R"):
         values.update({
+            "arc_discovery": {"selected_clock_phase": "falling"},
             "dout_fall": 0.60 + port * 0.10 + load / 1000.0,
             "dout_tran": 0.10 + port * 0.02 + load / 1000.0,
             "cell_rise": 0.60 + port * 0.10 + load / 1000.0,

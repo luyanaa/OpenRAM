@@ -155,8 +155,28 @@ class router(router_tech):
 
         shape_list = self.layout.getAllPinShapes(str(pin_name))
         pin_set = set()
+        # Labels may also live on dedicated text layers (e.g. TR-1um's
+        # 48/0 M1 label layer); only real routing-layer shapes are pins.
+        from openram.tech import layer as tech_layer
+        from openram.tech import layer_indices as tech_indices
+        valid = set()
+        valid_layer_numbers = set()
+        for lid in tech_indices:
+            lp = tech_layer[lid]
+            if lp:
+                valid.add((lp[0], lp[1] if lp[1] is not None else 0))
+                valid_layer_numbers.add(lp[0])
         for shape in shape_list:
             layer, boundary = shape
+            purpose = layer[1] if len(layer) > 1 else None
+            if purpose is None:
+                # gdsMill omits the datatype for pin shapes. Match that form
+                # by layer number, as pin_layout.same_lpp does, while keeping
+                # explicit text/dummy purposes out of the router.
+                if layer[0] not in valid_layer_numbers:
+                    continue
+            elif (layer[0], purpose) not in valid:
+                continue
             # gdsMill boundaries are in (left, bottom, right, top) order
             ll = vector(boundary[0], boundary[1])
             ur = vector(boundary[2], boundary[3])
@@ -193,6 +213,11 @@ class router(router_tech):
                     # gdsMill boundaries are in (left, bottom, right, top) order
                     ll = vector(boundary[0], boundary[1])
                     ur = vector(boundary[2], boundary[3])
+                # Skip degenerate shapes.  Text labels written on the
+                # routing layers (some technologies need them for pin
+                # recognition) come back from gdsMill with a zero extent.
+                if ll.x >= ur.x or ll.y >= ur.y:
+                    continue
                 rect = [ll, ur]
                 new_shape = graph_shape(name, rect, lpp)
                 new_shape = self.inflate_shape(new_shape)

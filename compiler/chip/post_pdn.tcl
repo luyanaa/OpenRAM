@@ -254,6 +254,41 @@ proc chip_post_pdn {} {
     }
     puts "\[INFO\] post_pdn: $nobs Metal5 strap-band obstructions"
 
+    # ------------------------------------------------------------------
+    # Duplicate every macro footprint as a design-level routing obstruction.
+    #
+    # Measured on the 128x32 (run14): GRT placed 1123 guide boxes *inside* the
+    # eight macro footprints (Metal2 802, Metal3 281, Metal4 40, on 119 nets) -
+    # e.g. a net whose guide climbs 400 um vertically through a macro interior
+    # on Metal2 - even though every instance's master carries a full-footprint
+    # `OBS` (108 boxes, Metal1..Metal4, the Metal2 box covering the whole block
+    # inset 0.66 um).  The identical flow on the 16x8 macro arrives at 0
+    # guides inside its macros, so this abstract is not being applied to the
+    # routing grid.  Whatever the reason, the consequence is fatal: DRT then
+    # has to route through the macro's real internal metal and shorts to the
+    # vccd1/vssd1 rails (523 Metal4/Metal5 markers in DRT pass 1 of run14,
+    # every one of them inside a macro footprint).
+    #
+    # A design-level dbObstruction over the same footprint is honoured by GRT
+    # (Part 2 above proves it: strap-row bands took the strap-crossing guides
+    # from 15 to 0).  Inset 0.66 um = the abstract's own perimeter margin, so
+    # the bottom escape strip that carries the macro's M3 signal pins stays
+    # untouched.
+    set nmacroobs 0
+    foreach inst [$blk getInsts] {
+        if {[[$inst getMaster] getType] ne "BLOCK"} {
+            continue
+        }
+        set bb [$inst getBBox]
+        foreach lay {Metal1 Metal2 Metal3 Metal4} {
+            odb::dbObstruction_create $blk [$tech findLayer $lay] \
+                [expr {[$bb xMin] + 1320}] [expr {[$bb yMin] + 1320}] \
+                [expr {[$bb xMax] - 1320}] [expr {[$bb yMax] - 1320}]
+        }
+        incr nmacroobs
+    }
+    puts "\[INFO\] post_pdn: $nmacroobs macro-footprint obstructions (Metal1-4)"
+
     puts "\[INFO\] post_pdn: $nstrap macro rail straps, $nvia Via4"
 }
 

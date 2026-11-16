@@ -578,15 +578,18 @@ class hierarchical_decoder(design):
                             predecode_name = "predecode_{}".format(index_A)
                             self.route_predecode_bus_outputs(predecode_name,
                                                              self.and_inst[output_index].get_pin("A"),
-                                                             output_index)
+                                                             output_index,
+                                                             input_index=0)
                             predecode_name = "predecode_{}".format(index_B)
                             self.route_predecode_bus_outputs(predecode_name,
                                                              self.and_inst[output_index].get_pin("B"),
-                                                             output_index)
+                                                             output_index,
+                                                             input_index=1)
                             predecode_name = "predecode_{}".format(index_C)
                             self.route_predecode_bus_outputs(predecode_name,
                                                              self.and_inst[output_index].get_pin("C"),
-                                                             output_index)
+                                                             output_index,
+                                                             input_index=2)
                         output_index = output_index + 1
 
     def route_supplies(self):
@@ -605,13 +608,46 @@ class hierarchical_decoder(design):
 
 
 
-    def route_predecode_bus_outputs(self, rail_name, pin, row):
+    def route_predecode_bus_outputs(self, rail_name, pin, row, input_index=None):
         """
-        Connect the routing rail to the given metal1 pin
-        using a routing track at the given y_offset
+        Connect the routing rail to the given decode AND input pin.
+
+        On gf180mcu the three AND inputs are staggered by less than the m1
+        width, so the default m1 run at the pin y shorts all three rails of a
+        row together.  When the tech sets input_route_layer, run the rail ->
+        pin connection on that layer instead, using one track y per input.
         """
 
         pin_pos = pin.center()
+        route_layer = getattr(layer_props.hierarchical_decoder,
+                              "input_route_layer", None)
+        track_offsets = getattr(layer_props.hierarchical_decoder,
+                                "input_track_offsets", None)
+
+        if route_layer and track_offsets and input_index is not None:
+            # place_and_array alternates R0 (even rows) and MX (odd rows) about
+            # the row boundary, so mirror the track offset on odd rows.
+            h = self.and3.height
+            if (row % 2) == 0:
+                base = h * row
+            else:
+                base = h * (row + 1)
+            track_y = base + (1 if (row % 2) == 0 else -1) * track_offsets[input_index]
+
+            rail_pos = vector(self.predecode_bus[rail_name].cx(), track_y)
+            self.add_path(route_layer,
+                          [rail_pos, vector(pin_pos.x, track_y), pin_pos])
+
+            self.add_via_stack_center(from_layer=self.bus_layer,
+                                      to_layer=route_layer,
+                                      offset=rail_pos,
+                                      directions=self.bus_directions)
+            self.add_via_stack_center(from_layer=pin.layer,
+                                      to_layer=route_layer,
+                                      offset=pin_pos)
+            self.predecode_bus_rail_pos.append(rail_pos)
+            return
+
         rail_pos = vector(self.predecode_bus[rail_name].cx(), pin_pos.y)
         self.add_path(self.input_layer, [rail_pos, pin_pos])
 

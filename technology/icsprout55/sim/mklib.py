@@ -140,6 +140,26 @@ def _observed_read_tables(pair):
     return tables
 
 
+def _read_clock_phase(pair):
+    """Return the one measured clock phase both loads were referenced to.
+
+    Read tables are delayed from the clock edge selected by the measurement's own
+    arc discovery; a missing or load-dependent phase cannot be exported as one
+    Liberty timing arc.
+    """
+    phases = set()
+    for _, _, _, metrics in pair:
+        discovery = metrics.get("arc_discovery")
+        phase = None if not isinstance(discovery, dict) else discovery.get("selected_clock_phase")
+        if phase not in ("rising", "falling"):
+            raise ValueError("read measurement lacks a discovered rising/falling clock phase")
+        phases.add(phase)
+    if len(phases) != 1:
+        raise ValueError("read loads were measured on different clock phases: " +
+                         ", ".join(sorted(phases)))
+    return phases.pop()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("meas")
@@ -203,6 +223,7 @@ def main():
                             corner, port, metrics.get("role", "missing"), role))
         read_ports = [port for port in ports if args.port_roles[port] in ("RW", "R")]
         read_tables = {port: _observed_read_tables(pairs[port]) for port in read_ports}
+        read_phases = {port: _read_clock_phase(pairs[port]) for port in read_ports}
         first_sample = pairs[ports[0]][0][2]
         voltage = float(corner_data.get("vdd", first_sample.get("vdd", 0)))
         temperature = float(corner_data.get("temp", first_sample.get("temp", 25)))
@@ -302,7 +323,10 @@ def main():
                     if "cell_" + direction not in tables:
                         emit("            /* {} tables omitted: not observed on every bit at both loads. */\n".format(
                             direction))
-                emit('            timing () {{\n                related_pin : "clk{}";\n                timing_type : falling_edge;\n                timing_sense : non_unate;\n'.format(port))
+                emit("            /* read tables measured on the {} clock edge at both loads */\n".format(
+                    read_phases[port]))
+                emit('            timing () {{\n                related_pin : "clk{}";\n                timing_type : {}_edge;\n                timing_sense : non_unate;\n'.format(
+                    port, read_phases[port]))
                 for key in ("cell_rise", "cell_fall", "rise_transition", "fall_transition"):
                     if key not in tables:
                         continue

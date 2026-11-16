@@ -10,6 +10,7 @@ from openram.base import vector
 from openram.sram_factory import factory
 from openram.tech import drc, parameter, spice
 from .pgate import *
+import math
 
 
 class ptristate_inv(pgate):
@@ -171,19 +172,90 @@ class ptristate_inv(pgate):
         self.well_pos = vector(0, self.nmos1_inst.uy())
 
     def route_single_gate(self, inst, name, position="left"):
-        """Expose one transistor gate on the routing layer."""
+        """Expose one transistor gate on the routing layer.
+
+        The gate contact cannot sit on the active area: CO.8 requires 0.165 um
+        between a poly contact and *any* diffusion, and ptx only extends the
+        gate poly 0.22 um past the diffusion.  The contact is therefore moved
+        into the routing channel in the middle of the cell, on a poly stub that
+        extends the gate, where there is no diffusion at all.  The pmos and
+        nmos tristate gates use different y positions so that the two stubs
+        and their metal1 pins stay apart.
+
+        ptx runs the gate poly vertically and puts the source/drain contacts on
+        either side of it, so the metal1 pin of the gate contact also has to
+        clear those pads on the diagonal.  The y is clamped so that the
+        contact itself clears the diffusion and the metal1 pad clears the
+        source/drain pads.
+        """
         gate_pin = inst.get_pin("G")
-        gate_center = gate_pin.center()
+        d_pin = inst.get_pin("D")
+        s_pin = inst.get_pin("S")
+
+        contact_w = drc("minwidth_contact")
+        pad_h = max(contact_w + 2 * drc("m1_extend_contact"),
+                    drc("minwidth_m1"))
+        m1_space = drc("m1_to_m1")
+
+        # poly enclose contact (vertical, "V" direction), from the contact
+        # module: max(extend, (poly_minwidth - contact)/2)
+        poly_enclosure = max(drc("poly_extend_contact"),
+                             (drc("minwidth_poly") - contact_w) / 2)
+        poly_pad_h = contact_w + 2 * poly_enclosure
+
+        # Horizontal clearance from the gate poly to the nearest source/drain
+        # m1 pad; used to turn the diagonal m1 spacing rule into a y clearance
+        dx = min(gate_pin.ll().x - max(d_pin.ur().x, s_pin.ur().x),
+                 min(d_pin.ll().x, s_pin.ll().x) - gate_pin.ur().x)
+        dx = max(dx, 0)
+        required_dy = math.sqrt(max(m1_space ** 2 - dx ** 2, 0))
+
+        # Diffusion edges from the poly ends.  ptx extends the poly by
+        # poly_extend_active on each side of the diffusion.
+        diff_bottom = gate_pin.ll().y + drc("poly_extend_active")
+        diff_top = gate_pin.ur().y - drc("poly_extend_active")
+
+        if gate_pin.center().y > self.output_pos.y:
+            # PMOS (upper device): contact goes below the diffusion
+            y = min(max(d_pin.ll().y, s_pin.ll().y) - required_dy
+                    - 0.5 * pad_h,
+                    diff_bottom - drc("poly_contact_to_gate")
+                    - 0.5 * contact_w)
+        else:
+            # NMOS (lower device): contact goes above the diffusion
+            y = max(min(d_pin.ur().y, s_pin.ur().y) + required_dy
+                    + 0.5 * pad_h,
+                    diff_top + drc("poly_contact_to_gate")
+                    + 0.5 * contact_w)
+
+        offset = vector(gate_pin.center().x, y)
+
         via = self.add_via_stack_center(
-            offset=gate_center,
+            offset=offset,
             from_layer="poly",
             to_layer=self.route_layer,
             directions=("V", "V"),
         )
+
+        # Stretch the gate poly up/down to meet the contact's poly enclosure so
+        # the stub is on the same net as the gate.
+        if gate_pin.center().y > self.output_pos.y:
+            bridge_bottom = y - 0.5 * poly_pad_h
+            self.add_rect("poly",
+                          offset=vector(gate_pin.ll().x, bridge_bottom),
+                          width=gate_pin.width(),
+                          height=gate_pin.ll().y - bridge_bottom)
+        else:
+            bridge_top = y + 0.5 * poly_pad_h
+            self.add_rect("poly",
+                          offset=vector(gate_pin.ll().x, gate_pin.ur().y),
+                          width=gate_pin.width(),
+                          height=bridge_top - gate_pin.ur().y)
+
         self.add_layout_pin_rect_center(
             text=name,
             layer=self.route_layer,
-            offset=gate_center,
+            offset=offset,
             width=via.mod.second_layer_width,
             height=via.mod.second_layer_height,
         )

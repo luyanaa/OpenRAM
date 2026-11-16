@@ -11,6 +11,7 @@ from openram.base import design
 from openram.base import vector
 from openram.sram_factory import factory
 from openram.tech import drc, layer_indices as tech_layer_indices
+from openram.tech import layer_properties as layer_props
 from openram import OPTS
 
 
@@ -286,7 +287,8 @@ class write_driver_array(design):
         # must stay on their own layer: a via through M2 would land on a
         # bitline and short it.
         leaf_layer = self.local_insts[0].get_pins("vdd")[0].layer
-        supply_layer = self.supply_stack[0] if leaf_layer == "m2" else leaf_layer
+        promote = getattr(layer_props, "supply_promote_leaf_rails", True)
+        supply_layer = self.supply_stack[0] if (leaf_layer == "m2" and promote) else leaf_layer
         if supply_layer not in tech_layer_indices:
             supply_layer = self.top_layer
         rail_extension = getattr(self.driver, "supply_rail_extension", 0)

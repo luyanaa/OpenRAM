@@ -95,6 +95,26 @@ To preserve results on successful tests (done automatically if test fails):
 KEEP=1 make 05_bitcell_array_test
 ```
 
+### Compiler verification failures
+
+`check_lvsdrc = True` checks the completed macro even when
+`inline_lvsdrc = False` disables intermediate checks. `force_check` requests
+execution; it does not waive a failed check. An executed DRC or LVS failure
+terminates compilation with a nonzero exit status before the final macro
+GDS, SPICE, LEF and Verilog exports are written. Retained temporary reports
+remain available for diagnosis.
+
+Final verification of a supply-routed macro requires physical supply
+connectivity. The explicit non-final `connect_supplies` abstraction used by
+some KLayout decks is not evidence that the completed power grid is connected.
+KLayout DRC/LVS verdicts are read from their report databases; a success banner
+without a comparison is insufficient.
+
+DRC/LVS and parasitic extraction are separate capabilities. The SCN4M_SUBM
+Magic technology includes RC extraction rules. The FreePDK45 and OpenRule1um
+KLayout adapters do not implement PEX; MOS-only extraction or analytical
+capacitance estimates must not be reported as an RC-extracted simulation.
+
 
 ## Successful Unit Tests
 ```console

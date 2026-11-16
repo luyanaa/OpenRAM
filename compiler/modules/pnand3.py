@@ -227,14 +227,46 @@ class pnand3(pgate):
                                      "A",
                                      position="left")
 
-        self.inputB_yoffset = self.inputA_yoffset + self.m3_pitch
+        # In a cell compressed to the gf180mcu 4.84 um row height the third
+        # input contact lands on the PMOS gate/active and trips CO.3/CO.8/PL.2/
+        # PL.6.  Keep the topmost (C) contact below the PMOS gate and the
+        # horizontal output route (same guard as pnand2).
+        pmos_gate_bottom = self.pmos1_inst.get_pin("G").ll().y
+        max_input_yoffset = pmos_gate_bottom - 0.5 * self.poly_contact.first_layer_width
+        a_pin_height = max(p.height() for p in self.get_pins("A"))
+        output_route_bottom = self.output_yoffset - 0.5 * self.route_layer_width
+        max_input_yoffset = min(max_input_yoffset,
+                                output_route_bottom - self.route_layer_space - 0.5 * a_pin_height)
+
+        # Vertical pitch between the three input contacts.  When the inputs are
+        # exported to a shared bus channel, each pin gets an m1->m2 via whose
+        # m1 landing pad is taller than the m1 pitch (gf180mcu: a 0.56 um pad
+        # against a 0.49 um pitch leaves only 0.08 um to the neighbouring pin's
+        # m1 stub).  Technologies where that applies request a wider pitch.
+        from openram.tech import parameter
+        input_pitch = parameter.get("pnand3_input_pitch", self.m1_pitch)
+
+        if self.inputA_yoffset + 2 * input_pitch <= max_input_yoffset:
+            # Evenly spaced contacts that all fit under the output route.
+            self.inputB_yoffset = self.inputA_yoffset + input_pitch
+            self.inputC_yoffset = self.inputB_yoffset + input_pitch
+        else:
+            # The requested pitch does not fit under the output route.  Never
+            # compress below it: spread the three contacts evenly over the whole
+            # available span instead, which maximises their separation.  Packing
+            # them at the raw m1 pitch puts the exported pins (and the m1 landing
+            # pads of the m1->m2 vias used to reach a shared bus) on top of each
+            # other.
+            span = max_input_yoffset - self.inputA_yoffset
+            self.inputC_yoffset = max_input_yoffset
+            self.inputB_yoffset = self.inputA_yoffset + 0.5 * span
+
         bpin = self.route_input_gate(self.pmos2_inst,
                                      self.nmos2_inst,
                                      self.inputB_yoffset,
                                      "B",
                                      position="center")
 
-        self.inputC_yoffset = self.inputB_yoffset + self.m3_pitch
         cpin = self.route_input_gate(self.pmos3_inst,
                                      self.nmos3_inst,
                                      self.inputC_yoffset,

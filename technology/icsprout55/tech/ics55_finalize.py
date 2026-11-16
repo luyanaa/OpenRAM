@@ -45,6 +45,11 @@ METAL_AREA = [((81, 1), 0.046, 0.12), ((82, 1), 0.056, 0.12),
               ((83, 1), 0.056, 0.12), ((84, 1), 0.056, 0.12),
               ((85, 1), 0.056, 0.12)]
 
+# Horizontal repair polygons must be isolated to the exact instance path.
+# Shared source-cell edits fan out to unrelated placements; root overlays
+# changed strict flat-LVS matching for the 1RW16x4 macro.
+LOCAL_METAL_REPAIRS = {(81, 1), (83, 1), (85, 1)}
+
 
 def _region(layout, cell, lp, exclude=None):
     li = layout.find_layer(lp[0], lp[1])
@@ -193,6 +198,146 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
         r.merge()
         return r
 
+    repair_variant_cache = {}
+
+    def patch_signature(patches):
+        return tuple(sorted((polygon.to_s()
+                             for patch in patches for polygon in patch.each()),
+                            key=repr))
+
+    def path_step(element):
+        source_inst = element.inst()
+        source_parent = source_inst.parent_cell
+        ordinal = None
+        for index, sibling in enumerate(source_parent.each_inst()):
+            if sibling == source_inst:
+                ordinal = index
+                break
+        if ordinal is None:
+            report("ics55_finalize: cannot locate repair-path instance")
+            return None
+        return (source_parent.cell_index(), ordinal, source_inst.cell_index,
+                element.ia(), element.ib(), source_inst.is_regular_array(),
+                source_inst.na, source_inst.nb, str(source_inst.trans),
+                str(element.array_member_trans()))
+
+    def replacement_map(node, layer_name):
+        by_ordinal = {}
+        for key, child in node["children"].items():
+            ordinal = key[0]
+            variant = variant_for(child, layer_name)
+            by_ordinal.setdefault(ordinal, []).append((key, variant))
+        replacements = []
+        for ordinal, variants in by_ordinal.items():
+            if any(key[2] != -1 or key[3] != -1 or key[4]
+                   for key, _variant in variants):
+                raise RuntimeError(
+                    "ics55_finalize: cannot localize repair inside a GDS array")
+            if len(variants) != 1:
+                raise RuntimeError(
+                    "ics55_finalize: conflicting repairs share one instance")
+            replacements.append((ordinal, variants[0][1]))
+        return tuple(sorted(replacements))
+
+    def variant_for(node, layer_name):
+        replacements = replacement_map(node, layer_name)
+        patches = node["patches"]
+        if not patches and not replacements:
+            return node["source_idx"]
+        key = (layer_name, node["source_idx"], patch_signature(patches),
+               replacements)
+        cached = repair_variant_cache.get(key)
+        if cached is not None:
+            return cached
+        clone = layout.cell(node["source_idx"]).dup()
+        for patch in patches:
+            clone.shapes(li).insert(patch)
+        instances = list(clone.each_inst())
+        for ordinal, child_idx in replacements:
+            if ordinal >= len(instances):
+                raise RuntimeError(
+                    "ics55_finalize: repair path instance index is invalid")
+            instances[ordinal].cell_index = child_idx
+        repair_variant_cache[key] = clone.cell_index()
+        return clone.cell_index()
+
+    def apply_grouped_repairs(li, lp, requests):
+        root = {"source_idx": top_cell.cell_index(),
+                "patches": [], "children": {}}
+        for path, patch in requests:
+            node = root
+            for step in path:
+                parent_idx, ordinal, child_idx = step[:3]
+                if node["source_idx"] != parent_idx:
+                    report("ics55_finalize: repair path parent changed")
+                    node = None
+                    break
+                key = step[1:]
+                child = node["children"].get(key)
+                if child is None:
+                    child = {"source_idx": child_idx,
+                             "patches": [], "children": {}}
+                    node["children"][key] = child
+                node = child
+            if node is not None:
+                node["patches"].append(patch)
+
+        for patch in root["patches"]:
+            top_cell.shapes(li).insert(patch)
+        replacements = replacement_map(root, lp)
+        instances = list(top_cell.each_inst())
+        for ordinal, child_idx in replacements:
+            if ordinal >= len(instances):
+                raise RuntimeError(
+                    "ics55_finalize: top-level repair path is invalid")
+            instances[ordinal].cell_index = child_idx
+
+    def insert_metal_repair(li, lp, region, margin):
+        if lp not in LOCAL_METAL_REPAIRS:
+            top_cell.shapes(li).insert(region)
+            return
+        requests = []
+        for piece in region.each():
+            box = piece.bbox()
+            search = box.enlarged(margin, margin)
+            it = top_cell.begin_shapes_rec_overlapping(li, search)
+            best = None
+            while not it.at_end():
+                cell = it.cell()
+                if cell.cell_index() not in lib_idx and "contact_" not in cell.name:
+                    shape_box = it.trans() * it.shape().bbox()
+                    overlap_w = max(0, min(box.right, shape_box.right) -
+                                    max(box.left, shape_box.left))
+                    overlap_h = max(0, min(box.top, shape_box.top) -
+                                    max(box.bottom, shape_box.bottom))
+                    gap_x = max(0, box.left - shape_box.right,
+                                shape_box.left - box.right)
+                    gap_y = max(0, box.bottom - shape_box.top,
+                                shape_box.bottom - box.top)
+                    score = (overlap_w * overlap_h > 0, overlap_w * overlap_h,
+                             -(gap_x + gap_y), len(it.path()))
+                    if best is None or score > best[0]:
+                        path = []
+                        valid = True
+                        for element in it.path():
+                            step = path_step(element)
+                            if step is None:
+                                valid = False
+                                break
+                            path.append(step)
+                        if valid:
+                            best = (score, it.trans(), tuple(path))
+                it.next()
+            patch = kdb.Region(piece)
+            if best is None:
+                report("ics55_finalize: no source cell for {} repair at {}".format(lp, box))
+                top_cell.shapes(li).insert(patch)
+            else:
+                local_patch = patch.transformed(best[1].inverted())
+                requests.append((best[2], local_patch))
+        apply_grouped_repairs(li, lp, requests)
+    
+    repair_margin = int(4 * um(0.56))
     n_holes = n_notch = n_area_fixed = n_area_left = 0
     for (lp, min_area, space) in METAL_AREA:
         li = layout.find_layer(lp[0], lp[1])
@@ -207,7 +352,7 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
         holes = metal.holes().with_area(None, um2(HOLE_MAX), False)
         fill = holes.not_overlapping(metal)
         n_holes += fill.count()
-        top_cell.shapes(li).insert(fill)
+        insert_metal_repair(li, lp, fill, repair_margin)
 
         # Same-net notches (MET*_S_1 inside one polygon): close by half the
         # spacing; keep a piece only if it stays one spacing away from every
@@ -221,7 +366,7 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             if loc.interacting(pr.sized(sp)).count() == 1:
                 notch.insert(piece)
         n_notch += notch.count()
-        top_cell.shapes(li).insert(notch)
+        insert_metal_repair(li, lp, notch, repair_margin)
 
         # Minimum area (MET1_A_1/METn_A_1): grow under-area polygons where
         # there is room, else bridge to a nearby polygon of the same net.
@@ -236,7 +381,7 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
         for poly in small.each():
             box = poly.bbox()
             need = um2(min_area) - poly.area()
-            win = box.enlarged(int(4 * um(0.56)), int(4 * um(0.56)))
+            win = box.enlarged(repair_margin, repair_margin)
             loc = local(li, win, added_m)
             ok = False
             dirs = ["x", "y"] if box.width() >= box.height() else ["y", "x"]
@@ -286,7 +431,17 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             else:
                 n_area_left += 1
                 report("ics55_finalize: cannot fix min area of {} polygon at {}".format(lp, box))
-        top_cell.shapes(li).insert(added_m)
+        insert_metal_repair(li, lp, added_m, repair_margin)
+
+    # Repaired clones created while processing an intermediate top-level cell
+    # can become unreachable after a later grouped variant supersedes it.
+    # Prune those definitions before writing; retaining unreachable roots
+    # needlessly bloats the GDS and can confuse downstream hierarchy tools.
+    root_indices = [cell.cell_index() for cell in layout.each_cell()
+                    if cell.parent_cells() == 0 and
+                    cell.cell_index() != top_cell.cell_index()]
+    for cell_index in root_indices:
+        layout.cell(cell_index).prune_cell()
 
     top_cell.shapes(layout.layer(NP[0], NP[1])).insert(np_)
     top_cell.shapes(layout.layer(PP[0], PP[1])).insert(pp)

@@ -7,7 +7,7 @@
 #
 from openram.base import design
 from openram.tech import cell_properties as props
-from openram.tech import spice
+from openram.tech import spice, parameter
 
 
 class dff(design):
@@ -17,6 +17,15 @@ class dff(design):
 
     def __init__(self, name="dff"):
         super().__init__(name, prop=props.dff)
+        # Optional override for the height of the array's m3 clock rail.  A
+        # technology whose hard flop has its D pin close to the default rail
+        # height cannot promote the D pin to m3 (the pad would short to the
+        # rail), so it may push the rail down inside the cell instead.
+        self.clk_rail_y = parameter.get("dff_clk_rail_y", None)
+        # A hard flop whose VDD and GND pins share the same x would otherwise
+        # get abutting dff_array supply straps.  Shift the ground strap by
+        # this amount (0 for technologies whose pins are already apart).
+        self.gnd_tap_xshift = parameter.get("dff_gnd_tap_xshift", 0.0)
 
     def analytical_power(self, corner, load):
         """Returns dynamic and leakage power. Results in nW"""

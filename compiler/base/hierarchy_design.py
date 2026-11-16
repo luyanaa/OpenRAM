@@ -48,7 +48,7 @@ class hierarchy_design(spice, layout):
         return inst_map
 
     def DRC_LVS(self, final_verification=False, force_check=False):
-        """Checks both DRC and LVS for a module"""
+        """Run requested checks; forcing execution never permits violations."""
         from openram import verify
 
         # No layout to check
@@ -70,15 +70,12 @@ class hierarchy_design(spice, layout):
             self.drc_errors = verify.run_drc(self.cell_name, tempgds, tempspice, extract=True, final_verification=final_verification)
             self.lvs_errors = verify.run_lvs(self.cell_name, tempgds, tempspice, final_verification=final_verification)
 
-            # force_check is used to determine decoder height and other things, so we shouldn't fail
-            # if that flag is set
-            if OPTS.inline_lvsdrc and not force_check:
-                debug.check(self.drc_errors == 0,
-                            "DRC failed for {0} with {1} error(s)".format(self.cell_name,
-                                                                          self.drc_errors))
-                debug.check(self.lvs_errors == 0,
-                            "LVS failed for {0} with {1} errors(s)".format(self.cell_name,
-                                                                           self.lvs_errors))
+            debug.check(self.drc_errors == 0,
+                        "DRC failed for {0} with {1} error(s)".format(self.cell_name,
+                                                                      self.drc_errors))
+            debug.check(self.lvs_errors == 0,
+                        "LVS failed for {0} with {1} error(s)".format(self.cell_name,
+                                                                      self.lvs_errors))
 
     def DRC(self, final_verification=False):
         """Checks DRC for a module"""

@@ -27,7 +27,22 @@ clock:
 power:
   core_voltage: 3.3
 
-halo_um: 10
+# 40 um halo -> 80 um routing channels between macros (was 10 -> 20 um).
+#
+# Measured on run14 (20 um channels): the global router had no legal escape for
+# 99 nets and pushed 1123 guide boxes (Metal2 802 / Metal3 281 / Metal4 40)
+# *deep inside* the eight macro footprints - up to 190 um inside, not pin
+# access - with 4811 congested gcell edges after 50 overflow iterations.  DRT
+# then followed those guides and shorted the macros' own vccd1/vssd1 rails:
+# 523 pass-1 DRC markers, 327 Metal4 + 196 Metal5, every one inside a macro.
+# Each macro presents 66 signal pins on its bottom edge; two macros share a
+# channel, so a 20 um channel (~35 M2/M3 tracks at the 0.56 um pitch) has to
+# swallow 132 pins plus all through traffic.  The slot has ~2500 um of spare
+# core height and ~800 um of spare core width, so widening the channels costs
+# nothing.  OpenROAD will not treat macro obstructions as a hard wall (DRT
+# charges BLOCKCOST and reroutes), so the fix has to be enough capacity that
+# the router never wants to enter a macro.
+halo_um: 40
 
 # The 2x4 array leaves no routing channel over the macros, and the macro LEF
 # stops at Metal4, so the router used the macro Metal5 and crossed the PDN

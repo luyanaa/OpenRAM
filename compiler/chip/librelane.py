@@ -189,7 +189,14 @@ def build_config(cfg, slot, macro, fit, out_dir, signoff=True):
                                           if cfg.hold_slack_margin_ns is not None
                                           else 0.3),
         "GRT_ALLOW_CONGESTION": True,
-        "DRT_ANTENNA_REPAIR_ITERS": 10,
+        # LibreLane's detailed-routing step loops
+        #   while (i <= ITERS && check_antennas) { repair_antennas; drt_run }
+        # and every drt_run is a full detailed-routing pass.  With ITERS=10 a
+        # design whose DRC never converges burns ~1.2 h per extra pass (run14:
+        # eight passes in 9 h 50 m, violations growing 523 -> 3192 because the
+        # shorts kept check_antennas true).  Three passes is enough for antenna
+        # repair to converge on a routable design, and caps the wasted time.
+        "DRT_ANTENNA_REPAIR_ITERS": 3,
         "DRT_ANTENNA_MARGIN": 10,
         "PDN_CORE_RING": True,
         "PDN_CORE_RING_CONNECT_TO_PADS": True,

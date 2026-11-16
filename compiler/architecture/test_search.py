@@ -17,7 +17,7 @@ import tempfile
 import unittest
 
 from .contracts import ContractError, Registry, file_ref, load_json
-from .search import enumerate_candidates, run_search
+from .search import enumerate_candidates, run_search, sampled_period_feasibility
 
 
 class SearchTest(unittest.TestCase):
@@ -643,6 +643,192 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(record["stage_feasibility"], "unknown")
         self.assertEqual(report["screening_frontier"], [])
 
+
+    def test_sampled_period_runs_keep_fail_holes_and_unknowns(self):
+        self.request["search"] = {"environment.period_ns": [2, 3, 4, 5, 6]}
+
+        def evaluate(admission, directory):
+            evaluation = self.evaluation(admission, directory)
+            period = admission["candidate"]["environment"]["period_ns"]
+            value = {2: 0.11, 3: 0.09, 4: 0.12, 5: None, 6: 0.12}[period]
+            metric = self.metric(evaluation, "wen_pulse_ns")
+            metric["value"] = value
+            if value is None:
+                metric["reason"] = "sampled W_EN pulse waveform is missing"
+            return evaluation
+
+        report = self.run_search(evaluate)
+        analysis = sampled_period_feasibility(report)
+        self.assertEqual(analysis["period_grid_ns"], [2, 3, 4, 5, 6])
+        self.assertEqual(len(analysis["sets"]), 1)
+        sample_set = analysis["sets"][0]
+        self.assertEqual([sample["status"] for sample in sample_set["samples"]],
+                         ["pass", "fail", "pass", "unknown", "pass"])
+        self.assertEqual(sample_set["feasible_sample_runs_ns"], [[2.0], [4.0], [6.0]])
+        self.assertEqual(sample_set["unknown_samples_ns"], [5.0])
+        self.assertIn("missing", sample_set["samples"][3]["constraints"]["wen_pulse_ns"]["reason"])
+        record = next(row for row in report["candidates"]
+                      if row["candidate"]["environment"]["period_ns"] == 2)
+        margins = record["constraint_margins"]
+        self.assertEqual(margins["wen_pulse_ns"]["unit"], "ns")
+        self.assertEqual(margins["wen_pulse_ns"]["normalizer_unit"], "ns")
+        self.assertAlmostEqual(margins["wen_pulse_ns"]["normalized_slack"], 0.005)
+        self.assertEqual(margins["bl_diff_v"]["unit"], "V")
+        self.assertEqual(margins["bl_diff_v"]["normalizer_unit"], "V")
+        self.assertAlmostEqual(margins["bl_diff_v"]["normalizer"], 1.08)
+        report_without_sample = deepcopy(report)
+        report_without_sample["candidates"] = [
+            row for row in report["candidates"]
+            if row["candidate"]["environment"]["period_ns"] != 5]
+        absent = sampled_period_feasibility(report_without_sample)["sets"][0]["samples"][3]
+        self.assertEqual(absent["status"], "unknown")
+        self.assertIn("no report record", absent["reason"])
+
+    def test_sampled_feasibility_requires_each_functional_and_margin_gate(self):
+        self.request["search"] = {"environment.period_ns": [2, 3, 4, 5, 6]}
+
+        def evaluate(admission, directory):
+            evaluation = self.evaluation(admission, directory)
+            period = admission["candidate"]["environment"]["period_ns"]
+            if period == 2:
+                self.metric(evaluation, "wen_pulse_ns")["value"] = 0.09
+            elif period == 3:
+                self.metric(evaluation, "sa_setup_ns")["value"] = 0.01
+            elif period == 4:
+                self.metric(evaluation, "bl_diff_v")["value"] = -0.1
+            elif period == 5:
+                self.metric(evaluation, "write_recovery_ns")["value"] = 0.0
+            else:
+                evaluation["checks"]["functional"] = False
+            return evaluation
+
+        report = self.run_search(evaluate)
+        samples = sampled_period_feasibility(report)["sets"][0]["samples"]
+        self.assertEqual([sample["status"] for sample in samples], ["fail"] * 5)
+        expected = [
+            ("wen_pulse_ns", "fail"), ("sa_setup_ns", "fail"),
+            ("bl_diff_v", "fail"), ("write_recovery_ns", "fail"),
+        ]
+        for sample, (name, status) in zip(samples, expected):
+            self.assertEqual(sample["constraints"][name]["status"], status)
+        self.assertEqual(samples[4]["functional"], "fail")
+
+    def test_sampled_period_sets_isolate_exact_tuples_and_nonperiod_domains(self):
+        capability = self.data["capabilities"][0]
+        base = capability["implementations"][0]
+        base["parameters"].update(write_driver_strength=1, delay_chain_fanout=4)
+        capability["parameters"].update(
+            write_driver_strength={"values": [1, 0.75]},
+            delay_chain_fanout={"values": [4, 3]})
+        capability["environment"]["corner"]["values"] = ["ss", "tt"]
+        narrow = deepcopy(base)
+        narrow["parameters"].update(write_driver_strength=0.75, delay_chain_fanout=3)
+        capability["implementations"].append(narrow)
+        self.parameters.update(write_driver_strength=1, delay_chain_fanout=4)
+        self.request["parameters"] = deepcopy(self.parameters)
+        self.request["search"] = {
+            "parameters.write_driver_strength": [1, 0.75],
+            "parameters.delay_chain_fanout": [4, 3],
+            "environment.corner": ["ss", "tt"],
+            "environment.period_ns": [2, 3, 4],
+        }
+        self.save_registry()
+
+        def evaluate(admission, directory):
+            evaluation = self.evaluation(admission, directory)
+            candidate = admission["candidate"]
+            params = candidate["parameters"]
+            period = candidate["environment"]["period_ns"]
+            if (params["write_driver_strength"] == 1 and period == 3
+                    and candidate["environment"]["corner"] == "ss"):
+                self.metric(evaluation, "wen_pulse_ns")["value"] = 0.09
+            elif params["write_driver_strength"] == 0.75 and period == 2:
+                self.metric(evaluation, "sa_setup_ns")["value"] = 0.01
+            elif candidate["environment"]["corner"] == "tt" and period == 4:
+                self.metric(evaluation, "bl_diff_v")["value"] = 0.04
+            return evaluation
+
+        report = self.run_search(evaluate)
+        sets = sampled_period_feasibility(report)["sets"]
+        self.assertEqual(len(sets), 4)
+        domains = {(item["tuple"]["parameters"]["write_driver_strength"],
+                    item["tuple"]["parameters"]["delay_chain_fanout"],
+                    item["tuple"]["environment"]["corner"]) for item in sets}
+        self.assertEqual(domains, {(1, 4, "ss"), (1, 4, "tt"),
+                                   (0.75, 3, "ss"), (0.75, 3, "tt")})
+        self.assertEqual(len({item["tuple_id"] for item in sets}), 4)
+        statuses = {
+            (item["tuple"]["parameters"]["write_driver_strength"],
+             item["tuple"]["parameters"]["delay_chain_fanout"], item["tuple"]["environment"]["corner"]):
+            [sample["status"] for sample in item["samples"]]
+            for item in sets
+        }
+        self.assertEqual(statuses[(1, 4, "ss")], ["pass", "fail", "pass"])
+        self.assertEqual(statuses[(0.75, 3, "ss")], ["fail", "pass", "pass"])
+        self.assertEqual(statuses[(1, 4, "tt")], ["pass", "pass", "fail"])
+
+    def test_physical_efficiency_objectives_keep_units_and_unavailable_reasons(self):
+        self.request["objectives"] = [
+            "total_mos_gate_width_um", "buffer_driver_cell_area_um2",
+            "macro_bbox_area_um2", "effective_bit_area_um2",
+            "read_energy_pj", "leakage_power_uw",
+        ]
+
+        def evaluate(admission, directory):
+            evaluation = self.evaluation(admission, directory)
+            candidate = admission["candidate"]
+            evidence = evaluation["measurements"][0]["evidence"]
+            entries = [
+                ("total_mos_gate_width_um", 250.0, "um", "macro", None),
+                ("buffer_driver_cell_area_um2", 8.0, "um^2", "macro", None),
+                ("macro_bbox_area_um2", 100.0, "um^2", "macro", None),
+                ("effective_bit_area_um2", 100.0 / 256, "um^2", "macro", None),
+                ("read_energy_pj", None, "pJ", "read", "complete read supply integral unavailable"),
+                ("leakage_power_uw", None, "uW", "macro",
+                 "no waveform holds all clocks static during the leakage interval"),
+                ("port0_idle_energy_pj", 0.4, "pJ", "idle", None),
+            ]
+            for name, value, unit, operation, reason in entries:
+                measurement = dict(name=name, value=value, unit=unit, operation=operation,
+                                   port=0 if name == "port0_idle_energy_pj" else None,
+                                   domain=deepcopy(candidate["environment"]),
+                                   fidelity=candidate["environment"]["fidelity"],
+                                   evidence=deepcopy(evidence))
+                if reason is not None:
+                    measurement["reason"] = reason
+                existing = next((item for item in evaluation["measurements"]
+                                 if item["name"] == name and item["port"] == measurement["port"]), None)
+                if existing is None:
+                    evaluation["measurements"].append(measurement)
+                else:
+                    existing.update(measurement)
+            return evaluation
+
+        report = self.run_search(evaluate)
+        record = report["candidates"][0]
+        self.assertEqual(record["objective_values"]["total_mos_gate_width_um"], 250.0)
+        self.assertEqual(record["objective_values"]["buffer_driver_cell_area_um2"], 8.0)
+        self.assertEqual(record["objective_values"]["macro_bbox_area_um2"], 100.0)
+        self.assertEqual(record["objective_values"]["effective_bit_area_um2"], 100.0 / 256)
+        self.assertIsNone(record["objective_values"]["read_energy_pj"])
+        self.assertIsNone(record["objective_values"]["leakage_power_uw"])
+        self.assertEqual(record["objective_constraints"][-2]["reason"],
+                         "complete read supply integral unavailable")
+        self.assertIn("clocks static", record["objective_constraints"][-1]["reason"])
+        self.assertTrue(any(item["name"] == "port0_idle_energy_pj"
+                            for item in record["evaluation"]["measurements"]))
+        self.assertFalse(record["objectives_complete"])
+
+        def invalid_units(admission, directory):
+            evaluation = evaluate(admission, directory)
+            next(item for item in evaluation["measurements"]
+                 if item["name"] == "total_mos_gate_width_um")["unit"] = "um^2"
+            return evaluation
+
+        invalid = self.run_search(invalid_units, evaluator_fingerprint={"unit_case": "wrong"})
+        self.assertEqual(invalid["candidates"][0]["status"], "evaluation_error")
+        self.assertIn("invalid unit/operation for total_mos_gate_width_um",
+                      invalid["candidates"][0]["reason"])
 
 if __name__ == "__main__":
     unittest.main()

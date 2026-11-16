@@ -99,10 +99,10 @@ class tri_gate_array(design):
             for n in ["vdd", "gnd"]:
                 for supply_pin in self.tri_inst[i].get_pins(n):
                     pin_pos = supply_pin.center()
-                    self.add_via_center(layers=self.m2_stack,
+                    self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                         offset=pin_pos)
                     self.add_layout_pin_rect_center(text=n,
-                                                    layer="m3",
+                                                    layer=self.top_layer,
                                                     offset=pin_pos)
 
 

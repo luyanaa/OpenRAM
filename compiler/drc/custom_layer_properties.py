@@ -7,13 +7,20 @@
 #
 
 class _bank:
-    def __init__(self, stack, pitch):
+    def __init__(self, stack, pitch, wordline_via_strap=False):
         # bank
         # column address route: stack, pitch
         # m1_stack, m2_pitch (default)
         # m2_stack, m3_pitch (sky130)
+        #
+        # wordline_via_strap: draw the wordline route between the driver and
+        # the bitcell array at the via landing pad width instead of the
+        # minimum wire width.  Prevents a width-step notch against the via
+        # pad in technologies whose metal spacing rule is wider than the
+        # difference (e.g. gf180mcu m3).
         self.stack = stack
         self.pitch = pitch
+        self.wordline_via_strap = wordline_via_strap
 
 
 class _hierarchical_decoder:
@@ -70,18 +77,39 @@ class _column_mux_array:
         # column_mux_array
         # sel_layer, sel_pitch, bitline_layer
         # m1, m2_pitch, m2
-        # m3, m3_pitch, m1 (sky130)
+        # m3, m2_pitch, m1 (sky130)
+        #
+        # select_pitch is the *minimum* spacing between two select rails.  The
+        # historical default is m2_pitch because bank.route_column_address_lines
+        # jogs every rail to the column decoder on m2, so the m2 via landing
+        # can be wider than the select layer's own pitch.  A technology may
+        # give a layer name or an explicit number here (gf180mcu uses 0.80
+        # because its 0.26x0.56 um m1 via pad needs 0.79).  None means "use
+        # the select layer's pitch" and is available for technologies whose
+        # rails are not promoted.
         self.select_layer = select_layer
-        self.select_pitch= select_pitch
+        self.select_pitch = select_pitch
         self.bitline_layer = bitline_layer
 
 
 class _port_address:
     def __init__(self,
-                 supply_offset):
+                 supply_offset,
+                 rbl_supply_at_pin=False,
+                 decoder_driver_spacing=0):
         # port_adress
         # special supply offset
         self.supply_offset = supply_offset
+        # Extra gap between the row decoder and the wordline driver array.
+        # Some technologies draw standard cell shapes (e.g. the n-well of the
+        # pgate) beyond the declared cell width, so abutting the driver at the
+        # decoder's declared right edge leaves the wells too close.
+        self.decoder_driver_spacing = decoder_driver_spacing
+        # Tie the RBL and-gate B input to vdd directly at its pin instead of
+        # jogging left first.  The jog crosses the A input pin in some
+        # technologies (e.g. gf180mcu) and both shorts the enable to vdd and
+        # violates the local metal spacing rules.
+        self.rbl_supply_at_pin = rbl_supply_at_pin
 
 
 class _port_data:
@@ -122,6 +150,16 @@ class _wordline_driver:
         # wordline_driver
         # vertical vdd/gnd (sky130)
         self.vertical_supply = vertical_supply
+
+
+class _control_logic:
+    def __init__(self, supply_via_shift_y=0.0):
+        # control_logic
+        # supply_via_shift_y: move the row supply via landings down (in um)
+        # from the centre of their pin.  A technology whose control bus on the
+        # top routing layer runs between two of the row pins can otherwise sit
+        # just under the via landing pad's spacing limit.
+        self.supply_via_shift_y = supply_via_shift_y
 
 
 class _bitcell_array:
@@ -167,6 +205,8 @@ class layer_properties():
 
         self._replica_column = _replica_column(even_rows=False)
 
+        self._control_logic = _control_logic()
+
         self._wordline_driver = _wordline_driver(vertical_supply=False)
 
         self._local_bitcell_array = _bitcell_array(wordline_layer="m2")
@@ -200,6 +240,10 @@ class layer_properties():
     @property
     def replica_column(self):
         return self._replica_column
+
+    @property
+    def control_logic(self):
+        return self._control_logic
 
     @property
     def wordline_driver(self):

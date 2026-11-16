@@ -410,6 +410,17 @@ class stimuli():
         """Writes include statements, inputs are lists of model files"""
 
         self.sf.write("* {} process corner\n".format(self.process))
+        # Plain .include files that must be loaded before the corner .lib
+        # (e.g. GF180 design.ngspice defines sw_stat_global/sw_stat_mismatch).
+        for item in tech.spice.get("spice_includes", []):
+            if OPTS.spice_name:
+                item = item.replace("SIMULATOR", OPTS.spice_name.lower())
+            else:
+                item = item.replace("SIMULATOR", "ngspice")
+            if os.path.isfile(item):
+                self.sf.write(".include \"{0}\"\n".format(item))
+            else:
+                debug.error("Could not find spice include: {0}\nSet SPICE_MODEL_DIR to over-ride path.\n".format(item), -1)
         for item in self.device_libraries:
             if OPTS.spice_name:
                 item[0] = item[0].replace("SIMULATOR", OPTS.spice_name.lower())

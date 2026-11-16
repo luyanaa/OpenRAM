@@ -484,7 +484,9 @@ class lib:
         self.lib.write("        bus_type  : addr; \n")
         self.lib.write("        direction  : input; \n")
         self.lib.write("        capacitance : {0};  \n".format(tech.spice["dff_in_cap"]/1000))
-        self.lib.write("        max_transition       : {0};\n".format(self.slews[-1]))
+        # No per-bus max_transition: the largest characterized input slew is
+        # an artificial limit (tens of ps here) that STA then enforces as a
+        # design-wide max transition.  The SDC is the authority on slews.
         self.lib.write("        pin(addr{0}[{1}:0])".format(port,self.sram.addr_size-1))
         self.lib.write("{\n")
 
@@ -499,7 +501,6 @@ class lib:
         self.lib.write("        bus_type  : wmask; \n")
         self.lib.write("        direction  : input; \n")
         self.lib.write("        capacitance : {0};  \n".format(tech.spice["dff_in_cap"] / 1000))
-        self.lib.write("        max_transition       : {0};\n".format(self.slews[-1]))
         self.lib.write("        pin(wmask{0}[{1}:0])".format(port, self.sram.num_wmasks - 1))
         self.lib.write("{\n")
 

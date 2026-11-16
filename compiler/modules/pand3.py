@@ -31,14 +31,18 @@ class pand3(pgate):
         self.create_insts()
 
     def create_modules(self):
-        # Shield the cap, but have at least a stage effort of 4
+        # The embedded NAND normally relies on the adjacent driver's well tap
+        # merging with its own nwell.  A technology whose well contacts do not
+        # abut (gf180mcu) must give the NAND a tap of its own; the pdriver's
+        # tap is not guaranteed to cover it when the cells are side by side.
+        from openram.tech import parameter
         self.nand = factory.create(module_type="pnand3",
                                    height=self.height,
-                                   add_wells=self.vertical)
+                                   add_wells=self.vertical or
+                                   parameter.get("pand_nand_add_wells", False))
 
         # Add the well tap to the inverter because when stacked
         # vertically it is sometimes narrower
-        from openram.tech import parameter
         if parameter.get("multistage_and_drivers", False) and self.size > 16:
             # A single inverter of this size cannot be driven by a minimum
             # NAND within short enable pulses (e.g. w_en for wide words);

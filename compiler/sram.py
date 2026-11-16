@@ -116,7 +116,7 @@ class sram():
         from openram import tech
         has_models = bool(tech.spice.get("fet_models", True)) or \
                      bool(tech.spice.get("fet_libraries", False))
-        if has_models:
+        if has_models and getattr(OPTS, "functional", True):
             # Save a functional simulation file with default period
             functional(self.s,
                        spname,
@@ -124,7 +124,7 @@ class sram():
                        output_path=OPTS.output_path)
         print_time("Spice writing", datetime.datetime.now(), start_time)
 
-        if has_models:
+        if has_models and not OPTS.analytical_delay:
             # Save stimulus and measurement file
             start_time = datetime.datetime.now()
             debug.print_raw("DELAY: Writing stimulus...")
@@ -199,8 +199,9 @@ class sram():
         # Characterize the design
         start_time = datetime.datetime.now()
         from openram.characterizer import lib
-        debug.print_raw("LIB: Characterizing... ")
-        lib(out_dir=OPTS.output_path, sram=self.s, sp_file=sp_file)
+        if getattr(OPTS, "liberty", True):
+            debug.print_raw("LIB: Characterizing... ")
+            lib(out_dir=OPTS.output_path, sram=self.s, sp_file=sp_file)
         print_time("Characterization", datetime.datetime.now(), start_time)
 
         # Write the config file
@@ -215,10 +216,11 @@ class sram():
 
         # Write the datasheet
         start_time = datetime.datetime.now()
-        from openram.datasheet import datasheet_gen
-        dname = OPTS.output_path + self.s.name + ".html"
-        debug.print_raw("Datasheet: Writing to {0}".format(dname))
-        datasheet_gen.datasheet_write(dname)
+        if getattr(OPTS, "datasheet", True):
+            from openram.datasheet import datasheet_gen
+            dname = OPTS.output_path + self.s.name + ".html"
+            debug.print_raw("Datasheet: Writing to {0}".format(dname))
+            datasheet_gen.datasheet_write(dname)
         print_time("Datasheet", datetime.datetime.now(), start_time)
 
         # Write a verilog model

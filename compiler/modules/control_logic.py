@@ -32,8 +32,17 @@ class control_logic(control_logic_base):
     def add_modules(self):
         """ Add all the required modules """
 
+        from openram.tech import parameter
+
         self.dff = factory.create(module_type="dff_buf")
         dff_height = self.dff.height
+
+        # Parameterized gates need enough vertical room between the pmos n-well
+        # and the nmos diffusion.  Some technologies use a shorter flop cell
+        # (e.g. gf180mcu's 3.92 um hard DFF), which makes a gate built at the
+        # flop height violate the n-diffusion-to-n-well and device rules.  Allow
+        # the technology to request a taller logic gate height.
+        logic_height = parameter.get("control_logic_height", dff_height)
 
         self.ctrl_dff_array = factory.create(module_type="dff_buf_array",
                                              rows=self.num_control_signals,
@@ -41,11 +50,11 @@ class control_logic(control_logic_base):
 
         self.and2 = factory.create(module_type="pand2",
                                    size=12,
-                                   height=dff_height)
+                                   height=logic_height)
 
         self.rbl_driver = factory.create(module_type="pbuf",
                                          size=self.num_cols,
-                                         height=dff_height)
+                                         height=logic_height)
 
         # clk_buf drives a flop for every address
         addr_flops = math.log(self.num_words, 2) + math.log(self.words_per_row, 2)
@@ -56,7 +65,7 @@ class control_logic(control_logic_base):
         clock_fanout = 5 * num_flops + 5
         self.clk_buf_driver = factory.create(module_type="pdriver",
                                              fanout=clock_fanout,
-                                             height=dff_height)
+                                             height=logic_height)
 
         # We will use the maximum since this same value is used to size the wl_en
         # and the p_en_bar drivers
@@ -65,29 +74,28 @@ class control_logic(control_logic_base):
         # wl_en drives every row in the bank
         # MRG 9/3/2021: Ensure that this is two stages to prevent race conditions with the write driver
         size_list = [max(int(self.num_rows / 9), 1), max(int(self.num_rows / 3), 1)]
-        from openram.tech import parameter
         if parameter.get("static_precharge", False):
             # Precharge is released by the same clock edge that raises wl_en:
             # two more stages make the wordline rise after the precharge is off.
             size_list = [1, 1] + size_list
         self.wl_en_driver = factory.create(module_type="pdriver",
                                            size_list=size_list,
-                                           height=dff_height)
+                                           height=logic_height)
 
         # w_en drives every write driver
         self.wen_and = factory.create(module_type="pand3",
                                       size=self.word_size + 8,
-                                      height=dff_height)
+                                      height=logic_height)
 
         # s_en drives every sense amp
         self.sen_and3 = factory.create(module_type="pand3",
                                        size=self.word_size + self.num_spare_cols,
-                                       height=dff_height)
+                                       height=logic_height)
 
         # used to generate inverted signals with low fanout
         self.inv = factory.create(module_type="pinv",
                                   size=1,
-                                  height=dff_height)
+                                  height=logic_height)
 
         # p_en_bar drives every column in the bitcell array
         # but it is sized the same as the wl_en driver with
@@ -95,10 +103,10 @@ class control_logic(control_logic_base):
         self.p_en_bar_driver = factory.create(module_type="pdriver",
                                               fanout=self.num_cols,
                                               inverting=bool(parameter.get("static_precharge", False)),
-                                              height=dff_height)
+                                              height=logic_height)
 
         self.nand2 = factory.create(module_type="pnand2",
-                                    height=dff_height)
+                                    height=logic_height)
 
         debug.check(OPTS.delay_chain_stages % 2,
                     "Must use odd number of delay chain stages for inverting delay chain.")

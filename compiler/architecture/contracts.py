@@ -24,7 +24,11 @@ ENVIRONMENT = {
     "corner", "voltage_v", "temperature_c", "period_ns", "cload_ff",
     "slew_ns", "skew1", "initialization", "fidelity",
 }
-OBJECTIVES = {"area_um2", "read_energy_pj", "write_energy_pj", "cycle_time_ns"}
+OBJECTIVES = {
+    "area_um2", "macro_bbox_area_um2", "effective_bit_area_um2",
+    "buffer_driver_cell_area_um2", "total_mos_gate_width_um",
+    "read_energy_pj", "write_energy_pj", "leakage_power_uw", "cycle_time_ns",
+}
 MARGINS = {"wen_pulse_ns", "sa_setup_ns", "bl_diff_v", "write_recovery_ns"}
 REGISTER_FILE_ACCESS_CONTRACT = {
     "ports": ["R", "R", "W"],
@@ -375,7 +379,7 @@ def validate_request(request):
 
 def validate_measurement(record, base="."):
     fields(record, {"name", "value", "unit", "port", "operation", "domain", "fidelity", "evidence"},
-           label="measurement")
+           {"reason"}, label="measurement")
     if not isinstance(record["name"], str) or not record["name"]:
         raise ContractError("measurement name is required")
     if record["value"] is not None:
@@ -386,6 +390,8 @@ def validate_measurement(record, base="."):
         raise ContractError("invalid measurement port")
     if not isinstance(record["unit"], str) or not record["unit"]:
         raise ContractError("measurement requires units")
+    if "reason" in record and (not isinstance(record["reason"], str) or not record["reason"]):
+        raise ContractError("measurement reason must be a nonempty string")
     _environment(record["domain"])
     if record["domain"]["fidelity"] != record["fidelity"]:
         raise ContractError("measurement domain and fidelity disagree")

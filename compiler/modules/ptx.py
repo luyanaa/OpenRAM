@@ -108,6 +108,7 @@ class ptx(design):
         """Calls all functions related to the generation of the layout"""
         self.setup_layout_constants()
         self.add_active()
+        self.add_5v_markers()
         self.add_well_implant()
         self.add_poly()
         self.add_active_contacts()
@@ -115,6 +116,22 @@ class ptx(design):
         # for run-time, we won't check every transitor DRC independently
         # but this may be uncommented for debug purposes
         # self.DRC()
+
+    def channel_length_rule(self):
+        """Gate length for this device type.
+
+        3.3 V technologies use one `minlength_channel` for both device types.
+        A thick-oxide (5 V) technology opts in to a per-type gate length with
+        `gate_length_nmos` / `gate_length_pmos`, because PL.2_MV allows
+        0.60 um for NMOS and 0.50 um for PMOS.  The older
+        `minlength_channel_nmos/pmos` keys in the 3.3 V technology are NOT
+        gate lengths (they describe other device limits) and must not be
+        picked up here.
+        """
+        key = "gate_length_{}".format(self.tx_type)
+        if key in drc:
+            return drc(key)
+        return drc("minlength_channel")
 
     def get_model_name(self):
         """
@@ -150,9 +167,18 @@ class ptx(design):
         area_sd = 2.5 * self.poly_width * self.tx_width
         perimeter_sd = 2 * self.poly_width + 2 * self.tx_width
 
-        self.channel_length = drc("minlength_channel")
+        self.channel_length = self.channel_length_rule()
         if cell_props.ptx.model_is_subckt:
-            if spice.get("subckt_model_si_units", False):
+            if spice.get("subckt_model_micron_units", False):
+                # PDK wrapper subcircuits (e.g. the GF180MCU sm141064 models)
+                # take w/l in microns and the source/drain areas in SI, and
+                # pick a model bin from them.  Writing bare numbers makes
+                # ngspice read them as metres and no bin matches.
+                main_str = "X{{0}} {{1}} {0} m={1} w={2}u l={3}u nf=1 ".format(
+                    self.model_name, self.mults, self.tx_width, self.channel_length)
+                area_str = "pd={0:.2f}u ps={0:.2f}u as={1:.2f}p ad={1:.2f}p".format(
+                    perimeter_sd, area_sd)
+            elif spice.get("subckt_model_si_units", False):
                 main_str = "X{{0}} {{1}} {0} mr={1} w={2}u l={3}u nf=1 mismod=0 ".format(
                     self.model_name, self.mults, self.tx_width, self.channel_length)
                 area_str = "pd={0:.2f}u ps={0:.2f}u as={1:.2f}p ad={1:.2f}p".format(
@@ -203,6 +229,13 @@ class ptx(design):
         """
         Pre-compute some handy layout parameters.
         """
+
+        # A thick-oxide technology draws the gate at its channel length, which
+        # is larger than the poly interconnect minimum width (`minwidth_poly`).
+        # Only override when the technology publishes a per-type length, so
+        # existing 3.3 V technologies keep drawing 0.28 um gates.
+        if "gate_length_{}".format(self.tx_type) in drc:
+            self.poly_width = self.channel_length
 
         if not self.num_contacts:
             self.num_contacts = self.calculate_num_contacts()
@@ -291,18 +324,37 @@ class ptx(design):
 
         # The width of the poly is from the left-most to right-most poly gate
         poly_width = poly_positions[-1].x - poly_positions[0].x + self.poly_width
+        # The joining strap is normally placed at the end of the gate poly
+        # extension, leaving `poly_extend_active` of field poly to the active
+        # edge.  Thick-oxide technologies require more than that (gf180 5 V
+        # PL.5a is 0.30 um), so push the strap out by the difference.  The
+        # strap must still be joined to the gate poly, otherwise it leaves a
+        # sub-spacing gap (PL.3a) and the fingers are not connected.  A short
+        # vertical bridge over each finger does that: it sits on the
+        # transistor footprint, so it stays part of the fet poly, while the
+        # strap itself clears the diffusion.
+        strap_extra = max(0.0, self.poly_to_active - self.poly_extend_active)
+        # The strap only needs to be interconnect poly; drawing it at the gate
+        # length (0.60 um on 5 V) makes the facing n/p straps collide in the
+        # middle of a standard cell (PL.3a).  The per-finger bridges still use
+        # the gate width, so the strap stays a continuation of the transistor
+        # poly.
+        strap_height = self.poly_width
+        if "gate_length_{}".format(self.tx_type) in drc:
+            strap_height = drc("minwidth_poly")
         if self.tx_type == "pmos":
             # This can be limited by poly to active spacing
             # or the poly extension
-            distance_below_active = self.poly_width + max(self.poly_to_active,
-                                                          0.5 * self.poly_height)
+            distance_below_active = strap_height \
+                                    + max(self.poly_to_active,
+                                          0.5 * self.poly_height) + strap_extra
             poly_offset = poly_positions[0] - vector(0.5 * self.poly_width,
                                                      distance_below_active)
         else:
             # This can be limited by poly to active spacing
             # or the poly extension
             distance_above_active = max(self.poly_to_active,
-                                        0.5 * self.poly_height)
+                                        0.5 * self.poly_height) + strap_extra
             poly_offset = poly_positions[0] + vector(-0.5 * self.poly_width,
                                                      distance_above_active)
         # Remove the old pin and add the new one
@@ -312,7 +364,27 @@ class ptx(design):
                             layer="poly",
                             offset=poly_offset,
                             width=poly_width,
-                            height=self.poly_width)
+                            height=strap_height)
+
+        # Bridge the gate fingers to the strap when the strap had to be
+        # pushed away from the active edge.  The bridge is one gate width
+        # wide, so it is an extension of the gate stripe and remains
+        # transistor poly.
+        if strap_extra > 0:
+            for pos in poly_positions:
+                if self.tx_type == "pmos":
+                    gate_edge = pos.y - 0.5 * self.poly_height
+                    strap_edge = poly_offset.y + strap_height
+                else:
+                    gate_edge = pos.y + 0.5 * self.poly_height
+                    strap_edge = poly_offset.y
+                bridge_lo = min(gate_edge, strap_edge) - 0.01
+                bridge_hi = max(gate_edge, strap_edge) + 0.01
+                self.add_rect(layer="poly",
+                              offset=vector(pos.x - 0.5 * self.poly_width,
+                                            bridge_lo),
+                              width=self.poly_width,
+                              height=bridge_hi - bridge_lo)
 
     def connect_fingered_active(self, positions, pin_name, top):
         """
@@ -402,6 +474,31 @@ class ptx(design):
                                      width=self.active_width + 2 * enclose_width,
                                      height=self.active_height + 2 * enclose_width)
 
+    def add_5v_markers(self):
+        """Draw the thick-oxide markers for this transistor.
+
+        Magic rebuilds DUALGATE (55/0) and FET5VDEF (112/1) from its
+        `mvnmos`/`mvpmos` devices when it writes CIF, but OpenRAM writes GDS
+        directly.  Without both markers the extracted device is a 6 V or thin
+        oxide part and LVS reports a device-class mismatch.  One rectangle per
+        transistor: DUALGATE must enclose COMP by 0.24 um (DV.6) and gate poly
+        by 0.40 um (DV.8); the poly overhangs the diffusion by
+        `poly_extend_active`, hence the larger vertical margin.
+        """
+        if "dualgate" not in layer and "fet5v" not in layer:
+            return
+        pad_x = drc("dualgate_to_active")
+        pad_y = max(drc("dualgate_enclose_active"),
+                    self.poly_extend_active + drc("dualgate_enclose_poly"))
+        ll = vector(self.active_offset.x - pad_x,
+                    self.active_offset.y - pad_y)
+        width = self.active_width + 2 * pad_x
+        height = self.active_height + 2 * pad_y
+        for layer_name in ("dualgate", "fet5v"):
+            if layer_name in layer:
+                self.add_rect(layer=layer_name, offset=ll,
+                              width=width, height=height)
+
     def add_well_implant(self):
         """
         Add an (optional) well and implant for the type of transistor.
@@ -414,7 +511,15 @@ class ptx(design):
                                                  0.5 * self.active_height)
         well_ll = center_pos - vector(0.5 * self.well_width,
                                       0.5 * self.well_height)
-        if well_name in layer:
+        # Thick-oxide technologies need a large well enclosure (gf180 5 V
+        # DF.7 is 0.60 um).  Drawing that per-transistor makes the pmos well
+        # spill past the top of a standard-height row into the mirrored
+        # neighbour's p-well (Magic "Can't overlap those layers").  The
+        # enclosing pgate cell already draws a well over its whole area
+        # (extend_wells), so the local device well is redundant there and can
+        # be suppressed with `ptx_draw_well`.
+        draw_well = ("ptx_draw_well" not in drc) or bool(drc("ptx_draw_well"))
+        if well_name in layer and draw_well:
             well = self.add_rect(layer=well_name,
                                  offset=well_ll,
                                  width=self.well_width,

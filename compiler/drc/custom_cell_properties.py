@@ -184,6 +184,8 @@ class cell_properties():
         self.names["replica_bitcell_2port"] = "replica_cell_2rw"
         self.names["col_cap_bitcell_1port"] = "col_cap_cell_1rw"
         self.names["col_cap_bitcell_2port"] = "col_cap_cell_2rw"
+        self.names["capcell"] = "col_cap_cell"
+
         self.names["row_cap_bitcell_1port"] = "row_cap_cell_1rw"
         self.names["row_cap_bitcell_2port"] = "row_cap_cell_2rw"
         self.names["internal"] = "internal"
@@ -299,3 +301,12 @@ class cell_properties():
     @property
     def row_cap_2port(self):
         return self._row_cap_2port
+
+    # Legacy aggregate accessor: scn3me_subm's tech.py is written against the
+    # historical single `bitcell` object (CellProperties.bitcell.mirror.x).
+    @property
+    def bitcell(self):
+        return self._bitcell_1port
+
+# Older technology files (scn3me_subm) instantiate this legacy name.
+CellProperties = cell_properties

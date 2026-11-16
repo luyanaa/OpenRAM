@@ -113,7 +113,7 @@ class write_mask_and_array(design):
         # Create the enable pin that connects all write mask AND array's B pins
         en_pin = self.and2_insts[0].get_pin("B")
         self.add_layout_pin_segment_center(text="en",
-                                           layer="m3",
+                                           layer=self.top_layer,
                                            start=vector(0, en_pin.cy()),
                                            end=vector(self.width, en_pin.cy()))
 
@@ -140,7 +140,7 @@ class write_mask_and_array(design):
             en_pin = inst.get_pin("B")
             en_pos = en_pin.center()
             self.add_via_stack_center(from_layer=en_pin.layer,
-                                      to_layer="m3",
+                                      to_layer=self.top_layer,
                                       offset=en_pos)
 
             # Add connection to the supply

@@ -558,8 +558,8 @@
                   "sha256": "7cd79c82bba554474ec43c760d0ea47dc7dc2b23adbb8bffa1b381d9390b48a9"
                 },
                 "characterization": {
-                  "path": "../../ics55_work/runs/klayout_lvs_repair/characterization_replay/characterization.json",
-                  "sha256": "7e7c19a6d73f1e8e03a118a1d551207b76255ba6da1d6f150b3bf0f700970a2d"
+                  "path": "../../ics55_work/runs/ics55_next_acceptance/arc_discovery/characterization.json",
+                  "sha256": "fe31f117578d63ef68814fb08274d2adfdc53bd01edb46591c89d46b7af49154"
                 }
               },
               "basic_checks": [

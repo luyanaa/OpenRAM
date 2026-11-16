@@ -78,6 +78,8 @@ class port_address(design):
         self.route_supplies()
 
     def route_supplies(self):
+        from openram.tech import layer_indices as _li
+        top_layer = "m4" if "m4" in _li else ("m3" if "m3" in _li else "m2")
         """ Propagate all vdd/gnd pins up to this level for all modules """
         if self.has_rbl:
             if layer_props.wordline_driver.vertical_supply:
@@ -85,7 +87,7 @@ class port_address(design):
             else:
                 rbl_pos = self.rbl_driver_inst.get_pin("vdd").rc()
                 self.add_power_pin("vdd", rbl_pos)
-                self.add_path("m4", [rbl_pos, self.wordline_driver_array_inst.get_pins("vdd")[0].rc()])
+                self.add_path(top_layer, [rbl_pos, self.wordline_driver_array_inst.get_pins("vdd")[0].rc()])
 
         self.copy_layout_pin(self.wordline_driver_array_inst, "vdd")
         self.copy_layout_pin(self.wordline_driver_array_inst, "gnd")
@@ -97,8 +99,11 @@ class port_address(design):
         if self.has_rbl:
             if OPTS.local_array_size == 0:
                 rbl_b_pin = self.rbl_driver_inst.get_pin("B")
-                rbl_loc = rbl_b_pin.center() - vector(3 * self.m1_pitch, 0)
-                self.add_path(rbl_b_pin.layer, [rbl_b_pin.center(), rbl_loc])
+                if layer_props.port_address.rbl_supply_at_pin:
+                    rbl_loc = rbl_b_pin.center()
+                else:
+                    rbl_loc = rbl_b_pin.center() - vector(3 * self.m1_pitch, 0)
+                    self.add_path(rbl_b_pin.layer, [rbl_b_pin.center(), rbl_loc])
                 self.add_power_pin("vdd", rbl_loc, start_layer=rbl_b_pin.layer)
 
     def route_pins(self):
@@ -186,7 +191,8 @@ class port_address(design):
                 # There is no local wordline driver
                 self.rbl_driver = factory.create(module_type="and2_dec",
                                                  size=driver_size,
-                                                 height=b.height)
+                                                 height=b.height,
+                                                 b_escape_clear_a=True)
 
     def create_row_decoder(self):
         """  Create the hierarchical row decoder  """
@@ -241,7 +247,8 @@ class port_address(design):
         row_decoder_offset = vector(0, 0)
         self.row_decoder_inst.place(row_decoder_offset)
 
-        wordline_driver_array_offset = vector(self.row_decoder_inst.rx(), 0)
+        wordline_driver_array_offset = vector(self.row_decoder_inst.rx() +
+                                              layer_props.port_address.decoder_driver_spacing, 0)
         self.wordline_driver_array_inst.place(wordline_driver_array_offset)
 
         if self.has_rbl:

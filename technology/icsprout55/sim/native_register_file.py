@@ -147,6 +147,7 @@ def generate_native_pbitcell(out_dir, config_path=CONFIG_PATH):
     from openram.sram_factory import factory
 
     spice_path = out_dir / "native_2r1w_pbitcell.sp"
+    simulation_spice_path = out_dir / "native_2r1w_pbitcell_schematic.sp"
     manifest_path = out_dir / "native_2r1w_pbitcell.json"
     initialized = False
     try:
@@ -158,6 +159,7 @@ def generate_native_pbitcell(out_dir, config_path=CONFIG_PATH):
             raise ValueError("OpenRAM options do not match native 2R1W port counts")
         cell = factory.create(module_type="pbitcell", module_name="native_2r1w_pbitcell")
         cell.sp_write(str(spice_path), lvs=True)
+        cell.sp_write(str(simulation_spice_path), lvs=False)
         pins = list(cell.pins)
         pin_types = {pin: cell.get_pin_type(pin) for pin in pins}
     finally:
@@ -175,6 +177,7 @@ def generate_native_pbitcell(out_dir, config_path=CONFIG_PATH):
         "contract": contract,
         "config": _ref(config_path),
         "netlist": _ref(spice_path),
+        "simulation_netlist": _ref(simulation_spice_path),
         "pins": pins,
         "pin_types": pin_types,
         "physical_port_count": 3,

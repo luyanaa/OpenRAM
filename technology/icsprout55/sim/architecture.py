@@ -24,13 +24,15 @@ from mkscs import read_trace, subckt_pins
 from ngspice_pex import build_deck, check_waveforms
 from pex_debug import select_probes
 from compiler.architecture.contracts import ContractError, fields, number, validate_measurement
+from efficiency import SIZE_REASON_KEYS, actual_size_metrics
 
 
 MARGINS = {"wen_pulse_ns": ("ns", "write"), "sa_setup_ns": ("ns", "read"),
            "bl_diff_v": ("V", "read"), "write_recovery_ns": ("ns", "write")}
-UNMEASURED = ("wl_slew_ns", "bitcell_area_um2", "periphery_area_um2", "effective_bit_area_um2",
-              "idle_power_uw", "peak_current_ma", "full_array_read_disturb", "full_array_write_margin",
-              "full_array_hold", "vmin", "monte_carlo", "ir_drop", "congestion", "maximum_rc",
+UNMEASURED = ("wl_slew_ns", "bitcell_area_um2", "periphery_area_um2",
+              "idle_power_uw", "leakage_power_uw", "peak_current_ma",
+              "full_array_read_disturb", "full_array_write_margin", "full_array_hold",
+              "vmin", "monte_carlo", "ir_drop", "congestion", "maximum_rc",
               "full_pvt_sweep", "read_energy_pj", "write_energy_pj")
 
 
@@ -128,7 +130,7 @@ def fingerprint(admissions_or_registry, *, ngspice="ngspice", replay_only=True, 
             pending.extend(_referenced_paths(_json(path), path.parent))
     sources = [SIM / name for name in ("architecture.py", "check.py", "mkscs.py",
                                        "ngspice_pex.py", "pex_debug.py", "charz.py", "tanalyze.py",
-                                       "characterize.py", "mklib.py", "physical_evidence.py")]
+                                       "characterize.py", "efficiency.py", "mklib.py", "physical_evidence.py")]
     sources.extend(SIM.parents[2] / ("compiler/architecture/" + name)
                    for name in ("contracts.py", "search.py"))
     sources.extend(SIM.parent / "verify" / name for name in
@@ -650,10 +652,39 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
         "sampled_cells": [], "ports": [], "cycles": [], "status": "not yet measured",
         "scope": "no full-array stability guarantee",
         "unmeasured": dict.fromkeys(UNMEASURED)}
+    size_metrics = {
+        "total_mos_gate_width_um": None,
+        "total_mos_gate_width_reason": "generated netlist metric was not reached",
+        "macro_bbox_area_um2": None,
+        "macro_bbox_area_reason": "generated layout metric was not reached",
+        "effective_bit_area_um2": None,
+        "effective_bit_area_reason": "generated layout metric was not reached",
+        "buffer_driver_cell_area_um2": None,
+        "buffer_driver_cell_area_reason": "generated layout metric was not reached",
+        "details": {},
+    }
+    energy_reasons = {
+        "read_energy_pj": "no verified signed supply-current waveform covers a complete read operation",
+        "write_energy_pj": "no verified signed supply-current waveform covers a complete write operation",
+        "leakage_power_uw": (
+            "static leakage is unmeasured: no waveform holds every clock static during the leakage window"),
+    }
     try:
         paths, hashes, extraction, mapping = _inputs(admission)
         candidate, env = admission["candidate"], admission["candidate"]["environment"]
         evidence = [_ref(path) for path in paths.values()]
+        top_name = extraction.get("design")
+        if isinstance(top_name, str) and top_name:
+            size_metrics = actual_size_metrics(paths["netlist"], paths["gds"], top_name,
+                                               candidate["parameters"])
+        result["details"]["physical_size"] = size_metrics["details"]
+        result["details"]["area_scope"] = size_metrics["details"].get(
+            "area_scope", size_metrics["macro_bbox_area_reason"])
+        result["details"]["metric_availability"] = {
+            name: {"available": size_metrics[name] is not None,
+                   "reason": size_metrics.get(SIZE_REASON_KEYS[name])}
+            for name in ("total_mos_gate_width_um", "macro_bbox_area_um2",
+                         "effective_bit_area_um2", "buffer_driver_cell_area_um2")}
         result["artifacts"] = {name: _ref(path) for name, path in paths.items()}
         from physical_evidence import validate_physical_evidence
         physical = validate_physical_evidence(paths.get("physical"), paths, extraction)
@@ -670,13 +701,21 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
             result["checks"]["functional"] = characterized["functional"]
             result["details"].update(characterized["details"])
             result["details"]["observation"] = "exact-load-characterization"
-            result["details"]["energy_status"] = (
-                "signed whole-macro supply energy; includes background clocks and load charging")
             result["artifacts"].update(("characterization_" + name, ref)
                                        for name, ref in characterized["artifacts"].items())
             evidence.extend(characterized["evidence"])
             targets, aggregate = characterized["details"]["targets"], characterized["margins"]
             energies, sample = characterized["energy"], characterized["sample"]
+            energy_reasons.update({
+                name: (None if energies.get(name) is not None else
+                       "verified characterization lacks a complete signed supply-current integral "
+                       "for this operation")
+                for name in ("read_energy_pj", "write_energy_pj")})
+            result["details"]["energy_status"] = (
+                "verified whole-macro operation energy includes background clocks and load charging"
+                if all(energies.get(name) is not None for name in
+                       ("read_energy_pj", "write_energy_pj"))
+                else "one or more complete operation-energy integrals are unavailable")
             result["details"]["coverage"]["unmeasured"] = {
                 name: None for name in UNMEASURED if name not in energies or energies[name] is None}
         else:
@@ -735,19 +774,28 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
                              "local SA tail-gate ordering", "signed BL differential at SA",
                              "selected WL gates", "replica control", "sampled Q completion"],
                 "unmeasured": dict.fromkeys(UNMEASURED)}
-        def measurement(name, value, unit, operation, port=None):
+        def measurement(name, value, unit, operation, port=None, reason=None):
             record = dict(name=name, value=value, unit=unit, operation=operation, port=port,
                           domain=deepcopy(env), fidelity=env["fidelity"], evidence=evidence)
+            if reason is not None:
+                record["reason"] = reason
             result["measurements"].append(validate_measurement(record))
         for name, (unit, operation) in MARGINS.items():
-            measurement(name, aggregate[name], unit, operation)
+            value = aggregate[name]
+            measurement(name, value, unit, operation,
+                        reason=None if value is not None else
+                        "aggregate margin lacks complete sampled target/port waveform coverage")
         for index, target in enumerate(targets):
             for name, (unit, operation) in MARGINS.items():
                 port = target["target"]["read_port" if operation == "read" else "write_port"]
-                measurement("target{}_{}".format(index, name), target[name], unit, operation, port)
+                measurement("target{}_{}".format(index, name), target[name], unit, operation, port,
+                            reason=None if target[name] is not None else
+                            "target-level waveform boundary or probe evidence is incomplete")
         measurement("cycle_time_ns", env["period_ns"], "ns", "macro")
-        measurement("read_energy_pj", energies["read_energy_pj"], "pJ", "read")
-        measurement("write_energy_pj", energies["write_energy_pj"], "pJ", "write")
+        measurement("read_energy_pj", energies["read_energy_pj"], "pJ", "read",
+                    reason=energy_reasons["read_energy_pj"])
+        measurement("write_energy_pj", energies["write_energy_pj"], "pJ", "write",
+                    reason=energy_reasons["write_energy_pj"])
         if sample is not None:
             for port, metrics in sample["ports"].items():
                 role = candidate["access_contract"]["ports"][int(port)]
@@ -757,27 +805,64 @@ def evaluate(admission, out_dir, *, execute=False, ngspice="ngspice", timeout=36
                         continue
                     measurement("port{}_{}_energy_pj".format(port, operation),
                                 metrics["e_{}_pj".format(operation)], "pJ", operation, int(port))
-        try:
-            import klayout.db as kdb
-            layout = kdb.Layout()
-            layout.read(str(paths["gds"]))
-            top = layout.cell(extraction["design"])
-            area = top.bbox().area() * layout.dbu**2 if top is not None else None
-            result["details"]["area_scope"] = "actual GDS top-cell bounding rectangle, including empty bbox space"
-        except ImportError:
-            area = None
-            result["details"]["area_scope"] = "unknown: klayout.db unavailable"
-        measurement("area_um2", area, "um^2", "macro")
+        for name, unit in (("total_mos_gate_width_um", "um"),
+                           ("macro_bbox_area_um2", "um^2"),
+                           ("effective_bit_area_um2", "um^2"),
+                           ("buffer_driver_cell_area_um2", "um^2")):
+            measurement(name, size_metrics[name], unit, "macro",
+                        reason=size_metrics.get(SIZE_REASON_KEYS[name]))
+        measurement("area_um2", size_metrics["macro_bbox_area_um2"], "um^2", "macro",
+                    reason=size_metrics["macro_bbox_area_reason"])
+        availability = result["details"]["metric_availability"]
+        for name in ("read_energy_pj", "write_energy_pj", "leakage_power_uw"):
+            value = energies.get(name) if name != "leakage_power_uw" else None
+            reason = energy_reasons.get(name)
+            availability[name] = {"available": value is not None, "reason": reason}
+        measurement("leakage_power_uw", None, "uW", "macro",
+                    reason=energy_reasons["leakage_power_uw"])
     except (ValueError, ContractError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
         result["details"]["error"] = str(exc)
         if not result["measurements"] and result["artifacts"]:
             env = admission["candidate"]["environment"]
-            for name, (unit, operation) in {**MARGINS, "area_um2": ("um^2", "macro"),
-                                          "cycle_time_ns": ("ns", "macro"),
-                                          "read_energy_pj": ("pJ", "read"),
-                                          "write_energy_pj": ("pJ", "write")}.items():
-                result["measurements"].append(validate_measurement(dict(
-                    name=name, value=None, unit=unit, operation=operation, port=None,
-                    domain=deepcopy(env), fidelity=env["fidelity"],
-                    evidence=list(result["artifacts"].values()))))
+            fallback = {
+                **MARGINS,
+                "cycle_time_ns": ("ns", "macro"),
+                "area_um2": ("um^2", "macro"),
+                "macro_bbox_area_um2": ("um^2", "macro"),
+                "effective_bit_area_um2": ("um^2", "macro"),
+                "buffer_driver_cell_area_um2": ("um^2", "macro"),
+                "total_mos_gate_width_um": ("um", "macro"),
+                "read_energy_pj": ("pJ", "read"),
+                "write_energy_pj": ("pJ", "write"),
+                "leakage_power_uw": ("uW", "macro"),
+            }
+            values = {
+                "cycle_time_ns": None,
+                "area_um2": size_metrics["macro_bbox_area_um2"],
+                "macro_bbox_area_um2": size_metrics["macro_bbox_area_um2"],
+                "effective_bit_area_um2": size_metrics["effective_bit_area_um2"],
+                "buffer_driver_cell_area_um2": size_metrics["buffer_driver_cell_area_um2"],
+                "total_mos_gate_width_um": size_metrics["total_mos_gate_width_um"],
+            }
+            missing_waveform_reason = "exact hash-bound operation waveform evidence is unavailable"
+            reasons = {
+                "cycle_time_ns": "no verified successful simulator observation for this period",
+                **{name: missing_waveform_reason for name in MARGINS},
+                "area_um2": size_metrics["macro_bbox_area_reason"],
+                "macro_bbox_area_um2": size_metrics["macro_bbox_area_reason"],
+                "effective_bit_area_um2": size_metrics["effective_bit_area_reason"],
+                "buffer_driver_cell_area_um2": size_metrics["buffer_driver_cell_area_reason"],
+                "total_mos_gate_width_um": size_metrics["total_mos_gate_width_reason"],
+                "read_energy_pj": energy_reasons["read_energy_pj"],
+                "write_energy_pj": energy_reasons["write_energy_pj"],
+                "leakage_power_uw": energy_reasons["leakage_power_uw"],
+            }
+            for name, (unit, operation) in fallback.items():
+                record = dict(name=name, value=values.get(name), unit=unit, operation=operation, port=None,
+                              domain=deepcopy(env), fidelity=env["fidelity"],
+                              evidence=list(result["artifacts"].values()))
+                reason = reasons.get(name)
+                if reason is not None:
+                    record["reason"] = reason
+                result["measurements"].append(validate_measurement(record))
     return result

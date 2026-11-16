@@ -9,6 +9,7 @@ from openram import debug
 from openram.base import design
 from openram.base import vector
 from openram.sram_factory import factory
+from openram.tech import layer_properties as layer_props
 from openram import OPTS
 
 
@@ -140,14 +141,27 @@ class delay_chain(design):
     def route_inverters(self):
         """ Add metal routing for each of the fanout stages """
 
+        # A chip-level supply grid can run a top-layer rail straight over one
+        # of these rows, leaving less than the spacing rule to the 0.38 um
+        # landing pads even though the 0.28 um wire itself still clears.  A
+        # technology may pull the landings toward one edge of their own 0.56 um
+        # tall pins to recover the clearance; the wire keeps its own y so it
+        # still ties every pad together.
+        #
+        # The shift is in this cell's own coordinates and control_logic_base
+        # places the cell with mirror="MX", so a positive value moves the
+        # landing in -y on the die.
+        shift_y = getattr(layer_props.control_logic, "delay_chain_via_shift_y", 0.0)
+        pad_shift = vector(0, shift_y)
+
         for i in range(len(self.driver_inst_list)):
             inv = self.driver_inst_list[i]
             for load in self.load_inst_map[inv]:
                 # Drop a via on each A pin
                 a_pin = load.get_pin("A")
                 self.add_via_stack_center(from_layer=a_pin.layer,
-                                          to_layer="m3",
-                                          offset=a_pin.center())
+                                          to_layer=self.top_layer,
+                                          offset=a_pin.center() + pad_shift)
 
             # Route an M3 horizontal wire to the furthest
             z_pin = inv.get_pin("Z")
@@ -157,9 +171,9 @@ class delay_chain(design):
                                       to_layer="m2",
                                       offset=a_pin.center())
             self.add_via_stack_center(from_layer=z_pin.layer,
-                                      to_layer="m3",
-                                      offset=z_pin.center())
-            self.add_path("m3", [z_pin.center(), a_max.center()])
+                                      to_layer=self.top_layer,
+                                      offset=z_pin.center() + pad_shift)
+            self.add_path(self.top_layer, [z_pin.center(), a_max.center()])
 
             # Route Z to the A of the next stage
             if i + 1 < len(self.driver_inst_list):
@@ -174,9 +188,10 @@ class delay_chain(design):
     def route_supplies(self):
         # These pins get routed in one cell from the left/right
         # because the input signal gets routed on M3 and can interfere with the delay input.
-        self.route_vertical_pins("vdd", self.driver_inst_list, xside="rx")
+        shift_y = getattr(layer_props.control_logic, "supply_via_shift_y", 0.0)
+        self.route_vertical_pins("vdd", self.driver_inst_list, xside="rx", yshift=shift_y)
         right_load_insts = [self.load_inst_map[x][-1] for x in self.driver_inst_list]
-        self.route_vertical_pins("gnd", right_load_insts, xside="lx")
+        self.route_vertical_pins("gnd", right_load_insts, xside="lx", yshift=shift_y)
 
     def add_layout_pins(self):
 

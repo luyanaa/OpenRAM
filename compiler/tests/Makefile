@@ -190,7 +190,7 @@ $(TEST_BASES):
 	@rm -rf results/$*
 	@rm -rf results/$*.*
 	@mkdir -p results/$*/tmp
-	@sh -c "python3 -u $(OPENRAM_DIR)/$(getfile).py -t $(gettech) -k -v $(ARGS) -p $(OPENRAM_DIR)/results/$* > $(OPENRAM_DIR)/results/$*.out 2>&1 && touch $(OPENRAM_DIR)/results/$*.ok || touch $(OPENRAM_DIR)/results/$*.bad"
+	@sh -c "export OPENRAM_TMP=$(OPENRAM_DIR)/results/$*/tmp; python3 -u $(OPENRAM_DIR)/$(getfile).py -t $(gettech) -k -v $(ARGS) -p $(OPENRAM_DIR)/results/$* > $(OPENRAM_DIR)/results/$*.out 2>&1 && touch $(OPENRAM_DIR)/results/$*.ok || touch $(OPENRAM_DIR)/results/$*.bad"
 ifdef KEEP
 	@test -f $(TOP_DIR)/compiler/tests/results/$*.ok && echo "$* ... PASS!" || echo "$* ... FAIL!"
 else

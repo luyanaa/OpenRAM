@@ -64,6 +64,16 @@ class design(hierarchy_design):
             self.width = width
             self.height = height
 
+            # Some hard cells are drawn with well/overhang geometry that
+            # extends past the logical array cell.  The boundary layer then
+            # reports the drawn bbox, which is not the abutment pitch.  Allow
+            # the technology to specify the pitch used for array placement.
+            (array_width, array_height) = getattr(prop, "array_size", (None, None))
+            if array_width is not None:
+                self.width = array_width
+            if array_height is not None:
+                self.height = array_height
+
         self.setup_multiport_constants()
 
         try:

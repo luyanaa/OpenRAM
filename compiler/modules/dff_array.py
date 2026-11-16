@@ -7,6 +7,7 @@
 #
 from openram import debug
 from openram.base import design
+from openram.tech import layer, layer_indices
 from openram.base import vector
 from openram.sram_factory import factory
 from openram import OPTS
@@ -18,9 +19,15 @@ class dff_array(design):
     Unlike the data flops, these are never spaced out.
     """
 
-    def __init__(self, rows, columns, name=""):
+    def __init__(self, rows, columns, name="", dout_pin_extend=0.0):
         self.rows = rows
         self.columns = columns
+        # A technology whose hard flop has other metal (e.g. a neighbour's
+        # via stack) too close above the Q pin can ask for the exported dout
+        # pin to grow upward so a channel route can place its via stack clear
+        # of that metal.  The pin's lower-left corner is unchanged, so the
+        # route's pin.uc() moves up by exactly this amount.
+        self.dout_pin_extend = dout_pin_extend
 
         if name=="":
             name = "dff_array_{0}x{1}".format(rows, columns)
@@ -71,8 +78,11 @@ class dff_array(design):
                 instance_ports = [self.get_din_name(row, col),
                                   self.get_dout_name(row, col)]
                 for port in self.dff.pins:
-                    if port != 'D' and port != 'Q':
-                        instance_ports.append(port)
+                    if port == 'D' or port == 'Q':
+                        continue
+                    # A technology may expose the flop reset as a port (the
+                    # TR-1um hard cell does); arrays tie it to ground.
+                    instance_ports.append("gnd" if port == "RST" else port)
                 self.connect_inst(instance_ports)
 
     def place_dff_array(self):
@@ -113,7 +123,10 @@ class dff_array(design):
             left_dff_insts = [self.dff_insts[x, 0] for x in range(self.rows)]
             right_dff_insts = [self.dff_insts[x, self.columns-1] for x in range(self.rows)]
             self.route_vertical_pins("vdd", left_dff_insts, xside="lx", yside="cy")
-            self.route_vertical_pins("gnd", right_dff_insts, xside="rx", yside="cy")
+            # Separate the two straps when the technology's supply pins are
+            # too close to put one at each edge of the pin.
+            self.route_vertical_pins("gnd", right_dff_insts, xside="rx", yside="cy",
+                                     xshift=getattr(self.dff, "gnd_tap_xshift", 0.0))
         else:
 
             # Add connections every 4 cells
@@ -139,19 +152,26 @@ class dff_array(design):
 
                 dout_pin = self.dff_insts[row, col].get_pin("Q")
                 debug.check(dout_pin.layer == "m2", "DFF Q pin not on metal2")
+                dout_height = dout_pin.height() + self.dout_pin_extend
                 self.add_layout_pin(text=self.get_dout_name(row, col),
                                     layer=dout_pin.layer,
                                     offset=dout_pin.ll(),
                                     width=dout_pin.width(),
-                                    height=dout_pin.height())
+                                    height=dout_height)
 
         # Create vertical spines to a single horizontal rail
         clk_pin = self.dff_insts[0, 0].get_pin("clk")
-        # A DFF module may ask for the clock rail at a specific height
-        clk_ypos = getattr(self.dff, "clk_rail_y", None) or (2 * self.m3_pitch + self.m3_width)
         debug.check(clk_pin.layer == "m2", "DFF clk pin not on metal2")
+        # A DFF module may ask for the clock rail at a specific height.
+        clk_ypos = getattr(self.dff, "clk_rail_y", None)
+        # A 2-metal technology has no M3: the rail shares M2 with the pins
+        # and the per-column strips merge into it directly.
+        has_m3 = "m3" in layer and bool(layer["m3"])
+        if clk_ypos is None:
+            clk_ypos = 2 * self.m3_pitch + self.m3_width
+        rail_layer = "m3" if has_m3 else "m2"
         self.add_layout_pin_segment_center(text="clk",
-                                           layer="m3",
+                                           layer=rail_layer,
                                            start=vector(0, clk_ypos),
                                            end=vector(self.width, clk_ypos))
         for col in range(self.columns):
@@ -161,7 +181,8 @@ class dff_array(design):
                           offset=clk_pin.ll().scale(1, 0),
                           width=self.m2_width,
                           height=self.height)
-            # Drop a via to the M3 pin
-            self.add_via_stack_center(from_layer=clk_pin.layer,
-                                      to_layer="m3",
-                                      offset=vector(clk_pin.cx(), clk_ypos))
+            if has_m3:
+                # Drop a via to the M3 pin
+                self.add_via_stack_center(from_layer=clk_pin.layer,
+                                          to_layer=self.top_layer,
+                                          offset=vector(clk_pin.cx(), clk_ypos))

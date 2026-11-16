@@ -193,6 +193,25 @@ class AdmissionTest(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "all write/sense margins"):
             validate_request(missing)
 
+    def test_efficiency_objectives_and_missing_measurements_keep_reasons(self):
+        request = dict(schema="openram-search/1", capability_id="fixture.2rw",
+                       parameters=self.parameters, environment=self.environment, search={},
+                       objectives=["total_mos_gate_width_um", "buffer_driver_cell_area_um2",
+                                   "macro_bbox_area_um2", "effective_bit_area_um2",
+                                   "leakage_power_uw"],
+                       required_margins=dict(wen_pulse_ns=0.1, sa_setup_ns=0,
+                                             bl_diff_v=0.05, write_recovery_ns=0.05))
+        self.assertIs(validate_request(request), request)
+        unavailable = dict(name="leakage_power_uw", value=None, unit="uW", port=None,
+                           operation="macro", domain=deepcopy(self.environment), fidelity="F2",
+                           evidence=[file_ref(self.proof)],
+                           reason="static clock-held waveform was not captured")
+        self.assertEqual(validate_measurement(unavailable, self.root)["reason"],
+                         "static clock-held waveform was not captured")
+        unavailable["reason"] = ""
+        with self.assertRaisesRegex(ContractError, "reason must be a nonempty string"):
+            validate_measurement(unavailable, self.root)
+
     def test_malformed_request_values_return_contract_errors(self):
         request = dict(schema="openram-search/1", capability_id="fixture.2rw",
                        parameters=self.parameters, environment=self.environment,

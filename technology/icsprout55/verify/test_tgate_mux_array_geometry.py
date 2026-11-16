@@ -92,7 +92,9 @@ class TgMuxArrayGeometryTest(unittest.TestCase):
     def assert_landing_legality_and_connectivity(self, array, columns):
         geometry = sys.modules[array.__class__.__module__]
         self.assertEqual(len(array.mux_inst), columns)
-        self.assertAlmostEqual(array.width, columns * array.mux.width)
+        expected_width = max(columns * array.mux.width,
+                             max(array.offsets[:columns]) + array.mux.width)
+        self.assertAlmostEqual(array.width, expected_width)
         self.assertGreater(array.height, array.mux.height)
 
         vdd_pin = array.get_pin("vdd")
@@ -194,6 +196,20 @@ class TgMuxArrayGeometryTest(unittest.TestCase):
                         array.mux.pass_p_width,
                         p_size * self.tech.drc("minwidth_tx"))
                     self.assert_landing_legality_and_connectivity(array, columns)
+
+    def test_sram_aligned_offsets_extend_the_vdd_rail(self):
+        self.factory.reset()
+        self.OPTS.ics55_column_mux_style = "tgate"
+        self.OPTS.ics55_column_mux_nmos_size = 8
+        self.OPTS.ics55_column_mux_pmos_size = 12
+        bitcell_array = self.factory.create(
+            module_type="capped_replica_bitcell_array",
+            rows=64, cols=32, rbl=[1, 0], left_rbl=[0], right_rbl=[])
+        offsets = bitcell_array.get_column_offsets()
+        array = self.factory.create(module_type="column_mux_array",
+                                    columns=32, word_size=8, offsets=offsets,
+                                    bitcell_bl="bl0", bitcell_br="br0")
+        self.assert_landing_legality_and_connectivity(array, 32)
 
 
 if __name__ == "__main__":

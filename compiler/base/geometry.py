@@ -435,8 +435,10 @@ class instance(geometry):
         walk_subtree(self)
         for path in cell_paths:
             vector_spaces = self.apply_path_transform(path)
-            origin = vector_spaces[2]
-            origin_offsets.append([origin[0], origin[1]])
+            origin = np.ravel(vector_spaces[2])
+            # numpy >= 2 rejects float() on the 1-D (3, 1) column the transform
+            # accumulates, so flatten and convert explicitly.
+            origin_offsets.append([float(origin[0]), float(origin[1])])
 
         return(origin_offsets, Q_offsets, Q_bar_offsets, bl_offsets, br_offsets, bl_meta, br_meta)
 

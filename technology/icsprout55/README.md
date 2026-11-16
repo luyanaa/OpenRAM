@@ -92,14 +92,23 @@ It adds a local select inverter and a VDD rail; it does not change the default.
 The TG leaf keeps its inverter-NMOS supply drop below the bitline jogs and
 orients the BR input diffusion toward its bitline rail. Its array promotes VDD
 through an unused M2 window to a raised M3 rail, without an extra M1 landing.
+The array width also covers the furthest absolute mux-column offset plus one mux
+width; SRAM replica-column offsets can extend beyond the logical mux-column
+span. The regression fixture exercises the actual 64-row, 32-column capped
+bitcell-array offsets.
 Pinned KLayout 0.30.7 full-hierarchy macro-profile DRC has zero
 raw/waived/unwaived markers for the repaired leaf, bare pair and eight-column
-array; each also independently matches its generated source in LVS with exact
-model/W/L pairs. The final repaired 256x8 TG macro has full-hierarchy DRC
-0/0/0, but its strict native LVS search timed out after 3600.26 s while writing
-the pre-compare extracted netlist; no verdict was produced. This is
-inconclusive, not an LVS pass or mismatch. These are not foundry-signoff
-results; see [the repair evidence](SIM_RESULTS.md#tg-lvs-独立根因write-driver-电源提升点触碰边缘-bitline).
+array. Each of those bounded artifacts independently matches its own generated
+source in native LVS with exact model/W/L pairs; evidence is retained under
+`tg_hierarchy_repair/` and is not an artifact-wide TG macro qualification.
+The 2026-10-21 rebuilt 256x8 TG macro compiles and has full-hierarchy DRC
+0/0/0. The retained full-macro native LVS artifacts contain an extracted
+netlist but no native LVS report or verdict. The full macro is therefore
+inconclusive, not a pass or mismatch; no full-macro TG qualification is
+claimed. A separate retained strict-leaf smoke reports a native mismatch; its
+extracted netlist contains empty contact helper circuits/instances not present
+in the reference, but that observation is artifact-scoped and is not asserted
+as the mismatch cause. See [the repair evidence](SIM_RESULTS.md#tg-lvs-独立根因write-driver-电源提升点触碰边缘-bitline).
 
 `ics55_write_driver.py` is the selected write-driver implementation. It drives
 `bl = din` and `br = !din` with complementary NMOS/PMOS paths while enabled,
@@ -276,7 +285,20 @@ unknown, and never claims native 2R1W physical equivalence.
 The native cell smoke validates typed CPU/compiler role maps, exact generated
 pin names and directions, and the mandatory three-physical-port rejection
 before writing its structural manifest. Its standalone netlist is not a
-CPU-facing macro.
+CPU-facing macro. The standalone layout is additionally audited for the three
+wordlines and BL/BR access geometry: wl0/wl1/wl2 are full-width horizontal M1
+at 0.29 um centerline pitch and six vertical full-height M2 bitlines run inside
+the 7.31 x 3.165 um cell (minimum adjacent pitch 1.065 um). That audit accepts
+the `vdd`/`gnd` rails as boundary-centered abutting rails shared by mirrored
+rows, rejects any other out-of-bbox shape, and remains cell-level only: it is
+not DRC, LVS, array, router or pitch-closure evidence, and the bank boundary
+still supports at most two physical ports.
+The vendor 55LLULP1225 release defines five MOS sections (tt/ff/ss/fnsp/snfp);
+the native cell study admits and has executed tt 1.20 V/25 C, ss 1.08 V/125 C
+and ff 1.32 V/-40 C only. Statistical (`mc_mos`, `agauss`, `sigma_mis`)
+constructs exist in the vendor models but no statistical deck has been
+executed, so Monte Carlo mismatch and yield remain unknown rather than
+assumed.
 
 
 

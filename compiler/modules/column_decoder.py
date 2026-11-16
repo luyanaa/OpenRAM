@@ -11,6 +11,7 @@ from openram.sram_factory import factory
 from openram.tech import drc
 from openram.tech import cell_properties
 from openram.tech import layer_properties as layer_props
+from openram.tech import parameter
 from openram import OPTS
 
 
@@ -96,23 +97,30 @@ class column_decoder(design):
     def add_modules(self):
 
         self.dff =factory.create(module_type="dff")
+        # A technology may need its parameterized gates to be taller than the
+        # address flop.  The flop is a hard macro whose height is set by the
+        # library, but a generated inverter built at that height can have its
+        # diffusion and metal1 too tightly packed (gf180mcu: DF.8 between the
+        # pmos n-well and the nmos diffusion, and M1.2a between an output pin's
+        # promotion via and the neighbouring device's source strap).
+        gate_height = parameter.get("column_decoder_gate_height", self.dff.height)
 
         if self.col_addr_size == 1:
             self.column_decoder = factory.create(module_type="pinvbuf",
-                                                 height=self.dff.height)
+                                                 height=gate_height)
         elif self.col_addr_size == 2:
             self.column_decoder = factory.create(module_type="hierarchical_predecode2x4",
                                                  column_decoder=True,
-                                                 height=self.dff.height)
+                                                 height=gate_height)
 
         elif self.col_addr_size == 3:
             self.column_decoder = factory.create(module_type="hierarchical_predecode3x8",
                                                  column_decoder=True,
-                                                 height=self.dff.height)
+                                                 height=gate_height)
         elif self.col_addr_size == 4:
             self.column_decoder = factory.create(module_type="hierarchical_predecode4x16",
                                                  column_decoder=True,
-                                                 height=self.dff.height)
+                                                 height=gate_height)
         else:
             # No error checking before?
             debug.error("Invalid column decoder?", -1)

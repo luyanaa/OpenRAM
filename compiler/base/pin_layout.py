@@ -444,11 +444,23 @@ class pin_layout:
             zoom = GDS["zoom"]
         except KeyError:
             zoom = None
-        newLayout.addText(text=self.name,
-                          layerNumber=layer_num,
-                          purposeNumber=label_purpose,
-                          magnification=zoom,
-                          offsetInMicrons=self.center())
+        # The label may live on a dedicated text layer (TR-1um uses 48/0 for
+        # M1 and 49/0 for M2), independently of the pin shape layer.
+        try:
+            from openram.tech import label_layer as tech_label_layer
+            (text_layer_num, text_purpose) = tech_label_layer.get(self.layer,
+                                                                  (layer_num, label_purpose))
+        except ImportError:
+            (text_layer_num, text_purpose) = (layer_num, label_purpose)
+        # Array cells may keep the pin shape but drop the net-name text:
+        # every instance would otherwise publish the same name and the
+        # array-level LVS would see one name on several different nets.
+        if getattr(self, "label", True):
+            newLayout.addText(text=self.name,
+                              layerNumber=text_layer_num,
+                              purposeNumber=text_purpose,
+                              magnification=zoom,
+                              offsetInMicrons=self.center())
 
     def compute_overlap(self, other):
         """ Calculate the rectangular overlap of two rectangles. """

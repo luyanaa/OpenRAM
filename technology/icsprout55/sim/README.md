@@ -268,7 +268,10 @@ The tables retain the two measured loads and one measured slew/PVT. A polarity
 is emitted only when its delay and transition are measured on every output bit
 at both loads; otherwise both tables for that direction are explicitly omitted,
 never filled with zero or copied from the other polarity. A read port with no
-complete measured polarity rejects export. The current native run observes
+complete measured polarity rejects export. Each read arc names the clock edge
+the measurement's own arc discovery selected (`rising_edge` or `falling_edge`);
+a missing phase record or two loads measured on different phases rejects export
+instead of mislabelling the arc. The current native run observes
 falling-clock `cell_fall`/`fall_transition`, but no post-fall output rise; its
 `cell_rise`/`rise_transition` remain unknown. See `../SIM_RESULTS.md`.
 All diagnostic tables set `dont_use: true`; they are not usable STA/F4 closure.

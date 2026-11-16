@@ -212,7 +212,8 @@ class precharge(design):
         offset_height = max(offset_height,
                             tap_bottom + 0.5 * tap.height - tap.first_layer_position.y)
         self.well_contact_pos = self.upper_pmos1_inst.get_pin("D").center().scale(1, 0) + \
-                                vector(0, offset_height)
+                                vector(getattr(self, "well_contact_x_offset", 0.0),
+                                       offset_height)
         self.well_contact = self.add_via_center(layers=self.active_stack,
                                                 offset=self.well_contact_pos,
                                                 implant_type="n",

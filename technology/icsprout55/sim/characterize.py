@@ -88,8 +88,10 @@ def _measure(admission, bundle, required_margins):
     for port, role in enumerate(roles):
         if port_access_cycles(cycles, port)[0] != role:
             raise ValueError("trace role differs from exact access contract")
-        per_port[str(port)] = measure_port(times, data, cycles, port, env["period_ns"],
-                                           env["voltage_v"], "i(vdd)", skew1=env["skew1"])
+        per_port[str(port)] = measure_port(
+            times, data, cycles, port, env["period_ns"], env["voltage_v"],
+            "i(vdd)", skew1=env["skew1"], expected=expected, domain=domain,
+            functional=functional)
     library = normalize_stdcell_library(candidate["parameters"]["stdcell_library"])
     sample = dict(schema_version=3, stdcell_library=library, ports=per_port, domain=domain,
                   functional=functional, signoff=False, complete_sta=False)

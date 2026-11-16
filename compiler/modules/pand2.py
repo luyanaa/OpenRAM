@@ -30,11 +30,14 @@ class pand2(pgate):
         self.create_insts()
 
     def create_modules(self):
+        from openram.tech import parameter
+        # The embedded NAND normally relies on the adjacent driver's well tap
+        # merging with its own nwell.  Technologies whose well contacts do not
+        # abut (gf180mcu) must give the NAND a tap of its own, otherwise its
+        # nwell floats in extraction.
         self.nand = factory.create(module_type="pnand2",
                                    height=self.height,
-                                   add_wells=False)
-
-        from openram.tech import parameter
+                                   add_wells=parameter.get("pand_nand_add_wells", False))
         if parameter.get("multistage_and_drivers", False) and self.size > 16:
             # A single inverter of this size cannot be driven by a minimum
             # NAND within short enable pulses (e.g. w_en for wide words);

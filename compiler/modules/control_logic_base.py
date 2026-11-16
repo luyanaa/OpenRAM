@@ -11,6 +11,7 @@ from openram.base import design
 from openram.base import logical_effort
 from openram.base import vector
 from openram.sram_factory import factory
+from openram.tech import layer_properties as layer_props
 from openram import OPTS
 
 
@@ -162,15 +163,35 @@ class control_logic_base(design):
         return delay_stages
 
     def route_rails(self):
-        """ Add the input signal inverted tracks """
+        """Create short signal rails without unused full-height tails."""
         height = self.control_logic_center.y - self.m2_pitch
-        # DFF spacing plus the power routing
-        offset = vector(self.ctrl_dff_array.width + self.m4_pitch, 0)
-
+        center_y = 0.5 * height
+        # Keep the original center point used by every shared bus route.
+        offset = vector(self.ctrl_dff_array.width + self.m4_pitch,
+                        center_y - 0.5 * self.m2_pitch)
         self.input_bus = self.create_vertical_bus("m2",
                                                   offset,
                                                   self.internal_bus_list,
-                                                  height)
+                                                  self.m2_pitch)
+
+        # Keep the two hand-routed taps connected to the shortened rails.
+        tap_y_positions = {}
+        if "clk_buf" in self.input_bus:
+            tap_y_positions["clk_buf"] = \
+                self.gated_clk_buf_inst.get_pin("vdd").cy() - self.m1_pitch
+        if "rbl_bl_delay" in self.input_bus:
+            tap_y_positions["rbl_bl_delay"] = \
+                self.gated_clk_buf_inst.get_pin("vdd").cy() + self.m1_pitch
+
+        for name, tap_y in tap_y_positions.items():
+            bus_pos = self.input_bus[name].center()
+            if tap_y > bus_pos.y:
+                end_y = tap_y + 0.5 * self.m2_pitch
+            elif tap_y < bus_pos.y:
+                end_y = tap_y - 0.5 * self.m2_pitch
+            else:
+                continue
+            self.add_path("m2", [bus_pos, vector(bus_pos.x, end_y)])
 
     def place_instances(self):
         """ Place all the instances """
@@ -206,7 +227,7 @@ class control_logic_base(design):
         """ Place the delay chain """
         debug.check(row % 2 == 0, "Must place delay chain at even row for supply alignment.")
 
-        # It is flipped on X axis
+        # It is flipped on X axis.
         y_off = row * self.and2.height + self.delay_chain.height
 
         # Add to the right of the control rows and routing channel
@@ -236,8 +257,7 @@ class control_logic_base(design):
                                   to_layer="m2",
                                   offset=clk_pos)
 
-        self.route_output_to_bus_jogged(self.clk_buf_inst,
-                                        "clk_buf")
+        self.route_output_to_bus_jogged(self.clk_buf_inst, "clk_buf")
         self.connect_output(self.clk_buf_inst, "Z", "clk_buf")
 
     def create_gated_clk_bar_row(self):
@@ -276,11 +296,11 @@ class control_logic_base(design):
         self.connect_vertical_bus(clkbuf_map,
                                   self.gated_clk_bar_inst,
                                   self.input_bus,
-                                  self.m2_stack[::-1])
+                                  getattr(self, "m2_stack", self.m1_stack[::-1])[::-1])
         # The pin is on M1, so we need another via as well
         b_pin = self.gated_clk_bar_inst.get_pin("B")
         self.add_via_stack_center(from_layer=b_pin.layer,
-                                  to_layer="m3",
+                                  to_layer=self.top_layer,
                                   offset=b_pin.center())
 
         # This is the second gate over, so it needs to be on M3
@@ -309,7 +329,7 @@ class control_logic_base(design):
         self.connect_vertical_bus(clkbuf_map,
                                   self.gated_clk_buf_inst,
                                   self.input_bus,
-                                  self.m2_stack[::-1])
+                                  getattr(self, "m2_stack", self.m1_stack[::-1])[::-1])
         # The pin is on M1, so we need another via as well
         z_pin = self.gated_clk_buf_inst.get_pin("Z")
         self.add_via_stack_center(from_layer=z_pin.layer,
@@ -330,7 +350,7 @@ class control_logic_base(design):
             dff_out_map = zip(["dout_bar_0", "dout_bar_1", "dout_1"], ["cs", "we", "we_bar"])
         else:
             dff_out_map = zip(["dout_bar_0"], ["cs"])
-        self.connect_vertical_bus(dff_out_map, self.ctrl_dff_inst, self.input_bus, self.m2_stack[::-1])
+        self.connect_vertical_bus(dff_out_map, self.ctrl_dff_inst, self.input_bus, getattr(self, "m2_stack", self.m1_stack[::-1])[::-1])
 
         # Connect the clock rail to the other clock rail
         # by routing in the supply rail track to avoid channel conflicts
@@ -384,6 +404,11 @@ class control_logic_base(design):
         max_row_x_loc = max([inst.rx() for inst in self.row_end_inst])
         min_row_x_loc = self.control_x_offset
 
+        # A technology may need the row supply via landings nudged down their
+        # own pin, e.g. when the control bus on the top routing layer runs
+        # between two row pins and leaves only 0.20 um to the landing pad.
+        shift_y = getattr(layer_props.control_logic, "supply_via_shift_y", 0.0)
+
         vdd_pin_locs = []
         gnd_pin_locs = []
 
@@ -394,10 +419,11 @@ class control_logic_base(design):
                 if pin.layer == pin_layer:
                     row_loc = pin.rc()
                     pin_loc = vector(max_row_x_loc, pin.rc().y)
-                    vdd_pin_locs.append(pin_loc)
+                    tap_loc = pin_loc - vector(0, shift_y)
+                    vdd_pin_locs.append(tap_loc)
                     last_via = self.add_via_stack_center(from_layer=pin_layer,
                                                          to_layer=supply_layer,
-                                                         offset=pin_loc,
+                                                         offset=tap_loc,
                                                          min_area=True)
                     self.add_path(pin_layer, [row_loc, pin_loc])
 
@@ -405,11 +431,14 @@ class control_logic_base(design):
             for pin in pins:
                 if pin.layer == pin_layer:
                     row_loc = pin.rc()
+                    # Keep the ground stripe outboard, clear of the control
+                    # DFF array's supply-via landing.
                     pin_loc = vector(min_row_x_loc, pin.rc().y)
-                    gnd_pin_locs.append(pin_loc)
+                    tap_loc = pin_loc - vector(0, shift_y)
+                    gnd_pin_locs.append(tap_loc)
                     last_via = self.add_via_stack_center(from_layer=pin_layer,
                                                          to_layer=supply_layer,
-                                                         offset=pin_loc,
+                                                         offset=tap_loc,
                                                          min_area=True)
                     self.add_path(pin_layer, [row_loc, pin_loc])
 
@@ -440,8 +469,8 @@ class control_logic_base(design):
                                            end=top_pos,
                                            width=via_width)
 
-        self.copy_layout_pin(self.delay_inst, "gnd")
-        self.copy_layout_pin(self.delay_inst, "vdd")
+        for supply in ["gnd", "vdd"]:
+            self.copy_layout_pin(self.delay_inst, supply)
 
         self.copy_layout_pin(self.ctrl_dff_inst, "gnd")
         self.copy_layout_pin(self.ctrl_dff_inst, "vdd")
@@ -494,7 +523,8 @@ class control_logic_base(design):
         mid1 = vector(out_pos.x, out_pos.y - 0.3 * inst.mod.height)
         mid2 = vector(self.input_bus[name].cx(), mid1.y)
         bus_pos = self.input_bus[name].center()
-        self.add_wire(self.m2_stack[::-1], [out_pos, mid1, mid2, bus_pos])
+        self.add_wire(getattr(self, "m2_stack", self.m1_stack[::-1])[::-1],
+                      [out_pos, mid1, mid2, bus_pos])
         self.add_via_stack_center(from_layer=out_pin.layer,
                                   to_layer="m2",
                                   offset=out_pos)

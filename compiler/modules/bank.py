@@ -132,18 +132,18 @@ class bank(design):
         bl_pin = self.port_data_inst[port].get_pin("rbl_bl")
         if port % 2:
             pin_pos = bl_pin.uc()
-            pin_offset = pin_pos + vector(0, self.m3_pitch)
+            pin_offset = pin_pos + vector(0, self.ctrl_pitch)
             left_right_offset = vector(self.max_x_offset, pin_offset.y)
         else:
             pin_pos = bl_pin.bc()
-            pin_offset = pin_pos - vector(0, self.m3_pitch)
+            pin_offset = pin_pos - vector(0, self.ctrl_pitch)
             left_right_offset = vector(self.min_x_offset, pin_offset.y)
         self.add_via_stack_center(from_layer=bl_pin.layer,
-                                  to_layer="m3",
+                                  to_layer=self.ctrl_layer,
                                   offset=pin_offset)
         self.add_path(bl_pin.layer, [pin_offset, pin_pos])
         self.add_layout_pin_segment_center(text="rbl_bl_{0}_{0}".format(port),
-                                           layer="m3",
+                                           layer=self.ctrl_layer,
                                            start=left_right_offset,
                                            end=pin_offset)
 
@@ -305,6 +305,12 @@ class bank(design):
     def compute_sizes(self):
         """  Computes the required sizes to create the bank """
 
+        # A strict two-metal technology routes the control bus on m2.
+        from openram.tech import layer_indices as _li
+        self.ctrl_layer = "m3" if "m3" in _li else "m2"
+        self.ctrl_pitch = getattr(self, self.ctrl_layer + "_pitch")
+        self.ctrl_width = getattr(self, self.ctrl_layer + "_width")
+
         self.num_words_per_bank = self.num_words / self.num_banks
         self.num_bits_per_bank = self.word_size * self.num_words_per_bank
 
@@ -338,7 +344,7 @@ class bank(design):
         self.num_control_lines = [len(x) for x in self.input_control_signals]
 
         # The width of this bus is needed to place other modules (e.g. decoder) for each port
-        self.central_bus_width = [self.m3_pitch * x + self.m3_width for x in self.num_control_lines]
+        self.central_bus_width = [self.ctrl_pitch * x + self.ctrl_width for x in self.num_control_lines]
 
         # These will be outputs of the gaters if this is multibank, if not, normal signals.
         self.control_signals = []
@@ -603,7 +609,7 @@ class bank(design):
 
         # This avoids getting copy errors on vias and other instances
         all_insts = [self.bitcell_array_inst] + self.port_address_inst + self.port_data_inst
-        if hasattr(self, "column_decoder_inst"):
+        if hasattr(self, "column_decoder_inst") and self.col_addr_size != 1:
             all_insts += self.column_decoder_inst
 
         for inst in all_insts:
@@ -622,7 +628,23 @@ class bank(design):
                 for pin_name in ["vdd", "gnd"]:
                     pin_list = inst.get_pins(pin_name)
                     for pin in pin_list:
-                        self.copy_power_pin(pin, pin.center())
+                        # The pin is the buffer's full-width supply rail.  A
+                        # via stack punched at its centre can land on the
+                        # buffer's own internal signal metal (gf180mcu: 0.16 um
+                        # from the second inverter's output strap).  A
+                        # technology may name an inset from the rail's right
+                        # edge where a 0.26 um wide pad plus 0.23 um of spacing
+                        # still fits inside the rail.  Only the inset stack is
+                        # exposed: copying the full-width m1 pin as well would
+                        # let the top-level supply router punch a second stack
+                        # at the rail centre, i.e. right back onto the strap.
+                        inset = getattr(layer_props.bank,
+                                        "supply_via_inset_from_right", None)
+                        if inset is None:
+                            loc = pin.center()
+                        else:
+                            loc = vector(pin.rx() - inset, pin.cy())
+                        self.copy_power_pin(pin, loc)
 
     def route_bank_select(self, port):
         """ Route the bank select logic. """
@@ -646,12 +668,12 @@ class bank(design):
             out_pos = self.bank_select_inst[port].get_pin(gated_bank_sel_signals[signal]).rc()
             name = self.control_signals[port][signal]
             bus_pos = vector(self.bus_pins[port][name].cx(), out_pos.y)
-            self.add_path("m3", [out_pos, bus_pos])
-            self.add_via_center(layers=self.m2_stack,
+            self.add_path(self.ctrl_layer, [out_pos, bus_pos])
+            self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                 offset=bus_pos)
             self.add_via_center(layers=self.m1_stack,
                                 offset=out_pos)
-            self.add_via_center(layers=self.m2_stack,
+            self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                 offset=out_pos)
 
     def setup_routing_constraints(self):
@@ -684,7 +706,7 @@ class bank(design):
         # Port 0
         # The bank is at (0,0), so this is to the left of the y-axis.
         # 2 pitches on the right for vias/jogs to access the inputs
-        control_bus_offset = vector(-self.m3_pitch * self.num_control_lines[0] - 2 * self.m3_pitch, self.min_y_offset)
+        control_bus_offset = vector(-self.ctrl_pitch * self.num_control_lines[0] - 2 * self.ctrl_pitch, self.min_y_offset)
         # The control bus is routed up to two pitches below the bitcell array
         control_bus_length = self.port_data_inst[0].uy() - self.min_y_offset
         self.bus_pins[0] = self.create_bus(layer="m2",
@@ -693,7 +715,7 @@ class bank(design):
                                            length=control_bus_length,
                                            vertical=True,
                                            make_pins=(True),
-                                           pitch=self.m3_pitch)
+                                           pitch=self.ctrl_pitch)
 
         self.copy_layout_pin(self.port_address_inst[0], "wl_en", self.prefix + "wl_en0")
 
@@ -701,7 +723,7 @@ class bank(design):
         if len(self.all_ports)==2:
             # The other control bus is routed up to two pitches above the bitcell array
             control_bus_length = self.max_y_offset - self.port_data_inst[1].by()
-            control_bus_offset = vector(self.bitcell_array_right + 2.5 * self.m3_pitch,
+            control_bus_offset = vector(self.bitcell_array_right + 2.5 * self.ctrl_pitch,
                                         self.max_y_offset - control_bus_length)
             # The bus for the right port is reversed so that the rbl_wl is closest to the array
             self.bus_pins[1] = self.create_bus(layer="m2",
@@ -710,7 +732,7 @@ class bank(design):
                                                length=control_bus_length,
                                                vertical=True,
                                                make_pins=(True),
-                                               pitch=self.m3_pitch)
+                                               pitch=self.ctrl_pitch)
 
             self.copy_layout_pin(self.port_address_inst[1], "wl_en", self.prefix + "wl_en1")
 
@@ -891,10 +913,18 @@ class bank(design):
             mid2 = mid1.scale(1, 0) + bitcell_wl_pos.scale(0, 1)
             if driver_wl_pin.layer != bitcell_wl_pin.layer:
                 self.add_path(driver_wl_pin.layer, [driver_wl_pos, mid1])
-                self.add_via_stack_center(from_layer=driver_wl_pin.layer,
-                                          to_layer=bitcell_wl_pin.layer,
-                                          offset=mid1)
-                self.add_path(bitcell_wl_pin.layer, [mid1, mid2, bitcell_wl_pos])
+                via = self.add_via_stack_center(from_layer=driver_wl_pin.layer,
+                                                to_layer=bitcell_wl_pin.layer,
+                                                offset=mid1)
+                # The via landing pad is wider than the minimum wire width.
+                # If the first segment is drawn at the minimum width, the
+                # width step against the pad leaves a notch narrower than the
+                # metal spacing rule.  Draw the route at the pad width so the
+                # shapes merge cleanly.
+                width = None
+                if getattr(layer_props.bank, "wordline_via_strap", False) and via is not None:
+                    width = via.mod.second_layer_width
+                self.add_path(bitcell_wl_pin.layer, [mid1, mid2, bitcell_wl_pos], width=width)
             else:
                 self.add_path(bitcell_wl_pin.layer, [driver_wl_pos, mid1, mid2, bitcell_wl_pos])
 
@@ -925,7 +955,20 @@ class bank(design):
         if not self.col_addr_size>0:
             return
 
-        stack = getattr(self, layer_props.bank.stack)
+        # The control bus is a full-height m2 stripe that sits between the
+        # column decoder and the port data (it has to span every bank-select
+        # and data-array supply pin).  The default m1_stack route puts the
+        # horizontal jogs on m2, so they cross that stripe: with a column mux
+        # every select line silently shorts to p_en_bar/s_en/w_en.  A
+        # technology may flip the channel's preferred directions so the
+        # vertical trunks stay on m2 (the channel is empty of m2 apart from
+        # the bus) while the horizontal jogs drop to m1 and simply pass under
+        # the bus.  Going a layer *up* instead is worse: m3/m4 are the supply
+        # grid, and the m1->m4 via stacks at the pins hit it.
+        stack_name = getattr(layer_props.bank, "column_select_stack",
+                             layer_props.bank.stack)
+        stack = getattr(self, stack_name)
+        directions = getattr(layer_props.bank, "column_select_directions", None)
         pitch = getattr(self, layer_props.bank.pitch)
 
         decode_names = []
@@ -950,7 +993,8 @@ class bank(design):
         route_map = list(zip(decode_pins, column_mux_pins))
         self.create_vertical_channel_route(route_map,
                                            offset,
-                                           stack)
+                                           stack,
+                                           directions)
 
     def add_lvs_correspondence_points(self):
         """

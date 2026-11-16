@@ -23,7 +23,7 @@ class control_logic_test(openram_test):
         openram.init_openram(config_file, is_unit_test=True)
 
         debug.info(1, "Testing sample for control_logic_w")
-        a = factory.create(module_type="control_logic", num_rows=128, words_per_row=1, word_size=32, port_type="w")
+        a = factory.create(module_type=OPTS.control_logic, num_rows=128, words_per_row=1, word_size=32, port_type="w")
         self.local_check(a)
 
         openram.end_openram()

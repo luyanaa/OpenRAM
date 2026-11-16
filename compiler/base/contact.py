@@ -282,6 +282,25 @@ class contact(hierarchy_design):
                       width=implant_width,
                       height=implant_height)
 
+        # On a thick-oxide (5 V) technology the well tap is a thick-oxide
+        # diffusion as well.  If it is left unmarked, the marker of the
+        # adjacent device extends a little way over the tap COMP, which both
+        # splits the diffusion into a thin MV sliver (DF.1a/DF.9) and leaves a
+        # 3.3 V tap next to MV diffusion (DV.3/DV.6).  Enclose the tap COMP
+        # with the same markers the devices use.
+        if self.is_well_contact and "dualgate" in tech_layers:
+            marker_pad = drc("dualgate_enclose_active")
+            marker_pad = max(marker_pad, drc("implant_enclose_active"))
+            marker_offset = self.first_layer_position - [marker_pad] * 2
+            marker_width = self.first_layer_width + 2 * marker_pad
+            marker_height = self.first_layer_height + 2 * marker_pad
+            for marker_layer in ("dualgate", "fet5v"):
+                if marker_layer in tech_layers:
+                    self.add_rect(layer=marker_layer,
+                                  offset=marker_offset,
+                                  width=marker_width,
+                                  height=marker_height)
+
         # Optionally implant well if layer exists
         well_layer = "{}well".format(self.well_type)
         if well_layer in tech_layers:

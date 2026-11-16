@@ -9,6 +9,7 @@ from openram.base import vector
 from openram.base import contact
 from openram.sram_factory import factory
 from openram.tech import drc, spice
+from openram.tech import tech_modules
 from openram.tech import cell_properties as props
 from openram import OPTS
 from .bitcell_base_array import bitcell_base_array
@@ -100,11 +101,21 @@ class capped_replica_bitcell_array(bitcell_base_array):
         # Dummy Col or Row Cap, depending on bitcell array properties
         row_cap_module_type = ("row_cap_array" if self.cell.end_caps else "dummy_array")
 
+        # The outer dummy columns are the only place with free silicon beside a
+        # bitcell column, so the technology can put its well taps there.  Use
+        # the tapped cell only for the left column: the right one shares its
+        # right overhang with the unused-wordline routing strap.
+        tap_kwargs = {}
+        if (row_cap_module_type == "dummy_array"
+                and tech_modules.is_overridden("tap_bitcell")):
+            tap_kwargs["bitcell"] = "tap_bitcell"
+
         self.row_cap_left = factory.create(module_type=row_cap_module_type,
                                             cols=1,
                                             column_offset=0,
                                             rows=self.row_size + self.extra_rows,
-                                            mirror=(self.rbl[0] + 1) % 2)
+                                            mirror=(self.rbl[0] + 1) % 2,
+                                            **tap_kwargs)
 
         self.row_cap_right = factory.create(module_type=row_cap_module_type,
                                             cols=1,
@@ -225,6 +236,8 @@ class capped_replica_bitcell_array(bitcell_base_array):
         self.route_supplies()
 
         self.route_unused_wordlines()
+
+        self.route_wordline_straps()
 
         lower_left = self.find_lowest_coords()
         upper_right = self.find_highest_coords()
@@ -387,6 +400,104 @@ class capped_replica_bitcell_array(bitcell_base_array):
             pin = self.replica_bitcell_array_inst.get_pin(wl_name)
             self.connect_side_pin(pin, "left", self.left_gnd_locs[0].x)
             self.connect_side_pin(pin, "right", self.right_gnd_locs[0].x)
+
+        # Ground the two outer dummy-column wordlines.  The dummy columns are
+        # shifted down by one row, so their pin list maps positionally to
+        # wordline_pin_list: the first and last entries are gnd (the extra
+        # dummy rows), while the middle entries are the real array wordlines
+        # and are already joined by the wide parent wordline straps.
+        for inst, side, locs in [(self.dummy_col_insts[0], "left", self.left_gnd_locs),
+                                 (self.dummy_col_insts[1], "right", self.right_gnd_locs)]:
+            wl_names = inst.mod.get_wordline_names()
+            for wl_index, net_name in enumerate(self.wordline_pin_list):
+                if net_name != "gnd":
+                    continue
+                pin = inst.get_pin(wl_names[wl_index])
+                if pin is None:
+                    continue
+                self.connect_side_pin(pin, side, locs[0].x)
+
+    def route_wordline_straps(self):
+        """Tie each row's poly wordline to its m3 wordline strap.
+
+        A hard bitcell may carry the wordline as two separately labelled
+        shapes (the access-gate poly band and an m3 strap) with no drawn
+        connection between them, because the leaf m1/m2 layers leave no room
+        for a via stack inside the cell.  The poly band and the m3 strap are
+        each continuous along an array row, so one poly -> m1 -> m2 -> m3
+        stack beside the outer dummy column ties the whole row together.  The
+        stack sits in the free margin left of the array, where the only metal
+        is the full-width supply rail between row pairs, which the row-local
+        stack never reaches.
+
+        No-op unless the bitcell describes the two shapes (``wordline_tie``).
+        """
+        tie = getattr(self.cell, "wordline_tie", None)
+        if not tie:
+            return
+
+        half = tie["half"]
+        col_inst = self.dummy_col_insts[0]
+        for row in range(col_inst.mod.row_size):
+            cell_inst = col_inst.mod.cell_inst[row, 0]
+            ox = col_inst.offset.x + cell_inst.offset.x
+            oy = col_inst.offset.y + cell_inst.offset.y
+            mirrored = cell_inst.mirror in ("MX", "XY")
+
+            def span(pair):
+                y0, y1 = pair
+                if mirrored:
+                    y0, y1 = oy - y0, oy - y1
+                else:
+                    y0, y1 = oy + y0, oy + y1
+                return min(y0, y1), max(y0, y1)
+
+            strap0, _ = span(tie["strap_y"])
+            stub0, stub1 = span(tie["stub_y"])
+            arm0, arm1 = span(tie["arm_y"])
+            contact0, contact1 = span(tie["contact_y"])
+            pad0, pad1 = span(tie["pad_y"])
+            via1_0, via1_1 = span(tie["via1_y"])
+
+            xc = ox + tie["x_center"]
+            # Right end of the tie column: overshoot the poly band's left edge
+            # so the arm merges with the band and the m3 landing merges with
+            # the strap.
+            x_inner = ox + tie["band_x0"] + tie["stub_overlap"]
+
+            # Poly pad at the tie column, plus a thin arm that reaches the
+            # band along its outer edge (the tapped cell's diffusion overhead
+            # blocks the taller hand-off).
+            self.add_rect("poly", vector(xc - half["stub"], stub0),
+                          2 * half["stub"], stub1 - stub0)
+            self.add_rect("poly", vector(xc - half["stub"], arm0),
+                          x_inner - (xc - half["stub"]), arm1 - arm0)
+
+            # Poly contact and its m1 landing pad.
+            self.add_rect("contact", vector(xc - half["contact"], contact0),
+                          2 * half["contact"], contact1 - contact0)
+            self.add_rect("m1", vector(xc - half["pad"], pad0),
+                          2 * half["pad"], pad1 - pad0)
+
+            # m2 -> m3 via and a landing that reaches from the tie column into
+            # the row's m3 strap (it is inside the wide parent strap from the
+            # poly band edge rightwards).
+            via2_0 = strap0 + tie["via2_from_strap"]
+            via2_1 = via2_0 + 2 * half["via"]
+            land0 = via2_0 - tie["m3_pad"]
+            land1 = via2_1 + tie["m3_pad"]
+            self.add_rect("via2", vector(xc - half["via"], via2_0),
+                          2 * half["via"], via2_1 - via2_0)
+            self.add_rect("m3", vector(xc - half["pad"], land0),
+                          x_inner - (xc - half["pad"]), land1 - land0)
+
+            # m1 -> m2 via and the m2 column joining the two vias.
+            self.add_rect("via1", vector(xc - half["via"], via1_0),
+                          2 * half["via"], via1_1 - via1_0)
+            m2_0 = min(pad0, via2_0) - 0.04
+            m2_1 = max(pad1, via2_1) + 0.04
+            self.add_rect("m2", vector(xc - half["pad"], m2_0),
+                          2 * half["pad"], m2_1 - m2_0)
 
     def route_side_pin(self, name, side, offset_multiple=1):
         """

@@ -34,7 +34,22 @@ class column_mux_array(design):
         self.column_offset = column_offset
 
         self.sel_layer = layer_props.column_mux_array.select_layer
-        self.sel_pitch = getattr(self, self.sel_layer + "_pitch")
+        # The select rails live on sel_layer, but the bank routes them to the
+        # column decoder on the layer above with a horizontal run at the rail
+        # y (see bank.route_column_address_lines).  Two adjacent rails therefore
+        # also have to satisfy the routing layer's pitch: on gf180mcu the m1
+        # pitch is 0.49 while a 0.38 um m2 via pad needs 0.66, and a 0.56 um
+        # tall m1 pad at the end of the run needs 0.79.  A technology may give
+        # either a layer name (resolved here) or an explicit numeric pitch.
+        sel_pitch_prop = layer_props.column_mux_array.select_pitch
+        if sel_pitch_prop is None:
+            select_pitch = getattr(self, self.sel_layer + "_pitch")
+        elif isinstance(sel_pitch_prop, str):
+            select_pitch = getattr(self, sel_pitch_prop)
+        else:
+            select_pitch = sel_pitch_prop
+        self.sel_pitch = max(getattr(self, self.sel_layer + "_pitch"),
+                             select_pitch)
         self.bitline_layer = layer_props.column_mux_array.bitline_layer
 
         if preferred_directions[self.sel_layer] == "V":

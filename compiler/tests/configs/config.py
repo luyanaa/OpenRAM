@@ -19,6 +19,10 @@ if tech_name in ("openrule1um", "icsprout55"):
 nominal_corner_only = True
 check_lvsdrc = True
 
+# The verification scripts already run inside the librelane nix-shell;
+# nesting `nix develop` here fails on hosts the repo flake does not declare.
+use_nix = False
+
 #route_supplies = False
 
 output_name = "sram"

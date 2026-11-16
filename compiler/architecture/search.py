@@ -17,14 +17,19 @@ from pathlib import Path
 
 from .contracts import (ContractError, ENVIRONMENT, FIDELITIES, MARGINS,
                         canonical_bytes, candidate_id, comparison_domain, fields,
-                        identity, load_json, resolve_artifact, validate_measurement,
+                        identity, load_json, number, resolve_artifact, validate_measurement,
                         validate_request)
 
 
 _METRICS = {
     "area_um2": ("um^2", "macro"),
+    "macro_bbox_area_um2": ("um^2", "macro"),
+    "effective_bit_area_um2": ("um^2", "macro"),
+    "buffer_driver_cell_area_um2": ("um^2", "macro"),
+    "total_mos_gate_width_um": ("um", "macro"),
     "read_energy_pj": ("pJ", "read"),
     "write_energy_pj": ("pJ", "write"),
+    "leakage_power_uw": ("uW", "macro"),
     "cycle_time_ns": ("ns", "macro"),
     "wen_pulse_ns": ("ns", "write"),
     "sa_setup_ns": ("ns", "read"),
@@ -168,21 +173,58 @@ def _assessment(candidate, evaluation, request):
     fidelity = candidate["environment"]["fidelity"]
     # Per-port values do not satisfy aggregate requirements. The adapter must
     # establish coverage and report an explicit aggregate, not copy port zero.
-    metrics = {record["name"]: record["value"] for record in evaluation["measurements"]
-               if record["port"] is None and record["name"] in _METRICS}
+    metric_records = {record["name"]: record for record in evaluation["measurements"]
+                      if record["port"] is None and record["name"] in _METRICS}
+    metrics = {name: record["value"] for name, record in metric_records.items()}
     checks = evaluation["checks"]
     screening = [_constraint("electrical_fidelity", True if fidelity in ("F2", "F3", "F4") else None,
                              reason="electrical screening requires F2 or higher"),
                  _constraint("functional", checks["functional"])]
+    constraint_margins = {}
     for name in _MARGIN_ORDER:
         actual, required = metrics.get(name), request["required_margins"][name]
+        unit = _METRICS[name][0]
         passed = None if actual is None or fidelity in ("F0", "F1") else actual >= required
-        item = _constraint(name, passed, required,
-                           ("{} is not electrical proof at {}".format(name, fidelity)
-                            if fidelity in ("F0", "F1") else
-                            "{}: measured {!r}, required >= {!r}".format(name, actual, required)))
-        item["actual"] = actual
+        record = metric_records.get(name)
+        reason = (record.get("reason") if actual is None and record else
+                  "{} is not electrical proof at {}".format(name, fidelity)
+                  if fidelity in ("F0", "F1") else
+                  "{}: measured {!r} {}, required >= {!r} {}".format(name, actual, unit, required, unit))
+        item = _constraint(name, passed, reason=reason)
+        item.update(actual=actual, threshold=required, unit=unit)
         screening.append(item)
+        normalizer_unit = "ns" if unit == "ns" else "V"
+        normalizer = (candidate["environment"]["period_ns"] if unit == "ns"
+                      else candidate["environment"]["voltage_v"])
+        slack = None if actual is None else actual - required
+        normalized = None if slack is None else slack / normalizer
+        constraint_margins[name] = {
+            "status": item["status"], "actual": actual, "required": required,
+            "slack": slack, "unit": unit, "normalized_slack": normalized,
+            "normalized_unit": "1", "normalizer": normalizer,
+            "normalizer_unit": normalizer_unit,
+            "reason": reason if item["status"] == "unknown" else None,
+        }
+    measured_margins = [item for item in constraint_margins.values()
+                        if item["normalized_slack"] is not None]
+    if fidelity in ("F2", "F3", "F4") and len(measured_margins) == len(_MARGIN_ORDER):
+        worst_name = min(_MARGIN_ORDER,
+                         key=lambda name: constraint_margins[name]["normalized_slack"])
+        worst_constraint_margin = {
+            "status": "measured", "constraint": worst_name,
+            "value": constraint_margins[worst_name]["normalized_slack"], "unit": "1",
+            "normalization": "time slack / period_ns; voltage slack / voltage_v",
+            "reason": None,
+        }
+    else:
+        missing = [name for name in _MARGIN_ORDER
+                   if constraint_margins[name]["normalized_slack"] is None]
+        worst_constraint_margin = {
+            "status": "unknown", "constraint": None, "value": None, "unit": "1",
+            "normalization": "time slack / period_ns; voltage slack / voltage_v",
+            "reason": ("electrical margins require F2 or higher" if fidelity in ("F0", "F1")
+                       else "aggregate constraint margin is unmeasured: " + ", ".join(missing)),
+        }
     if fidelity in ("F3", "F4"):
         screening.append(_constraint("topology", checks["topology"]))
     physical_gates = [_constraint("physical_fidelity", True if fidelity == "F4" else None,
@@ -199,11 +241,20 @@ def _assessment(candidate, evaluation, request):
     if fidelity == "F4":
         screening = physical[:]
     objectives = {name: metrics.get(name) for name in request["objectives"]}
-    objective_constraints = [_constraint("objective:" + name,
-                                        None if value is None else True,
-                                        reason="aggregate objective is missing" if value is None
-                                        else "aggregate objective is measured")
-                             for name, value in objectives.items()]
+    availability = evaluation["details"].get("metric_availability", {})
+    objective_constraints = []
+    for name, value in objectives.items():
+        metric_record = metric_records.get(name)
+        availability_record = availability.get(name, {})
+        reason = None
+        if value is None:
+            reason = ((metric_record or {}).get("reason")
+                      or availability_record.get("reason")
+                      or ("aggregate objective is missing" if metric_record
+                          else "aggregate objective has no measurement record"))
+        item = _constraint("objective:" + name, None if value is None else True, reason=reason)
+        item["unit"] = _METRICS[name][0]
+        objective_constraints.append(item)
     if fidelity == "F0":
         stage = [_constraint("basic_admission", True)] + objective_constraints
         stage += [_constraint(name, False) for name in _CHECKS
@@ -211,9 +262,9 @@ def _assessment(candidate, evaluation, request):
         for name in _MARGIN_ORDER:
             actual, required = metrics.get(name), request["required_margins"][name]
             if actual is not None and actual < required:
-                item = _constraint(name, False, required,
+                item = _constraint(name, False,
                                    reason="known F0 estimate violates required " + name)
-                item["actual"] = actual
+                item.update(actual=actual, threshold=required, unit=_METRICS[name][0])
                 stage.append(item)
     elif fidelity == "F1":
         stage = [_constraint("basic_admission", True), _constraint("functional", checks["functional"])]
@@ -231,10 +282,178 @@ def _assessment(candidate, evaluation, request):
             "physical_feasibility": _feasibility(physical),
             "objective_values": objectives,
             "objectives_complete": all(value is not None for value in objectives.values()),
+            "constraint_margins": constraint_margins,
+            "worst_constraint_margin": worst_constraint_margin,
             "first_failed_constraint": failed["name"] if failed else None,
             "first_unknown_constraint": unknown["name"] if unknown else None,
             "first_failed_reason": failed["reason"] if failed else None,
             "first_unknown_reason": unknown["reason"] if unknown else None}
+
+
+def _sample_verdict(record, required_margins):
+    candidate = record["candidate"]
+    fidelity = candidate["environment"]["fidelity"]
+    if record.get("status") != "evaluated" or not isinstance(record.get("evaluation"), dict):
+        reason = record.get("reason") or record.get("admission_error") or (
+            "candidate has no completed evaluation")
+        return {"status": "unknown", "reason": reason, "functional": None,
+                "constraints": {}}
+    evaluation = record["evaluation"]
+    checks = evaluation["checks"]
+    functional = checks.get("functional")
+    constraint_status = {}
+    failures, unknowns = [], []
+    if functional is False:
+        failures.append("functional")
+        functional_status = "fail"
+    elif functional is True:
+        functional_status = "pass"
+    else:
+        functional_status = "unknown"
+        unknowns.append("functional")
+    measurements = {item["name"]: item for item in evaluation["measurements"]
+                    if item["port"] is None}
+    for name in _MARGIN_ORDER:
+        metric = measurements.get(name)
+        actual = metric.get("value") if metric else None
+        required = required_margins[name]
+        unit = _METRICS[name][0]
+        if fidelity in ("F0", "F1"):
+            status = "unknown"
+            reason = "electrical constraint evidence requires F2 or higher"
+        elif actual is None:
+            status = "unknown"
+            reason = (metric.get("reason") if metric else None) or "aggregate measurement is absent"
+        elif actual < required:
+            status = "fail"
+            reason = "measured {!r} {} is below required {!r} {}".format(
+                actual, unit, required, unit)
+        else:
+            status = "pass"
+            reason = None
+        normalizer_unit = "ns" if unit == "ns" else "V"
+        normalizer = (candidate["environment"]["period_ns"] if unit == "ns"
+                      else candidate["environment"]["voltage_v"])
+        slack = None if actual is None else actual - required
+        constraint_status[name] = {
+            "status": status, "actual": actual, "required": required, "unit": unit,
+            "slack": slack, "normalized_slack": None if slack is None else slack / normalizer,
+            "normalized_unit": "1", "normalizer": normalizer,
+            "normalizer_unit": normalizer_unit, "reason": reason,
+        }
+        if status == "fail":
+            failures.append(name)
+        elif status == "unknown":
+            unknowns.append(name)
+    if failures:
+        status = "fail"
+        reason = "failed required gates: " + ", ".join(failures)
+    elif unknowns:
+        status = "unknown"
+        reason = "unmeasured required gates: " + ", ".join(unknowns)
+    else:
+        status = "pass"
+        reason = None
+    return {"status": status, "reason": reason, "functional": functional_status,
+            "constraints": constraint_status}
+
+
+def sampled_period_feasibility(report):
+    """Partition only measured period samples for exact admitted tuples.
+
+    Consecutive pass samples form a sampled run, never a continuous interval.
+    Failures, missing observations, and unsupported fidelity each break a run.
+    """
+    if not isinstance(report, dict) or report.get("schema") != "openram-search-report/1":
+        raise ContractError("sampled feasibility requires an openram-search-report/1")
+    request = report.get("request")
+    if not isinstance(request, dict):
+        raise ContractError("sampled feasibility requires a search request object")
+    axes = request.get("search")
+    if not isinstance(axes, dict) or "environment.period_ns" not in axes:
+        raise ContractError("sampled feasibility requires an explicit environment.period_ns grid")
+    request = validate_request(deepcopy(request))
+    raw_periods = request["search"]["environment.period_ns"]
+    periods = sorted({number(value, "sample period", 0, strict=True) for value in raw_periods})
+    groups = {}
+    candidates = report.get("candidates")
+    if not isinstance(candidates, list):
+        raise ContractError("search report candidates must be an array")
+    for record in candidates:
+        candidate = record.get("candidate")
+        if not isinstance(candidate, dict) or not isinstance(candidate.get("environment"), dict):
+            continue
+        try:
+            period = number(candidate["environment"].get("period_ns"),
+                            "candidate sample period", 0, strict=True)
+        except ContractError:
+            continue
+        if period not in periods:
+            continue
+        domain = deepcopy(candidate)
+        domain["environment"].pop("period_ns", None)
+        group_id = identity(domain)
+        group = groups.setdefault(group_id, {
+            "tuple": domain, "records": {}, "admitted": False})
+        previous = group["records"].get(period)
+        if previous is not None and previous.get("id") != record.get("id"):
+            raise ContractError("multiple candidate records occupy one exact tuple/period sample")
+        group["records"][period] = record
+        group["admitted"] |= record.get("status") != "rejected" and "admission_error" not in record
+    sets = []
+    for group_id in sorted(groups):
+        group = groups[group_id]
+        if not group["admitted"]:
+            continue
+        samples = []
+        for period in periods:
+            record = group["records"].get(period)
+            if record is None:
+                verdict = {"status": "unknown", "reason": "no report record for this requested sample",
+                           "functional": None, "constraints": {}}
+                record_id = None
+            elif record.get("status") == "rejected" or "admission_error" in record:
+                verdict = {"status": "unknown",
+                           "reason": "candidate tuple is not admitted at this sample",
+                           "functional": None, "constraints": {}}
+                record_id = record.get("id")
+            else:
+                verdict = _sample_verdict(record, request["required_margins"])
+                record_id = record.get("id")
+            samples.append({"period_ns": period, "candidate_id": record_id, **verdict})
+        runs, current = [], []
+        for sample in samples:
+            if sample["status"] == "pass":
+                current.append(sample["period_ns"])
+            elif current:
+                runs.append(current)
+                current = []
+        if current:
+            runs.append(current)
+        sets.append({
+            "tuple_id": group_id, "tuple": group["tuple"],
+            "samples": samples,
+            "feasible_samples_ns": [sample["period_ns"] for sample in samples
+                                    if sample["status"] == "pass"],
+            "unknown_samples_ns": [sample["period_ns"] for sample in samples
+                                   if sample["status"] == "unknown"],
+            "failed_samples_ns": [sample["period_ns"] for sample in samples
+                                  if sample["status"] == "fail"],
+            "feasible_sample_runs_ns": runs,
+            "run_interpretation": "ordered adjacent passing samples only; not a continuous interval",
+        })
+    return {
+        "schema": "openram-sampled-period-feasibility/1",
+        "period_grid_ns": periods,
+        "required_margins": deepcopy(request["required_margins"]),
+        "gate_order": ["functional", *_MARGIN_ORDER],
+        "interpretation": (
+            "Only exact admitted tuple/domain samples are classified. "
+            "Functional, W_EN pulse, SA setup, signed BL differential, and write "
+            "recovery must all pass at F2 or higher. Fail and unknown samples split "
+            "feasible sample runs; no result proves feasibility between sample periods."),
+        "sets": sets,
+    }
 
 
 def _promotion(registry, record, evaluation):

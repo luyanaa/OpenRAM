@@ -174,7 +174,7 @@ class dff_inv_array(design):
                                 height=self.height)
         else:
             self.add_layout_pin_segment_center(text="clk",
-                                            layer="m3",
+                                            layer=self.top_layer,
                                             start=vector(0,clk_ypos),
                                             end=vector(self.width,clk_ypos))
             for col in range(self.columns):
@@ -185,5 +185,5 @@ class dff_inv_array(design):
                               width=self.m2_width,
                               height=self.height)
                 # Drop a via to the M3 pin
-                self.add_via_center(layers=self.m2_stack,
+                self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                     offset=vector(clk_pin.cx(),clk_ypos))

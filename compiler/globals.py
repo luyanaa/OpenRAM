@@ -357,15 +357,20 @@ def read_config(config_file, is_unit_test=False):
         debug.error("Unable to read configuration file: {0}".format(config_file), 2)
 
     OPTS.overridden = {}
+    config_keys = set(config.__dict__)
+    # Technology extensions are configuration-owned.  Drop stale extensions
+    # before applying a second in-process configuration (unit tests and tools
+    # intentionally initialize OpenRAM more than once).
+    for key in list(OPTS.__dict__):
+        if key.startswith("ics55_") and key not in config_keys:
+            del OPTS.__dict__[key]
     for k, v in config.__dict__.items():
-        # The command line will over-ride the config file
-        # except in the case of the tech name! This is because the tech name
-        # is sometimes used to specify the config file itself (e.g. unit tests)
-        # Note that if we re-read a config file, nothing will get read again!
-        if k not in OPTS.__dict__ or k == "tech_name":
+        # The command line will over-ride the config file, except in the case
+        # of the tech name.  Refresh ICsprout55 options on every init so a
+        # later configuration cannot retain the previous mux/style selection.
+        if k not in OPTS.__dict__ or k == "tech_name" or k.startswith("ics55_"):
             OPTS.__dict__[k] = v
             OPTS.overridden[k] = True
-
     # Massage the output path to be an absolute one
     if not OPTS.output_path.endswith('/'):
         OPTS.output_path += "/"
@@ -590,7 +595,9 @@ def import_tech():
         sys.path.append(tech_path)
         debug.info(1, "Adding technology path: {}".format(tech_path))
 
-    # Import the tech
+    # Import the tech package.  Unit tests and tools may initialize OpenRAM
+    # repeatedly in one process; refresh the cached technology implementation
+    # so module-level selections follow the current configuration.
     try:
         tech_mod = __import__(OPTS.tech_name)
     except ImportError:
@@ -598,9 +605,16 @@ def import_tech():
 
     OPTS.openram_tech = os.path.dirname(tech_mod.__file__) + "/"
 
-    # Append tech_path to openram.__path__ to import it from openram
+    # Append tech_path to openram.__path__ to import it from openram.
     tech_path = OPTS.openram_tech
     openram.__path__.append(tech_path)
+    tech_package_name = "openram.tech"
+    tech_impl_name = "openram.tech.tech"
+    if tech_impl_name in sys.modules:
+        importlib.reload(sys.modules[tech_impl_name])
+        importlib.reload(sys.modules[tech_package_name])
+    else:
+        importlib.import_module(tech_package_name)
     try:
         from openram import tech
     except ImportError:
@@ -618,7 +632,7 @@ def import_tech():
 
 
 def print_time(name, now_time, last_time=None, indentation=2):
-    """ Print a statement about the time delta. """
+    """ Print the time elapsed since the last checkpoint. """
     global OPTS
 
     # Don't print during testing
@@ -633,7 +647,7 @@ def print_time(name, now_time, last_time=None, indentation=2):
 def report_status():
     """
     Check for valid arguments and report the
-    info about the SRAM being generated
+    status of the SRAM generation.
     """
     global OPTS
 

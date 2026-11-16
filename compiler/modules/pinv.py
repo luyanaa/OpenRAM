@@ -103,10 +103,21 @@ class pinv(pgate):
         pmos = factory.create(module_type="ptx",
                               width=drc("minwidth_tx"),
                               tx_type="pmos")
-        tx_height = nmos.poly_height + pmos.poly_height
-        # rotated m1 pitch or poly to active spacing
+        tx_height = nmos.active_height + pmos.active_height \
+                    + 2 * self.poly_extend_active
+        # rotated m1 pitch or the poly contact to COMP spacing.  The contact
+        # that connects the two gate stripes sits in this gap, so the binding
+        # rule is contact-to-COMP (CO.8), not the field poly to COMP spacing
+        # that governs the poly end caps (which poly_extend_active covers).
+        # Use whichever is smaller: thick-oxide technologies have a large
+        # field-poly rule (PL.5a, 0.30 um) that would otherwise over-constrain
+        # the channel height, while the contact only has to meet CO.8 (0.17).
+        contact_to_comp = (drc("poly_contact_to_active")
+                           if "poly_contact_to_active" in drc
+                           else self.poly_to_active)
         min_channel = max(self.poly_contact.width + self.m1_space,
-                          self.poly_contact.width + 2 * self.poly_to_active)
+                          self.poly_contact.width
+                          + 2 * min(contact_to_comp, self.poly_to_active))
 
         total_height = tx_height + min_channel + 2 * self.top_bottom_space
         # debug.check(self.height > total_height,
@@ -150,12 +161,16 @@ class pinv(pgate):
             # debug.check(self.nmos_width >= drc("minwidth_tx"),
             #            "Cannot finger NMOS transistors to fit cell height.")
             if self.nmos_width < drc("minwidth_tx"):
+                debug.info(1, "finger NMOS: size={0} mults={1} width={2} minwidth_tx={3} avail={4}".format(
+                    self.nmos_size, self.tx_mults, self.nmos_width, drc("minwidth_tx"), nmos_height_available))
                 raise drc_error("Cannot finger NMOS transistors to fit cell height.")
 
             self.pmos_width = round_to_grid(self.pmos_width / self.tx_mults)
             #debug.check(self.pmos_width >= drc("minwidth_tx"),
             #            "Cannot finger PMOS transistors to fit cell height.")
             if self.pmos_width < drc("minwidth_tx"):
+                debug.info(1, "finger PMOS: size={0} mults={1} width={2} minwidth_tx={3} avail={4}".format(
+                    self.pmos_size, self.tx_mults, self.pmos_width, drc("minwidth_tx"), pmos_height_available))
                 raise drc_error("Cannot finger NMOS transistors to fit cell height.")
         else:
             self.nmos_width = self.nmos_size * drc("minwidth_tx")
@@ -269,8 +284,12 @@ class pinv(pgate):
         # Remember the mid for the output
         mid_drain_offset = vector(nmos_drain_pos.x, self.output_pos.y)
 
-        # This leaves the output as an internal pin (min sized)
-        output_offset = mid_drain_offset + vector(0.5 * self.route_layer_width, 0)
+        # This leaves the output as an internal pin (min sized).  The pin must
+        # be centred on the drain strap: shifting it by half a wire width makes
+        # its top/right edges stick out past the strap, which puts them within
+        # a spacing rule of the adjacent source strap.  Centred, the pin is
+        # completely inside the strap and adds no new edges at all.
+        output_offset = mid_drain_offset
         self.add_layout_pin_rect_center(text="Z",
                                         layer=self.route_layer,
                                         offset=output_offset)

@@ -114,10 +114,12 @@ class bitcell_base(design):
         self.bl_offsets = []
         self.br_offsets = []
 
+        # Vendor cells may label the bitlines in upper case (BL/BR); compare
+        # case-insensitively so the PEX labels are placed for them too.
         for i in range(len(bl_names)):
             for text in self.gds.getTexts(layer["m2"]):
                 if not bl_names[i] in found_bl:
-                    if bl_names[i] == text.textString.rstrip('\x00'):
+                    if bl_names[i].lower() == text.textString.rstrip('\x00').lower():
                         self.bl_offsets.append(text.coordinates[0])
                         found_bl.append(bl_names[i])
 
@@ -126,7 +128,7 @@ class bitcell_base(design):
         for i in range(len(br_names)):
             for text in self.gds.getTexts(layer["m2"]):
                 if not br_names[i] in found_br:
-                    if br_names[i] == text.textString.rstrip('\x00'):
+                    if br_names[i].lower() == text.textString.rstrip('\x00').lower():
                         self.br_offsets.append(text.coordinates[0])
                         found_br.append(br_names[i])
                         continue

@@ -193,6 +193,23 @@ class pnand2(pgate):
                                      position="center")
 
         self.inputB_yoffset = self.inputA_yoffset + 2 * self.m3_pitch
+
+        # In a cell compressed to the bitcell height (gf180mcu uses 4.84 um)
+        # the second input contact would land on the PMOS gate.  The small
+        # poly strap that ties the contact to the gate then partially
+        # overlaps the PMOS transistor's own poly (a child cell), which
+        # Magic reports as "can't abut or partially overlap between
+        # subcells" plus cascaded PL.5a/DF.6 errors.  It would also put the
+        # m1 input pin on top of the horizontal output route.  Clamp the
+        # contact to keep both clear;  the gates are vertically aligned, so
+        # lowering the contact leaves it on the same gate net.
+        pmos_gate_bottom = self.pmos1_inst.get_pin("G").ll().y
+        max_b_yoffset = pmos_gate_bottom - 0.5 * self.poly_contact.first_layer_width
+        a_pin_height = max(p.height() for p in self.get_pins("A"))
+        output_route_bottom = self.output_yoffset - 0.5 * self.route_layer_width
+        max_b_yoffset = min(max_b_yoffset,
+                            output_route_bottom - self.route_layer_space - 0.5 * a_pin_height)
+        self.inputB_yoffset = min(self.inputB_yoffset, max_b_yoffset)
         # # active contact metal to poly contact metal spacing
         # active_contact_to_poly_contact = self.output_yoffset - self.route_layer_space - 0.5 * self.poly_contact.second_layer_height
         # active_bottom = self.pmos1_inst.by()

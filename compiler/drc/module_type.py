@@ -24,3 +24,6 @@ class module_type():
             raise KeyError
 
         return self.names[b]
+
+# Legacy name used by older technology tech.py files (scn3me_subm).
+ModuleType = module_type

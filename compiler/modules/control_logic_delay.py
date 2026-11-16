@@ -281,7 +281,7 @@ class control_logic_delay(control_logic_base):
         self.connect_vertical_bus(delay_map,
                                   self.delay_inst,
                                   self.input_bus,
-                                  self.m2_stack[::-1])
+                                  getattr(self, "m2_stack", self.m1_stack[::-1])[::-1])
 
     # glitch{0-2} are internal timing signals based on different in/out
     # points on the delay chain for adjustable start time and duration
@@ -459,17 +459,17 @@ class control_logic_delay(control_logic_base):
         self.connect_vertical_bus(wen_map,
                                   self.w_en_gate_inst,
                                   self.input_bus,
-                                  self.m2_stack[::-1])
+                                  getattr(self, "m2_stack", self.m1_stack[::-1])[::-1])
 
         # The pins are on M1, so we need more vias as well
         a_pin = self.w_en_gate_inst.get_pin("A")
         self.add_via_stack_center(from_layer=a_pin.layer,
-                                  to_layer="m3",
+                                  to_layer=self.top_layer,
                                   offset=a_pin.center())
 
         b_pin = self.w_en_gate_inst.get_pin("B")
         self.add_via_stack_center(from_layer=b_pin.layer,
-                                  to_layer="m3",
+                                  to_layer=self.top_layer,
                                   offset=b_pin.center())
 
         self.connect_output(self.w_en_gate_inst, "Z", "w_en")

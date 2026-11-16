@@ -440,14 +440,14 @@ class multibank(design):
             # Connect the inverter output to the central bus
             out_pos = self.bank_select_inst.get_pin(gated_name).rc()
             bus_pos = vector(self.bus_xoffset[gated_name], out_pos.y)
-            self.add_path("m3",[out_pos, bus_pos])
-            self.add_via_center(layers=self.m2_stack,
+            self.add_path(self.top_layer,[out_pos, bus_pos])
+            self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                 offset=bus_pos,
                                 rotate=90)
             self.add_via_center(layers=self.m1_stack,
                                 offset=out_pos,
                                 rotate=90)
-            self.add_via_center(layers=self.m2_stack,
+            self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                 offset=out_pos,
                                 rotate=90)
 
@@ -575,11 +575,11 @@ class multibank(design):
             tri_gate_in = self.tri_gate_array_inst.get_pin("in_{}".format(i)).lc()
             sa_data_out = self.sense_amp_array_inst.get_pin("data_{}".format(i)).bc()
 
-            self.add_via_center(layers=self.m2_stack,
+            self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                 offset=tri_gate_in)
-            self.add_via_center(layers=self.m2_stack,
+            self.add_via_center(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                                 offset=sa_data_out)
-            self.add_path("m3",[sa_data_out,tri_gate_in])
+            self.add_path(self.top_layer,[sa_data_out,tri_gate_in])
 
     def route_sense_amp_out(self):
         """ Add pins for the sense amp output """
@@ -801,7 +801,7 @@ class multibank(design):
         self.add_via(layers=self.m1_stack,
                      offset=in_pin + self.m1_via.offset,
                      rotate=90)
-        self.add_via(layers=self.m2_stack,
+        self.add_via(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                      offset=in_pin + self.m2m3_via_offset,
                      rotate=90)
 
@@ -814,6 +814,6 @@ class multibank(design):
         self.add_via(layers=self.m1_stack,
                      offset=in_pin + self.m1_via.offset,
                      rotate=90)
-        self.add_via(layers=self.m2_stack,
+        self.add_via(layers=getattr(self, "m2_stack", self.m1_stack[::-1]),
                      offset=in_pin + self.m2m3_via_offset,
                      rotate=90)

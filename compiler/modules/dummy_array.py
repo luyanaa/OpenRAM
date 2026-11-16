@@ -12,7 +12,10 @@ class dummy_array(bitcell_base_array):
     """
     Generate a dummy row/column for the replica array.
     """
-    def __init__(self, rows, cols, column_offset=0, mirror=0, location="", name=""):
+    def __init__(self, rows, cols, column_offset=0, mirror=0, location="", name="", bitcell=None):
+        # Optional override for the cell placed in this dummy array.  The outer
+        # dummy column uses it to substitute the well-tapped bitcell variant.
+        self.dummy_bitcell = bitcell
         super().__init__(rows=rows, cols=cols, column_offset=column_offset, name=name)
         self.mirror = mirror
 
@@ -45,7 +48,10 @@ class dummy_array(bitcell_base_array):
     def add_modules(self):
         """ Add the modules used in this design """
 
-        self.dummy_cell = factory.create(module_type=OPTS.dummy_bitcell)
+        if self.dummy_bitcell:
+            self.dummy_cell = factory.create(module_type=self.dummy_bitcell)
+        else:
+            self.dummy_cell = factory.create(module_type=OPTS.dummy_bitcell)
         self.cell = factory.create(module_type=OPTS.bitcell)
 
     def create_instances(self):

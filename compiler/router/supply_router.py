@@ -73,6 +73,10 @@ class supply_router(router):
             pins = self.pins[pin_name]
             # Route closest pins according to the minimum spanning tree
             for source, target in self.get_mst_pairs(list(pins)):
+                # Duplicate pins (e.g. a copied supply pin landing on the
+                # same rectangle) have no route to draw.
+                if source.rect == target.rect:
+                    continue
                 # Create the graph
                 g = graph(self)
                 g.create_graph(source, target)
