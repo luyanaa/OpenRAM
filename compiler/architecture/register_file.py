@@ -18,7 +18,10 @@ from typing import Optional
 
 
 REGISTER_FILE_PORT_ROLES = ("R", "R", "W")
-NATIVE_LAYOUT_MAX_PORTS = 2
+# The native backend is the icsprout55 1W+2R pbitcell macro
+# (technology/icsprout55/configs/ics55_2r1w_native.py); this module keeps the
+# replicated two-copy model as the behavioral reference.
+NATIVE_LAYOUT_MAX_PORTS = 3
 
 
 class UnsupportedRegisterFileLayout(ValueError):
@@ -36,10 +39,10 @@ class UnsupportedRegisterFileLayout(ValueError):
 
 
 def reject_unsupported_layout(total_ports):
-    """Reject native layouts over two total physical ports, without fake support.
+    """Reject native layouts over three total physical ports, without fake support.
 
     The native compiler layout boundary counts all physical read and write
-    ports. Counts of one or two may proceed to an independently implemented
+    ports. Counts of one to three may proceed to an independently implemented
     native backend; this Phase 1 module does not generate such a layout.
     """
     if type(total_ports) is not int:

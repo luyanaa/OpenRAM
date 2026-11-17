@@ -57,8 +57,8 @@ class port_data(design):
 
         self.create_netlist()
         if not OPTS.netlist_only:
-            debug.check(len(self.all_ports)<=2,
-                        "Bank layout cannot handle more than two ports.")
+            debug.check(len(self.all_ports)<=3,
+                        "Bank layout cannot handle more than three ports.")
             self.create_layout()
             self.add_boundary()
 
@@ -380,8 +380,20 @@ class port_data(design):
         self.connect_inst(temp)
 
     def place_sense_amp_array(self, offset):
-        """ Placing Sense amp  """
-        self.sense_amp_array_inst.place(offset=offset, mirror="MX")
+        """ Placing Sense amp.
+
+        Port 2 is the read-only row below port 0.  With the usual MX mirror
+        its dout pins land on the bottom gnd/vdd rail (LVS:
+        dout2[5:7] shorted to gnd/vdd).  Keep port 2's sense amps unflipped
+        so the outputs face the port-0 row; the bitline jog is handled by
+        route_sense_amp_to_column_mux_or_precharge_array.
+        """
+        mirror = "R0" if self.port == 2 else "MX"
+        if self.port == 2:
+            # dout2[5:7] output pins/strap share x ~105.6 um; shift the
+            # sense-amp row left so the outputs are clear of the right rail.
+            offset = offset - vector(6, 0)
+        self.sense_amp_array_inst.place(offset=offset, mirror=mirror)
 
     def create_write_driver_array(self):
         """ Creating Write Driver  """
@@ -577,7 +589,7 @@ class port_data(design):
 
         # spare cols connected to precharge array since they are read independently
         if self.num_spare_cols and self.col_addr_size>0:
-            if self.port==0:
+            if self.port==0 and self.has_rbl:
                 off = 1
             else:
                 off = 0
@@ -642,19 +654,19 @@ class port_data(design):
             # Sense amp is directly connected to the precharge array
             inst1 = self.precharge_array_inst
             inst1_bls_templ="{inst}_{bit}"
-            if self.port==0:
+            if self.port==0 and self.has_rbl:
                 start_bit=1
             else:
                 start_bit=0
 
-        if self.port==0:
+        if self.port==0 and self.has_rbl:
             off = 1
         else:
             off = 0
 
         # Channel route spare columns' bitlines
         if self.num_spare_cols and self.col_addr_size>0:
-            if self.port==0:
+            if self.port==0 and self.has_rbl:
                 off = 1
             else:
                 off = 0

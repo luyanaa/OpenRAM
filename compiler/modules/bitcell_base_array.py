@@ -9,6 +9,7 @@ from openram import debug
 from openram.base import design
 from openram.sram_factory import factory
 from openram import OPTS
+from openram.tech import drc
 
 
 class bitcell_base_array(design):
@@ -137,13 +138,13 @@ class bitcell_base_array(design):
                 self.add_layout_pin(text="bl_{0}_{1}".format(port, col),
                                     layer=bl_pin.layer,
                                     offset=bl_pin.ll().scale(1, 0),
-                                    width=bl_pin.width(),
+                                    width=max(bl_pin.width(), drc("minwidth_m2")),
                                     height=self.height)
                 br_pin = self.cell_inst[0, col].get_pin(bitline_names[2 * port + 1])
                 self.add_layout_pin(text="br_{0}_{1}".format(port, col),
                                     layer=br_pin.layer,
                                     offset=br_pin.ll().scale(1, 0),
-                                    width=br_pin.width(),
+                                    width=max(br_pin.width(), drc("minwidth_m2")),
                                     height=self.height)
     def add_wl_pins(self):
         wl_names = self.cell.get_all_wl_names()

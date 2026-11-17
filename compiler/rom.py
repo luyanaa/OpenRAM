@@ -101,6 +101,13 @@ class rom():
             gdsname = OPTS.output_path + self.r.name + ".gds"
             debug.print_raw("GDS: Writing to {0}".format(gdsname))
             self.gds_write(gdsname)
+            # Technology post-processing (icsprout55 adds NP/PP implants and
+            # well markers here; without it the ROM GDS fails the KLayout
+            # implant/enclosure rules).
+            from openram import tech
+            if hasattr(tech, "finalize_gds"):
+                debug.print_raw("GDS: Finalizing {0}".format(gdsname))
+                tech.finalize_gds(gdsname, self.r.name)
             if OPTS.check_lvsdrc:
                 verify.write_drc_script(cell_name=self.r.name,
                                         gds_name=os.path.basename(gdsname),

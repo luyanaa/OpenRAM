@@ -1,9 +1,9 @@
-"""Explicit native 2R1W register-file cell configuration.
+"""Native 1W+2R (2R1W) register-file macro on icsprout55.
 
-This configuration describes the cell/netlist boundary only. OpenRAM's native
-bank and port-data layout currently supports at most two physical ports, so a
-three-port full macro must be rejected by the register-file adapter rather
-than silently treated as an SRAM or replicated implementation.
+The three physical ports are built natively (one write-only port followed by
+two read-only ports); this is not a replicated two-copy SRAM.  The macro also
+exposes a physical ``write_conflict`` output, tied to gnd because a single
+write port cannot have a same-row write conflict.
 """
 
 tech_name = "icsprout55"
@@ -31,10 +31,20 @@ num_rw_ports = 0
 num_w_ports = 1
 num_r_ports = 2
 
-# The standalone smoke emits the pbitcell netlist and never enters bank layout.
-netlist_only = True
+# The native 1W+2R bank is implemented; build the full macro, not just the
+# pbitcell netlist.
+netlist_only = False
+control_logic = "control_logic_delay"
+ics55_control_logic = "control_logic_delay"
+words_per_row = 1
 analytical_delay = True
 nominal_corner_only = True
 check_lvsdrc = False
 use_nix = False
-output_name = "native_2r1w_pbitcell"
+output_path = "/grid/OpenRAM/ics55_work/2r1w_native/"
+output_name = "ics55_2r1w_32x8"
+functional = False
+# The behavioral model now exposes the extra write_conflict port; the
+# analytical-delay path does not need a SPICE-characterized .lib/datasheet.
+liberty = False
+datasheet = False

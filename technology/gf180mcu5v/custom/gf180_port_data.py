@@ -62,8 +62,14 @@ class gf180_port_data(port_data):
         way up to the write driver (y ~30), straight through the sense-amp
         array's m2 supply pads.  Keep the generic behaviour once a column mux
         exists, since then the two are no longer the same net.
+
+        A write-only port (1W+1R macros) has no sense amp at all, so the
+        assumption above does not hold: the write driver would be left with
+        every bitline pin open (the 1W+1R macro LVS reported exactly that).
+        Only skip the generic route when this port really has an amplifier
+        to bridge through.
         """
-        if self.col_addr_size == 0:
+        if self.col_addr_size == 0 and self.sense_amp_array_inst is not None:
             return
         super().route_write_driver_to_column_mux_or_precharge_array(port)
 

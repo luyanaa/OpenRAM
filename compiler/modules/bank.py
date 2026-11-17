@@ -48,8 +48,8 @@ class bank(design):
 
         self.create_netlist()
         if not OPTS.netlist_only:
-            debug.check(len(self.all_ports)<=2,
-                        "Bank layout cannot handle more than two ports.")
+            debug.check(len(self.all_ports)<=3,
+                        "Bank layout cannot handle more than three ports.")
             self.create_layout()
             self.add_boundary()
 
@@ -192,8 +192,10 @@ class bank(design):
         self.main_bitcell_array_bottom = self.bitcell_array.get_main_array_bottom()
 
         self.compute_instance_port0_offsets()
-        if len(self.all_ports)==2:
+        if len(self.all_ports)>=2:
             self.compute_instance_port1_offsets()
+        if len(self.all_ports)>=3:
+            self.compute_instance_port2_offsets()
 
     def get_column_offsets(self):
         """
@@ -288,6 +290,38 @@ class bank(design):
             y_offset = self.port_address_offsets[port].y
         self.bank_select_offsets[port] = vector(x_offset, y_offset)
 
+    def compute_instance_port2_offsets(self):
+        """Place the third port on the bottom/left, below port 0.
+
+        Port 0 already uses the bottom data row and the left address column.
+        A second read port is stacked below it: its data row is one
+        port_data height lower and its address decoder one port_address
+        height lower.  words_per_row=1 means there is no column decoder for
+        the prototype path.
+        """
+        port = 2
+
+        self.port_data_offsets[port] = vector(0, -self.port_data[port].height)
+
+        # Put the third port's row decoder on the right, below port 1.
+        # The port-2 data row stays on the bottom; keeping the address
+        # decoder out of the port-0 data row lets addr2 escape to the right.
+        x_offset = (self.bitcell_array_right + self.port_address[port].width
+                    + self.decoder_gap)
+        y_offset = (self.port_address_offsets[1].y
+                    - self.port_address[port].height - self.decoder_gap)
+        self.port_address_offsets[port] = vector(x_offset, y_offset)
+
+        if self.col_addr_size > 0:
+            self.column_decoder_offsets[port] = vector(
+                self.column_decoder_offsets[1].x,
+                self.column_decoder_offsets[1].y - self.column_decoder.height
+                - self.decoder_gap)
+        else:
+            self.column_decoder_offsets[port] = vector(0, 0)
+
+        self.bank_select_offsets[port] = self.port_address_offsets[port]
+
     def place_instances(self):
         """ Place the instances. """
 
@@ -367,14 +401,14 @@ class bank(design):
         """ Add all the modules using the class loader """
 
         # delay control logic does not have RBLs
-        if OPTS.control_logic != "control_logic_delay":
+        if getattr(OPTS, "ics55_control_logic", OPTS.control_logic) != "control_logic_delay":
             self.has_rbl = True
             rbl = [1, 1 if len(self.all_ports)>1 else 0]
             left_rbl = [0]
             right_rbl = [1] if len(self.all_ports)>1 else []
         else:
             self.has_rbl = False
-            rbl = [0, 0]
+            rbl = [0] * len(self.all_ports)
             left_rbl = []
             right_rbl = []
 
@@ -522,7 +556,7 @@ class bank(design):
         # The address flop and decoder are aligned in the x coord.
 
         for port in self.all_ports:
-            if port % 2:
+            if port % 2 or port == 2:
                 mirror = "MY"
             else:
                 mirror = "R0"
@@ -720,7 +754,7 @@ class bank(design):
         self.copy_layout_pin(self.port_address_inst[0], "wl_en", self.prefix + "wl_en0")
 
         # Port 1
-        if len(self.all_ports)==2:
+        if len(self.all_ports)>=2:
             # The other control bus is routed up to two pitches above the bitcell array
             control_bus_length = self.max_y_offset - self.port_data_inst[1].by()
             control_bus_offset = vector(self.bitcell_array_right + 2.5 * self.ctrl_pitch,
@@ -735,6 +769,25 @@ class bank(design):
                                                pitch=self.ctrl_pitch)
 
             self.copy_layout_pin(self.port_address_inst[1], "wl_en", self.prefix + "wl_en1")
+
+        # Port 2 (third physical port).  Keep it on the left, below the
+        # port-0 bus, so the third control bundle has its own x column.
+        if len(self.all_ports) >= 3:
+            port = 2
+            control_bus_offset = vector(
+                -self.ctrl_pitch * (self.num_control_lines[0] + self.num_control_lines[port])
+                - 4 * self.ctrl_pitch,
+                self.min_y_offset)
+            control_bus_length = self.port_data_inst[port].uy() - self.min_y_offset
+            self.bus_pins[port] = self.create_bus(layer="m2",
+                                                  offset=control_bus_offset,
+                                                  names=self.control_signals[port],
+                                                  length=control_bus_length,
+                                                  vertical=True,
+                                                  make_pins=(True),
+                                                  pitch=self.ctrl_pitch)
+            self.copy_layout_pin(self.port_address_inst[port], "wl_en",
+                                 self.prefix + "wl_en{}".format(port))
 
     def route_port_data_to_bitcell_array(self, port):
         """ Routing of BL and BR between port data and bitcell array """

@@ -44,6 +44,9 @@ LOWER = {(82, 1): ((91, 1), (81, 1)), (83, 1): ((92, 1), (82, 1)),
 METAL_AREA = [((81, 1), 0.046, 0.12), ((82, 1), 0.056, 0.12),
               ((83, 1), 0.056, 0.12), ((84, 1), 0.056, 0.12),
               ((85, 1), 0.056, 0.12)]
+# MET*_W_1 minimum width, used by the direct-top-cell pad repair below.
+MIN_WIDTH = {(81, 1): 0.09, (82, 1): 0.10, (83, 1): 0.10,
+             (84, 1): 0.10, (85, 1): 0.10}
 
 # Horizontal repair polygons must be isolated to the exact instance path.
 # Shared source-cell edits fan out to unrelated placements; root overlays
@@ -437,6 +440,102 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     # can become unreachable after a later grouped variant supersedes it.
     # Prune those definitions before writing; retaining unreachable roots
     # needlessly bloats the GDS and can confuse downstream hierarchy tools.
+    # Direct-top-cell (top-interconnect) reduction: pads that merge with
+    # child-cell metal in the full view become isolated slivers when only
+    # top-cell shapes are kept for the screening DRC.  Grow each such pad
+    # along the containing rail so the reduced view also sees a legal
+    # rectangle.  The patch is clipped to the same physical polygon, so it
+    # cannot touch another net.
+    n_direct = 0
+    for (lp, min_area, _space) in METAL_AREA:
+        li = layout.find_layer(lp[0], lp[1])
+        if li is None:
+            continue
+        mw = um(MIN_WIDTH.get(lp, 0.10))
+        min_area_dbu2 = um2(min_area)
+
+        def legal(region):
+            region.merge()
+            if region.is_empty():
+                return False
+            for piece in region.each():
+                pb = piece.bbox()
+                if piece.area() < min_area_dbu2:
+                    return False
+                if pb.width() < mw or pb.height() < mw:
+                    return False
+            return True
+
+        full = kdb.Region(top_cell.begin_shapes_rec(li))
+        full.merge()
+        skipped = set()
+        inserted = set()
+        for _attempt in range(4096):
+            direct = kdb.Region(top_cell.shapes(li))
+            direct.merge()
+            bad = []
+            neck_only = set()
+            for piece in direct.each():
+                pb = piece.bbox()
+                key = (pb.left, pb.bottom, pb.right, pb.top)
+                if key in skipped:
+                    continue
+                if (piece.area() < min_area_dbu2 or
+                        pb.width() < mw or pb.height() < mw):
+                    bad.append(piece)
+                    continue
+                # Small islands can contain sub-min-width necks even when the
+                # bbox is legal (ROM contact pads fused onto an M1 rail).
+                # Only apply this to small islands; a large rail is handled by
+                # its own leaf geometry and re-owning it would bloat the GDS.
+                if (pb.width() <= um(1.0) and pb.height() <= um(1.0)):
+                    p_reg = kdb.Region()
+                    p_reg.insert(piece)
+                    opened = p_reg.sized(-mw // 2, -mw // 2, 2).sized(
+                        mw // 2, mw // 2, 2)
+                    if not (p_reg - opened).is_empty():
+                        bad.append(piece)
+                        neck_only.add(key)
+            if not bad:
+                break
+            pad = bad[0]
+            padreg = kdb.Region()
+            padreg.insert(pad)
+            center = pad.bbox().center()
+            owner = None
+            for poly in full.each():
+                if not poly.bbox().contains(center):
+                    continue
+                polyreg = kdb.Region()
+                polyreg.insert(poly)
+                if (polyreg & padreg).is_empty():
+                    continue
+                owner = polyreg
+                break
+            key = (pad.bbox().left, pad.bbox().bottom,
+                   pad.bbox().right, pad.bbox().top)
+            if owner is None:
+                skipped.add(key)
+                continue
+            ob = owner.bbox()
+            okey = (ob.left, ob.bottom, ob.right, ob.top)
+            if okey in inserted:
+                skipped.add(key)
+                continue
+            if key in neck_only and (ob.width() > um(2.0) or
+                                     ob.height() > um(2.0)):
+                # A neck-only fix on a large rail would duplicate a lot of
+                # geometry; leave those to the leaf cell.
+                skipped.add(key)
+                continue
+            # Re-own the exact same physical polygon at the top cell.  This
+            # adds no new geometry (the shapes already exist in the full
+            # view), it only makes the reduced top-interconnect view see the
+            # pad together with the rail it belongs to.
+            top_cell.shapes(li).insert(owner)
+            inserted.add(okey)
+            n_direct += 1
+
     root_indices = [cell.cell_index() for cell in layout.each_cell()
                     if cell.parent_cells() == 0 and
                     cell.cell_index() != top_cell.cell_index()]
@@ -453,6 +552,7 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
     return dict(nact=nact.count(), pact=pact.count(), ntap=ntap.count(),
                 ptap=ptap.count(), nw_added=added.count(),
                 area_fixed=n_area_fixed, area_left=n_area_left,
+                direct_pads_fixed=n_direct,
                 holes_filled=n_holes, notches_filled=n_notch)
 
 

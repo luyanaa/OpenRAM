@@ -73,6 +73,8 @@ class verilog:
             # Continue for every port on a new line
             if port != self.all_ports[-1]:
                 self.vf.write(",\n")
+        if getattr(self, "write_conflict_pin", False):
+            self.vf.write(",\n    write_conflict")
         self.vf.write("\n  );\n\n")
 
         if self.write_size != self.word_size:
@@ -94,6 +96,8 @@ class verilog:
 
         for port in self.all_ports:
             self.add_inputs_outputs(port)
+        if getattr(self, "write_conflict_pin", False):
+            self.vf.write("  output write_conflict;\n")
 
         self.vf.write("\n")
 
@@ -110,6 +114,8 @@ class verilog:
             if port in self.read_ports:
                 self.add_read_block(port)
 
+        if getattr(self, "write_conflict_pin", False):
+            self.vf.write("  assign write_conflict = 1'b0;\n")
         self.vf.write("\n")
         self.vf.write("endmodule\n")
         self.vf.close()
@@ -218,9 +224,9 @@ class verilog:
         self.vf.write("  always @ (negedge clk{0})\n".format(port))
         self.vf.write("  begin : MEM_WRITE{0}\n".format(port))
         if port in self.readwrite_ports:
-            self.vf.write("    if ( !csb{0}_reg && !web{0}_reg ) begin\n".format(port))
+            self.vf.write("    if ( write_grant{0} && !csb{0}_reg && !web{0}_reg ) begin\n".format(port))
         else:
-            self.vf.write("    if (!csb{0}_reg) begin\n".format(port))
+            self.vf.write("    if (write_grant{0} && !csb{0}_reg) begin\n".format(port))
 
         if self.write_size != self.word_size:
             for mask in range(0, self.num_wmasks):
@@ -244,66 +250,60 @@ class verilog:
         self.vf.write("  end\n")
 
     def add_write_write_checks(self):
-        """Emit an opt-in guard for overlapping writes to the same physical row."""
+        """Emit hardware write-port arbitration for shared physical rows.
+
+        The previous implementation only raised ``$fatal`` under
+        ``OPENRAM_ASSERTIONS``.  This is a real priority gate in the
+        behavioral model: the lowest-index active write port wins when two
+        ports target the same physical row; the loser's write is suppressed
+        and ``write_conflict`` is asserted for the cycle.  The controller must
+        retry the dropped write.  ``words_per_row == 1`` cannot conflict, so
+        every port is granted directly.
+        """
         if len(self.write_ports) < 2:
+            # add_write_block always references write_grant<port>; a
+            # single-write-port memory has no arbitration, so grant it.
+            for port in self.write_ports:
+                self.vf.write("  wire write_grant{0} = 1'b1;\n".format(port))
             return
 
-        row_shift = self.col_addr_size
-        self.vf.write("\n`ifdef OPENRAM_ASSERTIONS\n")
-        for port in self.write_ports:
-            self.vf.write("  reg port{0}_write_pending;\n".format(port))
-            self.vf.write("  reg [ADDR_WIDTH-1:0] port{0}_write_pending_addr;\n".format(port))
-            self.vf.write("  reg port{0}_write_completed_valid;\n".format(port))
-            self.vf.write("  reg [ADDR_WIDTH-1:0] port{0}_write_completed_addr;\n".format(port))
-            self.vf.write("  realtime port{0}_write_completed_time;\n".format(port))
-            self.vf.write("  initial begin\n")
-            self.vf.write("    port{0}_write_pending = 1'b0;\n".format(port))
-            self.vf.write("    port{0}_write_pending_addr = 0;\n".format(port))
-            self.vf.write("    port{0}_write_completed_valid = 1'b0;\n".format(port))
-            self.vf.write("    port{0}_write_completed_addr = 0;\n".format(port))
-            self.vf.write("    port{0}_write_completed_time = 0.0;\n".format(port))
-            self.vf.write("  end\n")
-
+        self.vf.write("\n  // Write-port arbitration: same physical row -> lowest port wins.\n")
+        self.vf.write("  wire write_conflict;\n")
         for port in self.write_ports:
             if port in self.readwrite_ports:
-                write_enabled = "(csb{0} === 1'b0) && (web{0} === 1'b0)".format(port)
+                self.vf.write("  wire write_active{0} = !csb{0}_reg && !web{0}_reg;\n".format(port))
             else:
-                write_enabled = "(csb{0} === 1'b0)".format(port)
-            self.vf.write("\n  always @(posedge clk{0}) begin\n".format(port))
-            self.vf.write("    if ({0}) begin\n".format(write_enabled))
-            self.vf.write("      port{0}_write_pending_addr = addr{0};\n".format(port))
-            self.vf.write("      port{0}_write_pending = 1'b1;\n".format(port))
-            self.vf.write("      #0;\n")
-            for other in self.write_ports:
-                if other == port:
-                    continue
-                row_match = "((port{0}_write_pending_addr >> {1}) === " \
-                            "(port{2}_write_pending_addr >> {1}))".format(
-                                other, row_shift, port)
-                pending_conflict = "((port{0}_write_pending === 1'b1) && {1})".format(
-                    other, row_match)
-                completed_row_match = "((port{0}_write_completed_addr >> {1}) === " \
-                                      "(port{2}_write_pending_addr >> {1}))".format(
-                                          other, row_shift, port)
-                boundary_conflict = "((port{0}_write_completed_valid === 1'b1) && " \
-                                    "(port{0}_write_completed_time == $realtime) && {1})".format(
-                                        other, completed_row_match)
-                message = ("OpenRAM overlapping writes to the same physical row "
-                           "on ports {0} and {1} are undefined").format(port, other)
-                self.vf.write("      if ({0} || {1})\n".format(pending_conflict, boundary_conflict))
-                self.vf.write("        $fatal(1, \"{0}\");\n".format(message))
-            self.vf.write("    end\n")
-            self.vf.write("  end\n")
+                self.vf.write("  wire write_active{0} = !csb{0}_reg;\n".format(port))
+            if self.words_per_row > 1:
+                self.vf.write("  wire [ADDR_WIDTH-1:0] write_row{0} = addr{0}_reg >> {1};\n".format(
+                    port, self.col_addr_size))
+            else:
+                self.vf.write("  wire [ADDR_WIDTH-1:0] write_row{0} = addr{0}_reg;\n".format(port))
 
-            self.vf.write("  always @(negedge clk{0}) begin\n".format(port))
-            self.vf.write("    if (port{0}_write_pending === 1'b1) begin\n".format(port))
-            self.vf.write("      port{0}_write_completed_addr = port{0}_write_pending_addr;\n".format(port))
-            self.vf.write("      port{0}_write_completed_time = $realtime;\n".format(port))
-            self.vf.write("      port{0}_write_completed_valid = 1'b1;\n".format(port))
-            self.vf.write("      #0 port{0}_write_pending = 1'b0;\n".format(port))
-            self.vf.write("    end\n")
-            self.vf.write("  end\n")
-        self.vf.write("`endif\n")
+        terms = []
+        for i, port in enumerate(self.write_ports):
+            higher = []
+            for other in self.write_ports[:i]:
+                if self.words_per_row > 1:
+                    same_row = "(write_row{0} == write_row{1})".format(other, port)
+                else:
+                    same_row = "1'b0"
+                higher.append("(write_active{0} && {1})".format(other, same_row))
+            if higher:
+                self.vf.write("  wire write_grant{0} = write_active{0} && !({1});\n".format(
+                    port, " || ".join(higher)))
+            else:
+                self.vf.write("  wire write_grant{0} = write_active{0};\n".format(port))
+            if i > 0:
+                for other in self.write_ports[:i]:
+                    if self.words_per_row > 1:
+                        terms.append("(write_active{0} && write_active{1} && (write_row{0} == write_row{1}))".format(
+                            other, port))
+        if terms:
+            self.vf.write("  assign write_conflict = {0};\n".format(" || ".join(terms)))
+        else:
+            self.vf.write("  assign write_conflict = 1'b0;\n")
+        self.vf.write("\n")
 
     def add_read_block(self, port):
         """

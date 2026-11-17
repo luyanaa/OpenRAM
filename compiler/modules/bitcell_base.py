@@ -272,7 +272,7 @@ class bitcell_base(design):
         Adds edges based on inputs/outputs.
         Overrides base class function.
         """
-        debug.error("Must override build_graph function in bitcell base class.")
+        debug.error("Must override build_graph function in bitcell base class: {0} ({1})".format(self.__class__.__name__, self.name))
 
     def is_non_inverting(self):
         """Return input to output polarity for module"""

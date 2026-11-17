@@ -28,3 +28,12 @@ class gf180_replica_bitcell(replica_bitcell_1port):
                               prop=props.bitcell_1port)
         collapse_duplicate_layer_pins(self)
         debug.info(2, "Create gf180 replica bitcell")
+
+    def build_graph(self, graph, inst_name, port_nets):
+        """Add WL -> BL/BR edges for the replica column.
+
+        ``replica_bitcell_1port`` does not override the base-class stub, so
+        the delay characterizer raised "Must override build_graph" once per
+        replica cell and could not build its timing graph.
+        """
+        self.add_graph_edges(graph, port_nets)

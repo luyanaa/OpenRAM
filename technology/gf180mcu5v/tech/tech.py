@@ -7,6 +7,7 @@
 #
 import os
 from openram import drc as d
+from openram import OPTS
 
 """
 File containing the process technology parameters for Global Foundaries 180nm
@@ -24,6 +25,10 @@ File containing the process technology parameters for Global Foundaries 180nm
 tech_modules = d.module_type()
 
 tech_modules["bitcell_1port"] = "gf180_bitcell"
+# Parameterized multiport bitcell: same gf180-local cross-couple fix as the
+# 3.3 V flavour (custom/gf180_pbitcell.py).  The 5 V devices are all drawn at
+# the thick-oxide 0.60 um channel; the 6T_* sizes below set the ratios.
+tech_modules["pbitcell"] = "gf180_pbitcell"
 # Use the parameterized NAND for the decoders.  The legacy hard cell in
 # gds_lib (gf180mcu_3v3__nand2_1_dec) is only 2.71 um tall, while the
 # parameterized inverter/NAND gate needs >= ~4.1 um at this technology's
@@ -80,7 +85,17 @@ tech_modules["dummy_bitcell_1port"] = "gf180_dummy_bitcell"
 # cell1rw has no room for a well tie inside its pitch, so the outer dummy
 # column uses a tapped copy of the same cell.  The wells are continuous across
 # columns, so one tapped column ties every nwell/pwell band in the array.
-tech_modules["tap_bitcell"] = "gf180_tap_bitcell"
+# The multiport (pbitcell) path must NOT register this: the tap cell is a
+# 1-port hard macro (`cell1rw_tap`, five pins) while pbitcell exposes one
+# pair of pins per port, so dummy_array would build it with the wrong pin
+# count.  pbitcell arrays draw their own wells and need no tap cell.
+if getattr(OPTS, "bitcell", "bitcell") != "pbitcell":
+    tech_modules["tap_bitcell"] = "gf180_tap_bitcell"
+# The 3-input predecode is only reached with a row address >= 5 bits.  At the
+# pbitcell height its and3_dec pin pitch collides with the historical input
+# track step, so the pbitcell path uses a clearance-based subclass.
+if getattr(OPTS, "bitcell", "bitcell") == "pbitcell":
+    tech_modules["hierarchical_predecode3x8"] = "gf180_hierarchical_predecode3x8"
 
 # cell1rw is drawn with 0.34 um of well overhang on every side, so its
 # boundary layer (0/0) bbox is 3.68 x 5.18.  The abutment pitch used by the
@@ -443,7 +458,11 @@ parameter["dff_dout_pin_extend"] = 0.40
 parameter["pand_nand_add_wells"] = True
 
 parameter["6T_inv_nmos_size"] = 0.6
-parameter["6T_inv_pmos_size"] = 0.95
+# Match the 3.3 V write-ability fix: the upstream 0.95 PMOS placeholder made
+# access/PU = 0.63, which is too weak to write the cell.  All three devices
+# are drawn at the same 0.60 um length, so width alone sets the ratios:
+# PD/access = 2.0, access/PU = 1.0, PD/PU = 2.0 (same as the vendor cell1rw).
+parameter["6T_inv_pmos_size"] = 0.6
 parameter["6T_access_size"] = 0.6
 drc = d.design_rules("gf180")
 

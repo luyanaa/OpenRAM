@@ -123,7 +123,7 @@ class functional(simulation):
         self.write_functional_stimulus()
 
     def run(self):
-        self.stim.run_sim(self.stim_sp)
+        self.stim.run_sim(path.join(self.output_path, self.stim_sp))
 
         # read dout values from SPICE simulation. If the values do not fall within the noise margins, return the error.
         (success, error) = self.read_stim_results()

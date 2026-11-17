@@ -15,6 +15,7 @@ from openram.base import verilog
 from openram.base import lef
 from openram.sram_factory import factory
 from openram.tech import spice
+from openram.tech import drc
 from openram.tech import parameter
 from openram.tech import layer_indices
 from openram.tech import layer_properties as layer_props
@@ -37,6 +38,9 @@ class sram_1bank(design, verilog, lef):
         sram_config.set_local_config(self)
 
         self.bank_insts = []
+        # Native register-file variants expose a physical write_conflict
+        # output.  A 2R1W macro has one write port, so the output is tied low.
+        self.write_conflict_pin = getattr(OPTS, "register_file_backend", "") == "native-pbitcell"
 
         if self.write_size != self.word_size:
             self.num_wmasks = int(ceil(self.word_size / self.write_size))
@@ -55,7 +59,7 @@ class sram_1bank(design, verilog, lef):
             self.supply_stack = self.top_stack
 
         # delay control logic does not have RBLs
-        self.has_rbl = OPTS.control_logic != "control_logic_delay"
+        self.has_rbl = getattr(OPTS, "ics55_control_logic", OPTS.control_logic) != "control_logic_delay"
 
     def add_pins(self):
         """ Add pins for entire SRAM. """
@@ -99,6 +103,8 @@ class sram_1bank(design, verilog, lef):
         for port in self.read_ports:
             for bit in range(self.word_size + self.num_spare_cols):
                 self.add_pin("dout{0}[{1}]".format(port, bit), "OUTPUT")
+        if self.write_conflict_pin:
+            self.add_pin("write_conflict", "OUTPUT")
 
         # Standard supply and ground names
         try:
@@ -121,6 +127,10 @@ class sram_1bank(design, verilog, lef):
         """
 
 
+
+        def pex_pin_size(layer_name):
+            return max(drc("minwidth_{}".format(layer_name)),
+                       drc("minarea_{}".format(layer_name)) ** 0.5)
 
         # add pex labels for bitcells
         for bank_num in range(len(self.bank_insts)):
@@ -153,12 +163,16 @@ class sram_1bank(design, verilog, lef):
                                                                                row,
                                                                                col),
                                                                                storage_layer_name,
-                                                                               Q)
+                                                                               Q,
+                                                                               width=pex_pin_size(storage_layer_name),
+                                                                               height=pex_pin_size(storage_layer_name))
                 self.add_layout_pin_rect_center("bitcell_Q_bar_b{}_r{}_c{}".format(bank_num,
                                                                                    row,
                                                                                    col),
                                                                                    storage_layer_name,
-                                                                                   Q_bar)
+                                                                                   Q_bar,
+                                                                                   width=pex_pin_size(storage_layer_name),
+                                                                                   height=pex_pin_size(storage_layer_name))
 
             for cell in range(len(bl_offsets)):
                 col = bl_meta[cell][0][2]
@@ -176,11 +190,15 @@ class sram_1bank(design, verilog, lef):
 
             for i in range(len(bl)):
                 self.add_layout_pin_rect_center("bl{0}_{1}".format(bl[i][1], bl[i][2]),
-                                                bitline_layer_name, bl[i][0])
+                                                bitline_layer_name, bl[i][0],
+                                                width=pex_pin_size(bitline_layer_name),
+                                                height=pex_pin_size(bitline_layer_name))
 
             for i in range(len(br)):
                 self.add_layout_pin_rect_center("br{0}_{1}".format(br[i][1], br[i][2]),
-                                                bitline_layer_name, br[i][0])
+                                                bitline_layer_name, br[i][0],
+                                                width=pex_pin_size(bitline_layer_name),
+                                                height=pex_pin_size(bitline_layer_name))
 
         # add pex labels for control logic
         for i in range(len(self.control_logic_insts)):
@@ -196,7 +214,9 @@ class sram_1bank(design, verilog, lef):
                 # isolated (min-area) m1 island instead of tagging the net.
                 self.add_layout_pin_rect_center("{0}{1}".format(pin.name, i),
                                                 pin.layer,
-                                                offset)
+                                                offset,
+                                                width=pex_pin_size(pin.layer),
+                                                height=pex_pin_size(pin.layer))
 
     def create_netlist(self):
         """ Netlist creation """
@@ -387,6 +407,18 @@ class sram_1bank(design, verilog, lef):
                 else:
                     for bit in range(self.num_spare_cols):
                         pins_to_route.append("spare_wen{0}[{1}]".format(port, bit))
+        if self.write_conflict_pin:
+            pins_to_route.append("write_conflict")
+
+        # Port-2 dout bits 5:7 sit at the right edge where the m3 ring runs;
+        # the generic closest-edge router drops their top-level pins onto
+        # that ring and LVS merges dout2[5:7] with gnd/vdd.  Force those
+        # three pins to the bottom edge on a non-ring layer.
+        bottom_pins = [p for p in pins_to_route
+                       if p.startswith("dout2[") and int(p[6:-1]) >= 5]
+        if bottom_pins:
+            pins_to_route = [p for p in pins_to_route if p not in bottom_pins]
+            self._escape_pins_bottom(bottom_pins, bbox)
 
         # Keep hierarchy_layout's default escape stack: source pins may be on
         # a lower metal than the highest available stack.
@@ -408,6 +440,10 @@ class sram_1bank(design, verilog, lef):
             (nll, nur) = self.get_bbox(margin=0)
         else:
             (nll, nur) = bbox
+        # The ics55 drawn m2 stripe is 0.035 um, below M2_W_1a (0.1) and
+        # M2_A_1 (0.055).  Use routed min width and a min-area pin.
+        wire_width = max(self.m2_width, drc("minwidth_m2"))
+        pin_size = max(wire_width, drc("minarea_m2") ** 0.5)
         seen = set()
         for name in pin_names:
             # snapshot: adding perimeter pins mutates the pin map
@@ -423,19 +459,47 @@ class sram_1bank(design, verilog, lef):
                 if side in ("left", "right"):
                     x_edge = nll.x if side == "left" else nur.x
                     self.add_path("m2", [c, vector(x_edge, c.y)],
-                                  width=self.m2_width)
+                                  width=wire_width)
                     self.add_layout_pin_rect_center(text=name, layer="m2",
                                                     offset=vector(x_edge, c.y),
-                                                    width=self.m2_width,
-                                                    height=self.m2_width)
+                                                    width=pin_size,
+                                                    height=pin_size)
                 else:
                     y_edge = nll.y if side == "bottom" else nur.y
                     self.add_path("m2", [c, vector(c.x, y_edge)],
-                                  width=self.m2_width)
+                                  width=wire_width)
                     self.add_layout_pin_rect_center(text=name, layer="m2",
                                                     offset=vector(c.x, y_edge),
-                                                    width=self.m2_width,
-                                                    height=self.m2_width)
+                                                    width=pin_size,
+                                                    height=pin_size)
+
+    def _escape_pins_bottom(self, pin_names, bbox):
+        """Escape selected pins to the bottom bbox edge on their own layer."""
+        if bbox is None:
+            (nll, nur) = self.get_bbox(margin=0)
+        else:
+            (nll, nur) = bbox
+        # nll.y is the power-ring edge; put the escape pins below it so the
+        # labels do not land on the ring (dout2[5:7] were merged with vdd/gnd).
+        y_edge = nll.y - 5.0
+        seen = set()
+        for name in pin_names:
+            for pin in list(self.get_pins(name)):
+                c = pin.center()
+                key = (name, round(c.x, 2), round(c.y, 2), pin.layer)
+                if key in seen:
+                    continue
+                seen.add(key)
+                wire_width = max(getattr(self, "{}_width".format(pin.layer), 0.0),
+                                 drc("minwidth_{}".format(pin.layer)))
+                pin_size = max(wire_width,
+                               drc("minarea_{}".format(pin.layer)) ** 0.5)
+                self.add_path(pin.layer, [c, vector(c.x, y_edge)],
+                              width=wire_width)
+                self.add_layout_pin_rect_center(text=name, layer=pin.layer,
+                                                offset=vector(c.x, y_edge),
+                                                width=pin_size,
+                                                height=pin_size)
 
     def compute_bus_sizes(self):
         """ Compute the independent bus widths shared between two and four bank SRAMs """
@@ -549,7 +613,7 @@ class sram_1bank(design, verilog, lef):
 
         # Create the control logic module for each port type
         if len(self.readwrite_ports) > 0:
-            self.control_logic_rw = factory.create(module_type=OPTS.control_logic,
+            self.control_logic_rw = factory.create(module_type=getattr(OPTS, "ics55_control_logic", OPTS.control_logic),
                                                     num_rows=self.num_rows,
                                                     words_per_row=self.words_per_row,
                                                     word_size=self.word_size,
@@ -557,7 +621,7 @@ class sram_1bank(design, verilog, lef):
                                                     sram=self,
                                                     port_type="rw")
         if len(self.writeonly_ports) > 0:
-            self.control_logic_w = factory.create(module_type=OPTS.control_logic,
+            self.control_logic_w = factory.create(module_type=getattr(OPTS, "ics55_control_logic", OPTS.control_logic),
                                                    num_rows=self.num_rows,
                                                    words_per_row=self.words_per_row,
                                                    word_size=self.word_size,
@@ -565,7 +629,7 @@ class sram_1bank(design, verilog, lef):
                                                    sram=self,
                                                    port_type="w")
         if len(self.readonly_ports) > 0:
-            self.control_logic_r = factory.create(module_type=OPTS.control_logic,
+            self.control_logic_r = factory.create(module_type=getattr(OPTS, "ics55_control_logic", OPTS.control_logic),
                                                    num_rows=self.num_rows,
                                                    words_per_row=self.words_per_row,
                                                    word_size=self.word_size,
@@ -945,6 +1009,17 @@ class sram_1bank(design, verilog, lef):
             self.row_addr_pos[port] = vector(x_offset, y_offset)
             self.row_addr_dff_insts[port].place(self.row_addr_pos[port], mirror="XY")
 
+        if len(self.all_ports) >= 3:
+            port = 2
+            x_offset = (self.control_pos[port].x
+                        - self.control_logic_insts[port].width
+                        + self.row_addr_dff_insts[port].width)
+            y_offset = (self.control_logic_insts[port].by()
+                        - self.row_addr_dff_insts[port].height
+                        - 2 * self.m2_pitch)
+            self.row_addr_pos[port] = vector(x_offset, y_offset)
+            self.row_addr_dff_insts[port].place(self.row_addr_pos[port], mirror="XY")
+
     def place_control(self):
         port = 0
 
@@ -964,6 +1039,14 @@ class sram_1bank(design, verilog, lef):
                                             + self.control_logic_insts[port].height
                                             - self.control_logic_insts[port].height
                                             + self.control_logic_insts[port].mod.control_logic_center.y)
+            self.control_logic_insts[port].place(self.control_pos[port], mirror="XY")
+
+        if len(self.all_ports) >= 3:
+            port = 2
+            self.control_pos[port] = vector(
+                self.control_pos[1].x,
+                self.control_pos[1].y - self.control_logic_insts[port].height
+                - 6 * self.m2_pitch)
             self.control_logic_insts[port].place(self.control_pos[port], mirror="XY")
 
     def place_dffs(self):
@@ -1056,6 +1139,20 @@ class sram_1bank(design, verilog, lef):
             self.data_pos[port] = vector(x_offset, y_offset)
             self.spare_wen_pos[port] = vector(x_offset, y_offset)
 
+        if len(self.all_ports) >= 3:
+            port = 2
+            x_offset = self.control_logic_insts[port].lx() - 2 * self.dff.width
+            y_offset = (self.control_logic_insts[port].by()
+                        - self.dff.height - 2 * self.m2_pitch)
+            if self.col_addr_dff:
+                self.col_addr_pos[port] = vector(x_offset, y_offset)
+                self.col_addr_dff_insts[port].place(self.col_addr_pos[port], mirror="XY")
+            else:
+                self.col_addr_pos[port] = vector(x_offset, y_offset)
+            self.wmask_pos[port] = vector(x_offset, y_offset)
+            self.data_pos[port] = vector(x_offset, y_offset)
+            self.spare_wen_pos[port] = vector(x_offset, y_offset)
+
     def add_layout_pins(self, add_vias=True):
         """
         Add the top-level pins for a single bank SRAM with control.
@@ -1127,6 +1224,12 @@ class sram_1bank(design, verilog, lef):
                                         "spare_wen{0}[{1}]".format(port, bit),
                                         start_layer=pin_layer)
 
+        if self.write_conflict_pin:
+            # One write port: the conflict output is physically gnd.
+            gnd_pin = self.bank_inst.get_pins("gnd")[0]
+            self.add_power_pin("write_conflict", gnd_pin.center(),
+                               start_layer=gnd_pin.layer)
+
     def route_layout(self):
         """ Route a single bank SRAM """
 
@@ -1147,6 +1250,12 @@ class sram_1bank(design, verilog, lef):
             self.add_dnwell(inflate=2.5)
 
         init_bbox = self.get_bbox()
+        # A third physical port adds another pin bundle; give the perimeter
+        # router a real channel on the left/bottom instead of trying to thread
+        # it through the port-0/port-2 data rows.
+        if len(self.all_ports) >= 3:
+            init_bbox = [init_bbox[0] - vector(4, 4),
+                         init_bbox[1] + vector(4, 4)]
         # Route the supplies together and/or to the ring/stripes.
         # Route the pins to the perimeter
         if OPTS.perimeter_pins:
@@ -1154,7 +1263,14 @@ class sram_1bank(design, verilog, lef):
             # reach past the power ring or stripes on the sides
             self.route_escape_pins(init_bbox)
         if OPTS.route_supplies:
-            self.route_supplies(init_bbox)
+            supply_bbox = init_bbox
+            if len(self.all_ports) >= 3:
+                # The third port's right-edge dout pins sit exactly on the
+                # m3 vertical ring (LVS: dout2[5:7] shorted to gnd/vdd).
+                # Push the ring 1.5 um outside the escape-pin boundary.
+                supply_bbox = [init_bbox[0] - vector(1.5, 1.5),
+                               init_bbox[1] + vector(1.5, 1.5)]
+            self.route_supplies(supply_bbox)
 
 
     def route_dffs(self, add_routes=True):

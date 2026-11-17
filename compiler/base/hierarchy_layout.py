@@ -1461,9 +1461,9 @@ class layout():
             # or we are forced to
             if min_area or cur_layer in intermediate_layers:
                 self.add_min_area_rect_center(cur_layer,
-                                              offset,
-                                              via.mod.first_layer_width,
-                                              via.mod.first_layer_height)
+                                              via.center(),
+                                              via.width,
+                                              via.height)
 
             cur_layer = curr_stack[next_id]
 
@@ -1702,6 +1702,13 @@ class layout():
             return
 
         min_width = drc("minwidth_{}".format(layer))
+        # A via's first-layer pad can be narrower than the layer min width
+        # (icsprout55 via2 pad 0.035 vs M2 0.1).  Clamp before growing the
+        # rectangle, otherwise the "min area" rect still violates M*_W_1a.
+        if width is not None:
+            width = max(width, min_width)
+        if height is not None:
+            height = max(height, min_width)
 
         if preferred_directions[layer] == "V":
             new_height = ceil(max(min_area / width, min_width))
@@ -2261,9 +2268,15 @@ class layout():
         self.add_power_pin(new_name, pin.center(), start_layer=start_layer, directions=directions)
 
     def add_power_pin(self, name, loc, directions=None, start_layer="m1"):
-        # Hack for min area
+        # Hack for min area.  icsprout55's top-level escape vias and pins
+        # were 0.035 um slivers (M2_W_1a / M2_A_1); enlarge both the via pad
+        # and the target-layer pin to the layer's min-area square.
         if OPTS.tech_name == "sky130":
             min_area = drc["minarea_{}".format(self.pwr_grid_layers[1])]
+            width = round_to_grid(sqrt(min_area))
+            height = round_to_grid(min_area / width)
+        elif OPTS.tech_name == "icsprout55":
+            min_area = drc["minarea_{}".format(self.pwr_grid_layers[0])]
             width = round_to_grid(sqrt(min_area))
             height = round_to_grid(min_area / width)
         else:
@@ -2281,7 +2294,8 @@ class layout():
             via = self.add_via_stack_center(from_layer=start_layer,
                                             to_layer=self.pwr_grid_layers[0],
                                             offset=loc,
-                                            directions=directions)
+                                            directions=directions,
+                                            min_area=(OPTS.tech_name == "icsprout55"))
 
             if not width:
                 width = via.width
@@ -2307,9 +2321,15 @@ class layout():
         if not loc:
             loc = pin.center()
 
-        # Hack for min area
+        # Hack for min area.  icsprout55's top-level escape vias and pins
+        # were 0.035 um slivers (M2_W_1a / M2_A_1); enlarge both the via pad
+        # and the target-layer pin to the layer's min-area square.
         if OPTS.tech_name == "sky130":
             min_area = drc["minarea_{}".format(self.pwr_grid_layers[1])]
+            width = round_to_grid(sqrt(min_area))
+            height = round_to_grid(min_area / width)
+        elif OPTS.tech_name == "icsprout55":
+            min_area = drc["minarea_{}".format(self.pwr_grid_layers[0])]
             width = round_to_grid(sqrt(min_area))
             height = round_to_grid(min_area / width)
         else:
@@ -2326,7 +2346,8 @@ class layout():
             via = self.add_via_stack_center(from_layer=pin.layer,
                                             to_layer=self.pwr_grid_layers[0],
                                             offset=loc,
-                                            directions=directions)
+                                            directions=directions,
+                                            min_area=(OPTS.tech_name == "icsprout55"))
 
             if not width:
                 width = via.width

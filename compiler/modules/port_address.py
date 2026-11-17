@@ -33,7 +33,7 @@ class port_address(design):
 
         self.create_netlist()
         if not OPTS.netlist_only:
-            debug.check(len(self.all_ports) <= 2, "Bank layout cannot handle more than two ports.")
+            debug.check(len(self.all_ports) <= 3, "Bank layout cannot handle more than three ports.")
             self.create_layout()
             self.add_boundary()
 

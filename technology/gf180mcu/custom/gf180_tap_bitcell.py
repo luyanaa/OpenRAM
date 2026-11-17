@@ -32,3 +32,11 @@ class gf180_tap_bitcell(bitcell_base):
                               prop=props.bitcell_1port)
         collapse_duplicate_layer_pins(self)
         debug.info(2, "Create gf180 tap bitcell")
+
+    def build_graph(self, graph, inst_name, port_nets):
+        """No timing edges: the tap cell is a dummy column, not a data path.
+
+        Without this override the base-class stub fires once per tap cell and
+        stops the delay characterizer's timing-graph construction.
+        """
+        pass

@@ -117,11 +117,31 @@ class sram():
         has_models = bool(tech.spice.get("fet_models", True)) or \
                      bool(tech.spice.get("fet_libraries", False))
         if has_models and getattr(OPTS, "functional", True):
-            # Save a functional simulation file with default period
-            functional(self.s,
-                       spname,
-                       cycles=200,
-                       output_path=OPTS.output_path)
+            # A config that explicitly sets functional=True asks for the
+            # simulation to run; the historical default (attribute absent)
+            # only writes the stimulus deck and must not require a simulator.
+            run_functional = bool(getattr(OPTS, "functional", False))
+            if run_functional:
+                # The characterizer package only searches for a simulator when
+                # analytical_delay is off.  Resolve it here before building the
+                # stimulus deck.
+                if not OPTS.spice_exe:
+                    from openram import find_exe
+                    if not OPTS.spice_name:
+                        OPTS.spice_name = "ngspice"
+                    OPTS.spice_exe = find_exe(OPTS.spice_name) or ""
+                debug.check(OPTS.spice_exe,
+                            "No spice simulator found for functional simulation "
+                            "(set spice_name, e.g. 'ngspice')")
+            # Save a functional simulation file with default period.  run()
+            # simulates and compares the read data against what was written.
+            f = functional(self.s,
+                           spname,
+                           cycles=200,
+                           output_path=OPTS.output_path)
+            if run_functional:
+                (success, error) = f.run()
+                debug.check(success, "Functional simulation failed: {0}".format(error))
         print_time("Spice writing", datetime.datetime.now(), start_time)
 
         if has_models and not OPTS.analytical_delay:

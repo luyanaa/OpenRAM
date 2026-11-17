@@ -332,7 +332,7 @@ class replica_bitcell_array(bitcell_base_array):
                 self.add_layout_pin(text=pin_name,
                                     layer=pin.layer,
                                     offset=pin.ll().scale(1, 0),
-                                    width=pin.width(),
+                                    width=max(pin.width(), drc("minwidth_m2")),
                                     height=self.height)
 
         # Replica bitlines
@@ -344,7 +344,7 @@ class replica_bitcell_array(bitcell_base_array):
                     self.add_layout_pin(text=bl_name,
                                         layer=pin.layer,
                                         offset=pin.ll().scale(1, 0),
-                                        width=pin.width(),
+                                        width=max(pin.width(), drc("minwidth_m2")),
                                         height=self.height)
 
     def route_supplies(self):
