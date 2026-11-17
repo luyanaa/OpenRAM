@@ -522,10 +522,13 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             if okey in inserted:
                 skipped.add(key)
                 continue
-            if key in neck_only and (ob.width() > um(2.0) or
-                                     ob.height() > um(2.0)):
-                # A neck-only fix on a large rail would duplicate a lot of
-                # geometry; leave those to the leaf cell.
+            # Neck-only repairs may re-own a full rail.  That is safe on the
+            # lower metals (the `inserted` dedup keeps it to one insert per
+            # physical polygon) and it clears the reduced-view M2 sliver, but
+            # on M4/M5 the rail owner is a wide power plane and re-owning it
+            # creates edge holes, so keep the size guard there.
+            if (key in neck_only and lp not in ((81, 1), (82, 1), (83, 1))
+                    and (ob.width() > um(2.0) or ob.height() > um(2.0))):
                 skipped.add(key)
                 continue
             # Re-own the exact same physical polygon at the top cell.  This
