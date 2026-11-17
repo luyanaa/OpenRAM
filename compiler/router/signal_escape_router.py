@@ -227,11 +227,35 @@ class signal_escape_router(router):
     def replace_layout_pins(self):
         """ Replace the old layout pins with new ones around the perimeter. """
 
+        from openram.tech import drc as tech_drc
         for name, pin in self.new_pins.items():
             pin = graph_shape(pin.name, pin.boundary, pin.lpp)
             # Find the intersection of this pin on the perimeter
+            edge = None
             for fake in self.fake_pins:
                 edge = pin.intersection(fake)
                 if edge:
                     break
+            if edge is None:
+                continue
+            # The perimeter fake pin is one routing track wide, which can be
+            # narrower than the layer minimum width once the intersection is
+            # taken (icsprout55: 0.06 um M4 pads -> MET4_W_1).  Grow the thin
+            # axis to the layer minimum, keeping the pin centred on the edge.
+            layer_name = edge.layer[0] if isinstance(edge.layer, tuple) else edge.layer
+            try:
+                min_width = tech_drc["minwidth_{}".format(layer_name)]
+            except KeyError:
+                min_width = 0
+            ll, ur = edge.rect
+            if min_width:
+                if ur.x - ll.x < min_width:
+                    cx = 0.5 * (ll.x + ur.x)
+                    ll = vector(cx - 0.5 * min_width, ll.y)
+                    ur = vector(cx + 0.5 * min_width, ur.y)
+                if ur.y - ll.y < min_width:
+                    cy = 0.5 * (ll.y + ur.y)
+                    ll = vector(ll.x, cy - 0.5 * min_width)
+                    ur = vector(ur.x, cy + 0.5 * min_width)
+                edge = graph_shape(edge.name, [ll, ur], edge.layer)
             self.design.replace_layout_pin(name, edge)

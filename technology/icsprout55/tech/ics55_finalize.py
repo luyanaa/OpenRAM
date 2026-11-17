@@ -539,6 +539,15 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             inserted.add(okey)
             n_direct += 1
 
+    # OpenRAM writes its abstract boundary on 351/12.  The ics55 DRC deck
+    # reads (351,12) as CHIPBLK (the chip outline) and then applies the
+    # chip-edge enclosure rules to every macro and leaf cell.  A macro is not
+    # a chip: drop the rectangle so CHIPEDGE does not run.
+    blk_index = layout.find_layer(351, 12)
+    if blk_index is not None:
+        for cell in layout.each_cell():
+            cell.shapes(blk_index).clear()
+
     root_indices = [cell.cell_index() for cell in layout.each_cell()
                     if cell.parent_cells() == 0 and
                     cell.cell_index() != top_cell.cell_index()]
@@ -556,6 +565,7 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
                 ptap=ptap.count(), nw_added=added.count(),
                 area_fixed=n_area_fixed, area_left=n_area_left,
                 direct_pads_fixed=n_direct,
+                chip_edge_boundary_removed=bool(blk_index is not None),
                 holes_filled=n_holes, notches_filled=n_notch)
 
 

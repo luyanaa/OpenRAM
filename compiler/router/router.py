@@ -385,10 +385,20 @@ class router(router_tech):
                                                  offset=offset)
                 new_vias.append(via)
             else: # Wire
-                wire = self.design.add_rect(layer=self.get_layer(start.z),
+                # `track_wire` is track_width - track_space and can fall below
+                # the layer minimum width (icsprout55: 0.06 um M4).  Clamp so
+                # the escape wires meet METn_W_1.
+                from openram.tech import drc as tech_drc
+                layer_name = self.get_layer(start.z)
+                try:
+                    min_width = tech_drc["minwidth_{}".format(layer_name)]
+                except KeyError:
+                    min_width = 0
+                wire_width = max(self.track_wire, min_width)
+                wire = self.design.add_rect(layer=layer_name,
                                             offset=offset,
-                                            width=abs(diff.x) + self.track_wire,
-                                            height=abs(diff.y) + self.track_wire)
+                                            width=abs(diff.x) + wire_width,
+                                            height=abs(diff.y) + wire_width)
                 new_wires.append(wire)
         return new_wires, new_vias
 

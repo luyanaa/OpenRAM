@@ -125,12 +125,25 @@ class rom_bank(design, rom_verilog, lef):
         # FIXME: Somehow ROM layout behaves weird and doesn't add all the pin
         # shapes before routing supplies
         init_bbox = self.get_bbox()
-        self.route_supplies(init_bbox)
-        # Route the pins to the perimeter
+        # The M4 power ring is drawn from the macro bbox edge inward, and the
+        # per-port signal escapes run on the same M4 vertical layer.  The
+        # outermost escape stubs land on the ring straps (their pads overlap
+        # the vdd/gnd rails), which makes the flat LVS extraction merge a
+        # signal pin into gnd/vdd (observed on icsprout55:
+        # "addr0[5]|gnd|vdd").  End every perimeter escape one track pitch
+        # short of the bbox edge, so the vertical stubs stop at the inner
+        # ring edge and the M3 pad stays clear of the straps.
         if OPTS.perimeter_pins:
-            # We now route the escape routes far enough out so that they will
-            # reach past the power ring or stripes on the sides
-            self.route_escape_pins(init_bbox)
+            # The ring is three tracks wide and is drawn from the bbox edge
+            # inward, so the escapes must stop one ring-width plus one track
+            # inside the edge.  Otherwise the escape via lands on the ring
+            # strap and LVS merges the signal pin into gnd/vdd.
+            from openram.router.router_tech import router_tech
+            rt = router_tech(self.supply_stack, route_track_width=1)
+            ring_wideness = 3 * rt.track_wire + 2 * rt.track_space
+            inset = ring_wideness + rt.track_wire
+            self.route_escape_pins(init_bbox, inset=inset)
+        self.route_supplies(init_bbox)
 
 
     def setup_layout_constants(self):
@@ -246,8 +259,12 @@ class rom_bank(design, rom_verilog, lef):
 
 
     def create_instances(self):
-        gnd = ["vssd1"]
-        vdd = ["vccd1"]
+        # The sub-modules declare vdd/gnd power pins (tech spice names);
+        # hardcoding sky130-style vccd1/vssd1 net names here left the top
+        # vdd/gnd ports floating in the LVS reference and disconnected the
+        # bank power from the macro rails.
+        gnd = [spice["ground"]]
+        vdd = [spice["power"]]
         prechrg = ["precharge"]
         clk = ["clk_int"]
 
@@ -613,7 +630,7 @@ class rom_bank(design, rom_verilog, lef):
                                             pin.width(),
                                             pin.height())
 
-    def route_escape_pins(self, bbox):
+    def route_escape_pins(self, bbox, inset=0.0):
         pins_to_route = []
 
         for bit in range(self.col_bits):
@@ -627,6 +644,9 @@ class rom_bank(design, rom_verilog, lef):
 
         pins_to_route.append("clk0")
         pins_to_route.append("cs0")
+        if inset:
+            bbox = [bbox[0] + vector(inset, inset),
+                    bbox[1] - vector(inset, inset)]
         from openram.router import signal_escape_router as router
         rtr = router(layers=self.top_stack,
                      bbox=bbox,
