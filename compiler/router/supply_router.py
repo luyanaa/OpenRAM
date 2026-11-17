@@ -86,8 +86,18 @@ class supply_router(router):
                 if path is None:
                     self.write_debug_gds(gds_name="{}error.gds".format(OPTS.openram_temp), g=g, source=source, target=target)
                     debug.error("Couldn't route from {} to {}.".format(source, target), -1)
-                # Create the path shapes on layout
-                new_wires, new_vias = self.add_path(path)
+                # Create the path shapes on layout, tagging them with the net
+                new_wires, new_vias = self.add_path(path, net_name=pin_name)
+                # A supply route must never share geometry with the other net.
+                clashes = self.route_overlaps_other_net(pin_name, new_wires)
+                debug.info(3, "SUPPLY {} route {}: net_shapes={} overlaps={}".format(
+                    pin_name, routed_count,
+                    {k: len(v) for k, v in self.net_shapes.items()},
+                    len(clashes)))
+                if clashes:
+                    debug.warning(
+                        "{} route {} overlaps the other net at {}".format(
+                            pin_name, routed_count, clashes[0].center()))
                 # Find the recently added shapes
                 self.find_blockages(pin_name, new_wires)
                 self.find_vias(new_vias)
@@ -200,6 +210,16 @@ class supply_router(router):
                     offset = vector(top_left.x + j * shift, top_left.y - k * shift)
                     self.design.add_via_center(layers=self.layers,
                                                offset=offset)
+
+        # Register the ring geometry with its net so the route-overlap check
+        # can see it.  Without this the ring pins are invisible to the check
+        # and a route of the other net can place a via straight onto them
+        # (that is the vdd M3 ring / gnd M4 tree overlap the ROM shows).
+        ring_rects = []
+        for side_pin in new_pins:
+            layer = side_pin.lpp
+            ring_rects.append((layer, side_pin.ll(), side_pin.ur()))
+        self.net_shapes.setdefault(pin_name, []).extend(ring_rects)
 
         # Save side pins for routing
         self.new_pins[pin_name] = new_pins

@@ -107,6 +107,9 @@ class router(router_tech):
         # This is all the blockages including the pins. The graph class handles
         # pins as blockages while considering their routability
         self.blockages = indexed_shapes()
+        # Shapes drawn per net.  `blockages` mixes every net together, so the
+        # route-overlap check cannot use it; this map keeps the identity.
+        self.net_shapes = {}
         # This is all the vias between routing layers
         self.vias = indexed_shapes()
         # Fake pins are imaginary pins on the side supply pins to route other
@@ -378,12 +381,68 @@ class router(router_tech):
                                   extra_spacing=self.half_wire)
 
 
-    def add_path(self, path):
+    def add_path(self, path, net_name=None):
         """ Add the route path to the layout. """
 
         nodes = self.prepare_path(path)
         shapes = self.add_route(nodes)
+        if net_name is not None:
+            wires, vias = shapes
+            self.record_net_shapes(net_name, wires, vias)
         return shapes
+
+    def record_net_shapes(self, net_name, wires, vias):
+        """ Remember which geometry belongs to which supply net.
+
+        The layout returns `geometry.rectangle` objects, which expose `lpp`,
+        `ll()` and `ur()` (not the pin_layout `rect`/`overlaps` API), so the
+        net bookkeeping stores plain rectangles.
+        """
+        entry = self.net_shapes.setdefault(net_name, [])
+        for shape in list(wires) + list(vias):
+            lpp = getattr(shape, "lpp", None)
+            if lpp is None:
+                continue
+            entry.append((lpp, shape.ll(), shape.ur()))
+
+    @staticmethod
+    def rectangles_overlap(first, second):
+        """True when two (lpp, ll, ur) rectangles share area on one layer."""
+        lpp_a, all_, aur = first
+        lpp_b, bll, bur = second
+        if lpp_a != lpp_b:
+            return False
+        return (all_.x < bur.x and bll.x < aur.x and
+                all_.y < bur.y and bll.y < aur.y)
+
+    def route_overlaps_other_net(self, net_name, shapes):
+        """ Return the list of shapes that overlap another net's geometry.
+
+        Two supplies must never share geometry: the router draws one net's MST
+        and then the next net's MST on the same layers, so an unchecked overlap
+        shorts them.  The ROM extraction reported one net carrying both the
+        gnd and vdd labels, and the search found a via3 where a gnd M4 route
+        crosses the vdd M3 ring.
+        """
+        others = []
+        for name, entry in self.net_shapes.items():
+            if name != net_name:
+                others.extend(entry)
+        if not others:
+            return []
+        mine = []
+        for shape in list(shapes):
+            lpp = getattr(shape, "lpp", None)
+            if lpp is None:
+                continue
+            mine.append((lpp, shape.ll(), shape.ur(), shape))
+        hits = []
+        for own in mine:
+            for other in others:
+                if self.rectangles_overlap(own[:3], other):
+                    hits.append(own[3])
+                    break
+        return hits
 
 
     def prepare_path(self, path):
