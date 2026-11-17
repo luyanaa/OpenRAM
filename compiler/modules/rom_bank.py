@@ -57,6 +57,14 @@ class rom_bank(design, rom_verilog, lef):
             # if no power_grid is specified by tech we use sensible defaults
             # Route a M3/M4 grid
             self.supply_stack = self.top_stack
+        # A ROM bank routes its signals on m1/m2/m3; putting the supply ring
+        # and its MST on the layers above the blocks keeps the supply routing
+        # out of the block interiors (a ring nested on the same layers as the
+        # block routing lets a vdd route cross the gnd ring and short).
+        override = getattr(OPTS, "rom_supply_stack", None)
+        if override:
+            self.supply_stack = getattr(self, override + "_stack",
+                                         self.supply_stack)
 
         self.interconnect_layer = "m1"
         self.bitline_layer = "m1"
@@ -572,7 +580,14 @@ class rom_bank(design, rom_verilog, lef):
         # lower layer is left for the block's own stitching to fix.
         grid_pins = [p for p in pins if p.layer in self.pwr_grid_layers]
         if not grid_pins:
-            return None
+            # No pin on the grid layers: promote the best pin one via stack at
+            # a time.  The stack starts on the pin's own supply rail, so it
+            # cannot land on another net's metal the way an arbitrary
+            # lower-layer pin could.
+            return max(pins, key=lambda p: (
+                -abs(self.supply_stack.index(p.layer)
+                     if p.layer in self.supply_stack else 9),
+                (p.cx() - center.x) ** 2 + (p.cy() - center.y) ** 2))
 
         def rank(p):
             try:
@@ -600,7 +615,18 @@ class rom_bank(design, rom_verilog, lef):
                                 pin.width(),
                                 pin.height())
         else:
-            self.copy_power_pin(pin, new_name=pin.name)
+            # Promote to the supply stack's own layer (one or two via steps
+            # from a block rail), then expose the pin there.
+            target = self.supply_stack[0]
+            self.add_via_stack_center(from_layer=pin.layer,
+                                      to_layer=target,
+                                      offset=pin.center(),
+                                      min_area=True)
+            self.add_layout_pin(pin.name,
+                                target,
+                                pin.center(),
+                                width=drc["minwidth_{}".format(target)],
+                                height=drc["minwidth_{}".format(target)])
 
     def route_supplies(self, bbox):
 
