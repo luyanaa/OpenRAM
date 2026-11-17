@@ -415,6 +415,32 @@ class router(router_tech):
         return (all_.x < bur.x and bll.x < aur.x and
                 all_.y < bur.y and bll.y < aur.y)
 
+    def via_lands_on_other_net(self, net_name, vias):
+        """Return vias whose pad sits on another net's geometry.
+
+        A route is built as wires on one layer plus vias that change layer.
+        Checking only the wires misses the case that actually shorts the ROM:
+        a via3 at the end of a gnd route punches into the vdd ring strap that
+        runs on the layer above.
+        """
+        others = []
+        for name, entry in self.net_shapes.items():
+            if name != net_name:
+                others.extend(entry)
+        if not others:
+            return []
+        hits = []
+        for via in list(vias):
+            ll, ur = via.ll(), via.ur()
+            for lpp, all_, aur in others:
+                # A via connects its two terminal layers; it shorts when the
+                # pad overlaps the other net on either of them.
+                if ll.x < aur.x and all_.x < ur.x and \
+                        ll.y < aur.y and all_.y < ur.y:
+                    hits.append(via)
+                    break
+        return hits
+
     def route_overlaps_other_net(self, net_name, shapes):
         """ Return the list of shapes that overlap another net's geometry.
 
