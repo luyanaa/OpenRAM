@@ -12,7 +12,7 @@ from openram.base import vector
 from openram.base import design
 from openram.base import rom_verilog
 from openram.base import lef
-from openram import OPTS, print_time
+from openram import OPTS, print_time, debug
 from openram.sram_factory import factory
 from openram.tech import spice
 from openram.tech import drc, layer, parameter
@@ -564,6 +564,16 @@ class rom_bank(design, rom_verilog, lef):
         # blind via stack at that point, which can land on unrelated routing
         # in the middle layers; the blocks now expose their whole supply node
         # on the stitching layer, so take that pin when there is one.
+        # Only pins already on the power-grid layers are usable.  Promoting a
+        # lower-layer pin punches a blind via stack at the pin centre, which
+        # lands on whatever metal happens to be above and shorts the two
+        # supplies together (the ROM extraction reported one net carrying both
+        # the gnd and vdd labels).  A block that exposes its supply only on a
+        # lower layer is left for the block's own stitching to fix.
+        grid_pins = [p for p in pins if p.layer in self.pwr_grid_layers]
+        if not grid_pins:
+            return None
+
         def rank(p):
             try:
                 depth = self.supply_stack.index(p.layer)
@@ -572,12 +582,13 @@ class rom_bank(design, rom_verilog, lef):
             return (depth,
                     (p.cx() - center.x) ** 2 + (p.cy() - center.y) ** 2)
 
-        return max(pins, key=rank)
+        return max(grid_pins, key=rank)
 
     def copy_supply_representative(self, inst, pin_name, center):
         """Copy one supply pin of an instance up to the power grid layer."""
         pin = self.get_supply_representative(inst, pin_name, center)
         if pin is None:
+            debug.info(2, "no grid-layer {} pin on {}".format(pin_name, inst.name))
             return
         # Keep the internal names ("vdd"/"gnd") so that the supply router's
         # find_pins() call matches; the final perimeter pins are renamed to

@@ -126,6 +126,44 @@ class router(router_tech):
         self.layout = gdsMill.VlsiLayout(units=GDS["unit"])
         self.reader = gdsMill.Gds2reader(self.layout)
         self.reader.loadFromFile(self.gds_filename)
+        # gdsMill does not reliably return child-cell shapes for every layer
+        # pair, which makes the router route through existing geometry (the
+        # ROM supply MST then shorts vdd to gnd on M4).  Keep a KLayout view
+        # of the same file and prefer it for shape queries.
+        self._klayout_layout = None
+        try:
+            import klayout.db as kdb
+            layout = kdb.Layout()
+            layout.read(self.gds_filename)
+            self._klayout_layout = layout
+        except Exception:
+            self._klayout_layout = None
+
+    def get_all_shapes(self, lpp):
+        """ Return every shape on a layer pair as (left, bottom, right, top).
+
+        Includes child-cell geometry.  Prefers the KLayout view; falls back to
+        gdsMill when KLayout is unavailable.
+        """
+        layout = getattr(self, "_klayout_layout", None)
+        if layout is not None:
+            datatype = lpp[1] if len(lpp) > 1 and lpp[1] is not None else 0
+            index = layout.find_layer(lpp[0], datatype)
+            if index is None:
+                return []
+            dbu = layout.dbu
+            top = layout.top_cell()
+            shapes = []
+            it = top.begin_shapes_rec(index)
+            while not it.at_end():
+                shape = it.shape()
+                if not shape.is_text():
+                    box = shape.bbox()
+                    shapes.append((box.left * dbu, box.bottom * dbu,
+                                   box.right * dbu, box.top * dbu))
+                it.next()
+            return shapes
+        return self.layout.getAllShapes(lpp)
 
 
     def merge_shapes(self, merger, shape_list):
@@ -200,7 +238,7 @@ class router(router_tech):
         for lpp in [self.vert_lpp, self.horiz_lpp]:
             # If the list of shapes is given, don't get them from gdsMill
             if shape_list is None:
-                shapes = self.layout.getAllShapes(lpp)
+                shapes = self.get_all_shapes(lpp)
             else:
                 shapes = shape_list
             for boundary in shapes:
@@ -221,10 +259,16 @@ class router(router_tech):
                 rect = [ll, ur]
                 new_shape = graph_shape(name, rect, lpp)
                 new_shape = self.inflate_shape(new_shape)
-                # Skip this blockage if it's contained by a pin or an existing
-                # blockage
-                if new_shape.core_contained_by_any(self.all_pins) or \
-                   new_shape.core_contained_by_any(self.blockages.query(new_shape.rect)):
+                # Skip this blockage if it's contained by an existing
+                # blockage.  A shape contained by a pin is only skipped in the
+                # initial scan (it is the pin's own geometry); once a net has
+                # been routed, its wires are real blockages even when they lie
+                # inside a ring pin.  The ROM ring pins span the whole macro,
+                # so the old test discarded every routed wire and the two
+                # supplies were then routed on top of each other.
+                if shape_list is None and new_shape.core_contained_by_any(self.all_pins):
+                    continue
+                if new_shape.core_contained_by_any(self.blockages.query(new_shape.rect)):
                     continue
                 # Merge previous blockages into this one if possible
                 self.merge_shapes(new_shape, self.blockages)
@@ -242,7 +286,7 @@ class router(router_tech):
 
         # If the list of shapes is given, don't get them from gdsMill
         if shape_list is None:
-            shapes = self.layout.getAllShapes(via_lpp)
+            shapes = self.get_all_shapes(via_lpp)
         else:
             shapes = shape_list
         for boundary in shapes:
