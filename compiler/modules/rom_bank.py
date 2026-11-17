@@ -535,6 +535,26 @@ class rom_bank(design, rom_verilog, lef):
         self.create_horizontal_channel_route(netlist=route_nets, offset=channel_ll, layer_stack=self.m1_stack)
 
     def place_top_level_pins(self):
+        if getattr(OPTS, "rom_io_pin_no_promote", False):
+            # Place the signal pins on their own layer.  Promoting them to the
+            # power grid punches a blind via stack at the pin centre, which
+            # lands on whatever metal is above (the ROM then reports one net
+            # carrying addr0[5], gnd and vdd).
+            for (inst, pin_name, new_name) in (
+                    (self.control_inst, "CS", "cs0"),
+                    (self.control_inst, "clk_in", "clk0")):
+                p = inst.get_pin(pin_name)
+                self.add_layout_pin(new_name, p.layer, p.ll(), p.width(), p.height())
+            for i in range(self.word_size):
+                p = self.output_inv_inst.get_pin("out_{}".format(i))
+                self.add_layout_pin("dout0[{}]".format(i), p.layer, p.ll(), p.width(), p.height())
+            for lsb in range(self.col_bits):
+                p = self.col_decode_inst.get_pin("A{}".format(lsb))
+                self.add_layout_pin("addr0[{}]".format(lsb), p.layer, p.ll(), p.width(), p.height())
+            for msb in range(self.col_bits, self.row_bits + self.col_bits):
+                p = self.decode_inst.get_pin("A{}".format(msb - self.col_bits))
+                self.add_layout_pin("addr0[{}]".format(msb), p.layer, p.ll(), p.width(), p.height())
+            return
         self.add_io_pin(self.control_inst, "CS", "cs0")
         self.add_io_pin(self.control_inst, "clk_in", "clk0")
 
@@ -618,10 +638,11 @@ class rom_bank(design, rom_verilog, lef):
             # Promote to the supply stack's own layer (one or two via steps
             # from a block rail), then expose the pin there.
             target = self.supply_stack[0]
-            self.add_via_stack_center(from_layer=pin.layer,
-                                      to_layer=target,
-                                      offset=pin.center(),
-                                      min_area=True)
+            if not getattr(OPTS, "rom_no_supply_promote", False):
+                self.add_via_stack_center(from_layer=pin.layer,
+                                          to_layer=target,
+                                          offset=pin.center(),
+                                          min_area=True)
             self.add_layout_pin(pin.name,
                                 target,
                                 pin.center(),
@@ -632,9 +653,10 @@ class rom_bank(design, rom_verilog, lef):
 
         center = vector((bbox[0].x + bbox[1].x) * 0.5,
                         (bbox[0].y + bbox[1].y) * 0.5)
-        for pin_name in ["vdd", "gnd"]:
-            for inst in self.insts:
-                self.copy_supply_representative(inst, pin_name, center)
+        if not getattr(OPTS, "rom_no_supply_copy", False):
+            for pin_name in ["vdd", "gnd"]:
+                for inst in self.insts:
+                    self.copy_supply_representative(inst, pin_name, center)
 
         if OPTS.route_supplies:
 

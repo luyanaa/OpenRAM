@@ -328,8 +328,12 @@ class router(router_tech):
             blockage_core = blockage.get_core()
             for pin in self.all_pins:
                 pin_core = pin.get_core()
-                # If the blockage overlaps a pin, change its name
-                if blockage_core.overlaps(pin_core):
+                # Only a blockage that is *contained* by the pin belongs to
+                # that net.  The ring pins span the whole macro, so an overlap
+                # test re-labels every block rail that happens to sit under a
+                # ring pin; that rail then becomes routable for the other
+                # supply net (the ROM routed vdd along a gnd rail).
+                if pin_core.contains(blockage_core):
                     blockage.rename(pin.name)
                     break
             else:
