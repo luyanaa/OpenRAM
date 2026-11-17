@@ -56,10 +56,24 @@ class rom_precharge_cell(rom_base_cell):
         self.poly_size = (self.cell_inst.width + self.active_space) - (self.cell_inst.height + 2 * self.poly_extend_active)
 
     def extend_well(self):
-        well_y = self.get_pin("vdd").cy() - 0.5 * self.tap.height - self.nwell_enclose_active
-        well_ll = vector(0, well_y)
-        height = self.get_pin("D").cy() + self.nwell_enclose_active - well_y
-        self.add_rect("nwell", well_ll, self.width , height)
+        # Cover the whole PMOS (active, contacts and the source strap) with
+        # N-well, clipped to the cell boundary so the array tiling stays
+        # DRC-clean.  The old version stopped at the D pin centre, which left
+        # the upper part of the PMOS active in the P substrate: the device
+        # bulk then tied vdd to the substrate and LVS merged vdd with gnd.
+        inst = self.cell_inst
+        ll = inst.ll() - vector(self.nwell_enclose_active,
+                                self.nwell_enclose_active)
+        ur = inst.ur() + vector(self.nwell_enclose_active,
+                                self.nwell_enclose_active)
+        # The cell boundary is drawn at (0,0) while the geometry extends
+        # below it, so clamp to the drawn extent instead of the boundary.
+        lowest = self.find_lowest_coords()
+        highest = self.find_highest_coords()
+        ll = vector(max(ll.x, lowest.x), max(ll.y, lowest.y))
+        ur = vector(min(ur.x, highest.x), min(ur.y, highest.y))
+        if ur.x > ll.x and ur.y > ll.y:
+            self.add_rect("nwell", ll, ur.x - ll.x, ur.y - ll.y)
 
     def place_tap(self):
         source = self.cell_inst.get_pin("S")
