@@ -410,16 +410,6 @@ class sram_1bank(design, verilog, lef):
         if self.write_conflict_pin:
             pins_to_route.append("write_conflict")
 
-        # Port-2 dout bits 5:7 sit at the right edge where the m3 ring runs;
-        # the generic closest-edge router drops their top-level pins onto
-        # that ring and LVS merges dout2[5:7] with gnd/vdd.  Force those
-        # three pins to the bottom edge on a non-ring layer.
-        bottom_pins = [p for p in pins_to_route
-                       if p.startswith("dout2[") and int(p[6:-1]) >= 5]
-        if bottom_pins:
-            pins_to_route = [p for p in pins_to_route if p not in bottom_pins]
-            self._escape_pins_bottom(bottom_pins, bbox)
-
         # Keep hierarchy_layout's default escape stack: source pins may be on
         # a lower metal than the highest available stack.
         if self.top_layer == "m2":
@@ -472,34 +462,6 @@ class sram_1bank(design, verilog, lef):
                                                     offset=vector(c.x, y_edge),
                                                     width=pin_size,
                                                     height=pin_size)
-
-    def _escape_pins_bottom(self, pin_names, bbox):
-        """Escape selected pins to the bottom bbox edge on their own layer."""
-        if bbox is None:
-            (nll, nur) = self.get_bbox(margin=0)
-        else:
-            (nll, nur) = bbox
-        # nll.y is the power-ring edge; put the escape pins below it so the
-        # labels do not land on the ring (dout2[5:7] were merged with vdd/gnd).
-        y_edge = nll.y - 5.0
-        seen = set()
-        for name in pin_names:
-            for pin in list(self.get_pins(name)):
-                c = pin.center()
-                key = (name, round(c.x, 2), round(c.y, 2), pin.layer)
-                if key in seen:
-                    continue
-                seen.add(key)
-                wire_width = max(getattr(self, "{}_width".format(pin.layer), 0.0),
-                                 drc("minwidth_{}".format(pin.layer)))
-                pin_size = max(wire_width,
-                               drc("minarea_{}".format(pin.layer)) ** 0.5)
-                self.add_path(pin.layer, [c, vector(c.x, y_edge)],
-                              width=wire_width)
-                self.add_layout_pin_rect_center(text=name, layer=pin.layer,
-                                                offset=vector(c.x, y_edge),
-                                                width=pin_size,
-                                                height=pin_size)
 
     def compute_bus_sizes(self):
         """ Compute the independent bus widths shared between two and four bank SRAMs """
@@ -1250,12 +1212,6 @@ class sram_1bank(design, verilog, lef):
             self.add_dnwell(inflate=2.5)
 
         init_bbox = self.get_bbox()
-        # A third physical port adds another pin bundle; give the perimeter
-        # router a real channel on the left/bottom instead of trying to thread
-        # it through the port-0/port-2 data rows.
-        if len(self.all_ports) >= 3:
-            init_bbox = [init_bbox[0] - vector(4, 4),
-                         init_bbox[1] + vector(4, 4)]
         # Route the supplies together and/or to the ring/stripes.
         # Route the pins to the perimeter
         if OPTS.perimeter_pins:
@@ -1263,14 +1219,7 @@ class sram_1bank(design, verilog, lef):
             # reach past the power ring or stripes on the sides
             self.route_escape_pins(init_bbox)
         if OPTS.route_supplies:
-            supply_bbox = init_bbox
-            if len(self.all_ports) >= 3:
-                # The third port's right-edge dout pins sit exactly on the
-                # m3 vertical ring (LVS: dout2[5:7] shorted to gnd/vdd).
-                # Push the ring 1.5 um outside the escape-pin boundary.
-                supply_bbox = [init_bbox[0] - vector(1.5, 1.5),
-                               init_bbox[1] + vector(1.5, 1.5)]
-            self.route_supplies(supply_bbox)
+            self.route_supplies(init_bbox)
 
 
     def route_dffs(self, add_routes=True):
