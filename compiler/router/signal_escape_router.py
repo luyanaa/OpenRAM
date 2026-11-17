@@ -242,10 +242,21 @@ class signal_escape_router(router):
             # narrower than the layer minimum width once the intersection is
             # taken (icsprout55: 0.06 um M4 pads -> MET4_W_1).  Grow the thin
             # axis to the layer minimum, keeping the pin centred on the edge.
-            layer_name = edge.layer[0] if isinstance(edge.layer, tuple) else edge.layer
+            # edge.lpp is the layer *name* here (the fake pins are built from
+            # get_layer()), while edge.layer is the (number, datatype) pair.
+            lpp = edge.lpp
+            if isinstance(lpp, str):
+                layer_name = lpp
+            elif lpp == self.vert_lpp:
+                layer_name = self.vert_layer_name
+            elif lpp == self.horiz_lpp:
+                layer_name = self.horiz_layer_name
+            else:
+                layer_name = None
+            zindex = 1 if layer_name == self.vert_layer_name else 0
             try:
-                min_width = tech_drc["minwidth_{}".format(layer_name)]
-            except KeyError:
+                min_width = self.get_layer_width(zindex)
+            except Exception:
                 min_width = 0
             ll, ur = edge.rect
             if min_width:

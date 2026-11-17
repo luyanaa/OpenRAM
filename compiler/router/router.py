@@ -432,14 +432,12 @@ class router(router_tech):
                 # `track_wire` is track_width - track_space and can fall below
                 # the layer minimum width (icsprout55: 0.06 um M4).  Clamp so
                 # the escape wires meet METn_W_1.
-                from openram.tech import drc as tech_drc
-                layer_name = self.get_layer(start.z)
-                try:
-                    min_width = tech_drc["minwidth_{}".format(layer_name)]
-                except KeyError:
-                    min_width = 0
+                # Use the router's own per-layer minimum width; the name
+                # lookup through the design-rule table is not reliable here
+                # (the rule may be a callable and the key may be absent).
+                min_width = self.get_layer_width(start.z)
                 wire_width = max(self.track_wire, min_width)
-                wire = self.design.add_rect(layer=layer_name,
+                wire = self.design.add_rect(layer=self.get_layer(start.z),
                                             offset=offset,
                                             width=abs(diff.x) + wire_width,
                                             height=abs(diff.y) + wire_width)
