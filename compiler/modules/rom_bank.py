@@ -444,9 +444,20 @@ class rom_bank(design, rom_verilog, lef):
         path_x = self.control_inst.rx() + 0.5 * self.route_layer_width
 
         mid1 = vector(path_x, prechrg_control.cy())
-        mid2 = vector(path_x, col_decode_prechrg.cy())
         end = col_decode_prechrg.center()
-        self.add_path(self.route_stack[0], [start, mid1, mid2, end])
+        # The straight run to the column decoder's precharge pin sat 0.065 um
+        # above the address-control array's m2 vdd strap and tripped
+        # MET2_S_1 four times.  Run the horizontal leg in the free channel
+        # below it (measured empty on m2 for x 14.5..15.3) and jog back up at
+        # the decoder pin.
+        # The band just below the strap is too narrow (a via pad at
+        # y 14.740..15.065 and the decoder's m2 lane at 19.84 leave only
+        # 0.045 um), and dropping below that lane would cross it.  Go above
+        # the strap instead: m2 is free there until x = 24.7.
+        jog_y = col_decode_prechrg.cy() + 0.27
+        mid2 = vector(path_x, jog_y)
+        mid3 = vector(end.x, jog_y)
+        self.add_path(self.route_stack[0], [start, mid1, mid2, mid3, end])
 
         self.add_via_stack_center(from_layer=self.route_stack[0],
                                   to_layer=col_decode_prechrg.layer,
