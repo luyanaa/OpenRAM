@@ -158,11 +158,31 @@ class supply_router(router):
                                              height=shape_height)
             self.net_shapes.setdefault(pin_name, []).append(
                 (self.layer_key(layer), pin.ll(), pin.ur()))
-            # NOTE: the ring strap is not a routing target yet.  The generic MST
-            # would have to cross the whole macro to reach it, which pulls in
-            # block-level metal and shorts the two supplies, so the ring is
-            # left unconnected until the ROM has dedicated supply straps.
+            # Expose small routing targets along the strap: the strap itself
+            # is far too long for the Hanan grid, and without a target the MST
+            # only joins block pins to block pins and leaves the ring floating
+            # (LVS then has no vdd/gnd net at all).
             fake_pins = []
+            fake = self.track_wire
+            count = 2
+            if vertical:
+                step = shape_height / (count + 1)
+                for i in range(count):
+                    cy = offset.y + step * (i + 1)
+                    fake_pins.append(graph_shape(
+                        pin_name,
+                        [vector(offset.x, cy - fake / 2),
+                         vector(offset.x + shape_width, cy + fake / 2)],
+                        layer))
+            else:
+                step = shape_width / (count + 1)
+                for i in range(count):
+                    cx = offset.x + step * (i + 1)
+                    fake_pins.append(graph_shape(
+                        pin_name,
+                        [vector(cx - fake / 2, offset.y),
+                         vector(cx + fake / 2, offset.y + shape_height)],
+                        layer))
             return graph_shape(name=pin_name,
                                rect=[pin.ll(), pin.ur()],
                                layer_name_pp=layer), fake_pins

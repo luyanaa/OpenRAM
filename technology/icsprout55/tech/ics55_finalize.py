@@ -390,7 +390,11 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
         # spacing; keep a piece only if it stays one spacing away from every
         # polygon but its own.
         h = sp // 2 + 1
-        add = (metal + fill).sized(h).sized(-h) - (metal + fill)
+        # Square sizing mode keeps the fills orthogonal.  The default diamond
+        # mode produced 45-degree edges, and once such a fill merged with the
+        # rails the reduced top-cell view had a 0.048 um diagonal neck - a
+        # MET4_W_1 marker of our own making.
+        add = (metal + fill).sized(h, h, 2).sized(-h, -h, 2) - (metal + fill)
         notch = kdb.Region()
         for piece in add.each():
             pr = kdb.Region(piece)

@@ -371,7 +371,7 @@ class rom_bank(design, rom_verilog, lef):
         # decoder (they interlock).  Its bottom m1 strap used to sit 0.03 um
         # above the row decoder's last address pad and shorted it to the
         # supply strap in LVS; keep a real clearance instead.
-        clearance = getattr(OPTS, "rom_col_decode_clearance", 0.4)
+        clearance = getattr(OPTS, "rom_col_decode_clearance", 0.15)
         col_decode_y += clearance
         self.col_decode_offset = vector(self.decode_inst.width - self.col_decode_inst.width, col_decode_y)
         self.col_decode_inst.place(offset=self.col_decode_offset)
@@ -459,13 +459,22 @@ class rom_bank(design, rom_verilog, lef):
         self.add_path(self.route_stack[0], [start, mid1, mid2, end])
 
 
-        # Route precharge to main array
-        mid = vector(col_decode_prechrg.cx(), array_prechrg.cy() )
-        self.add_path(self.route_stack[0], [array_prechrg.center(), mid, col_decode_prechrg.center()])
+        # Route precharge to main array.  The m2 trunk used to run straight
+        # down through the address-control array, crossing its m2 vdd and gnd
+        # rails (the ROM extraction then had one net carrying precharge, vdd
+        # and gnd).  Use the top of the route stack and change layer at both
+        # ends, so the trunk never shares a layer with those rails.
+        trunk = "m5" if "m5" in layer else self.route_stack[2]
+        mid = vector(col_decode_prechrg.cx(), array_prechrg.cy())
+        self.add_path(trunk, [array_prechrg.center(), mid,
+                              col_decode_prechrg.center()])
 
-        self.add_via_stack_center(from_layer=self.route_stack[0],
+        self.add_via_stack_center(from_layer=trunk,
                                   to_layer=array_prechrg.layer,
                                   offset=array_prechrg.center())
+        self.add_via_stack_center(from_layer=trunk,
+                                  to_layer=col_decode_prechrg.layer,
+                                  offset=col_decode_prechrg.center())
 
 
     def route_clock(self):

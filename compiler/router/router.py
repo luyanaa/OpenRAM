@@ -180,14 +180,27 @@ class router(router_tech):
             ll, ur = pin.ll(), pin.ur()
             own.insert(kdb.Box(int(round(ll.x / dbu)), int(round(ll.y / dbu)),
                                int(round(ur.x / dbu)), int(round(ur.y / dbu))))
-        self._foreign_metal = reg - own
+        foreign = reg - own
+        # Bucket the polygons: the check runs for every graph node of every
+        # route, and a Region query against the whole macro per node is slow
+        # enough to stall the run.
         self._foreign_dbu = dbu
+        self._foreign_bucket = int(round(5.0 / dbu))
+        buckets = {}
+        for poly in foreign.each():
+            box = poly.bbox()
+            for gx in range(box.left // self._foreign_bucket,
+                            box.right // self._foreign_bucket + 1):
+                for gy in range(box.bottom // self._foreign_bucket,
+                                box.top // self._foreign_bucket + 1):
+                    buckets.setdefault((gx, gy), []).append(poly)
+        self._foreign_buckets = buckets
 
     def via_lands_on_foreign_metal(self, point):
         """True when a via at this point would land on another net's metal."""
 
-        region = getattr(self, "_foreign_metal", None)
-        if region is None or region.is_empty():
+        buckets = getattr(self, "_foreign_buckets", None)
+        if not buckets:
             return False
         import klayout.db as kdb
         dbu = self._foreign_dbu
@@ -195,11 +208,31 @@ class router(router_tech):
         cached = self._foreign_cache.get(key)
         if cached is not None:
             return cached
-        half = kdb.Box(int(round((point.x - 0.085) / dbu)),
-                       int(round((point.y - 0.085) / dbu)),
-                       int(round((point.x + 0.085) / dbu)),
-                       int(round((point.y + 0.085) / dbu)))
-        blocked = not region.interacting(kdb.Region(half)).is_empty()
+        half = 0.085
+        box = kdb.Box(int(round((point.x - half) / dbu)),
+                      int(round((point.y - half) / dbu)),
+                      int(round((point.x + half) / dbu)),
+                      int(round((point.y + half) / dbu)))
+        bucket = self._foreign_bucket
+        blocked = False
+        seen = set()
+        for gx in range(box.left // bucket, box.right // bucket + 1):
+            for gy in range(box.bottom // bucket, box.top // bucket + 1):
+                for poly in buckets.get((gx, gy), ()):
+                    if id(poly) in seen:
+                        continue
+                    seen.add(id(poly))
+                    pb = poly.bbox()
+                    if (pb.right < box.left or box.right < pb.left or
+                            pb.top < box.bottom or box.top < pb.bottom):
+                        continue
+                    if poly.inside(box.center()):
+                        blocked = True
+                        break
+                if blocked:
+                    break
+            if blocked:
+                break
         self._foreign_cache[key] = blocked
         return blocked
 
