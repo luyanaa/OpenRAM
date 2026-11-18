@@ -367,6 +367,12 @@ class rom_bank(design, rom_verilog, lef):
 
     def place_col_decoder(self):
         col_decode_y = self.mux_inst.get_pin("sel_0").cy() - self.col_decode_inst.get_pin("wl_0").cy()
+        # The column decoder's array overlaps the right-hand part of the row
+        # decoder (they interlock).  Its bottom m1 strap used to sit 0.03 um
+        # above the row decoder's last address pad and shorted it to the
+        # supply strap in LVS; keep a real clearance instead.
+        clearance = getattr(OPTS, "rom_col_decode_clearance", 0.4)
+        col_decode_y += clearance
         self.col_decode_offset = vector(self.decode_inst.width - self.col_decode_inst.width, col_decode_y)
         self.col_decode_inst.place(offset=self.col_decode_offset)
 
@@ -540,20 +546,27 @@ class rom_bank(design, rom_verilog, lef):
             # power grid punches a blind via stack at the pin centre, which
             # lands on whatever metal is above (the ROM then reports one net
             # carrying addr0[5], gnd and vdd).
+            def place(pin, new_name):
+                # Copy the pin onto its own layer.  The leaf pin can be
+                # narrower than the layer minimum width (a 0.035 um bitline
+                # strap), which would leave a METn_W_1 marker at every port.
+                mw = drc["minwidth_{}".format(pin.layer)]
+                self.add_layout_pin(new_name, pin.layer, pin.ll(),
+                                    max(pin.width(), mw),
+                                    max(pin.height(), mw))
             for (inst, pin_name, new_name) in (
                     (self.control_inst, "CS", "cs0"),
                     (self.control_inst, "clk_in", "clk0")):
-                p = inst.get_pin(pin_name)
-                self.add_layout_pin(new_name, p.layer, p.ll(), p.width(), p.height())
+                place(inst.get_pin(pin_name), new_name)
             for i in range(self.word_size):
-                p = self.output_inv_inst.get_pin("out_{}".format(i))
-                self.add_layout_pin("dout0[{}]".format(i), p.layer, p.ll(), p.width(), p.height())
+                place(self.output_inv_inst.get_pin("out_{}".format(i)),
+                      "dout0[{}]".format(i))
             for lsb in range(self.col_bits):
-                p = self.col_decode_inst.get_pin("A{}".format(lsb))
-                self.add_layout_pin("addr0[{}]".format(lsb), p.layer, p.ll(), p.width(), p.height())
+                place(self.col_decode_inst.get_pin("A{}".format(lsb)),
+                      "addr0[{}]".format(lsb))
             for msb in range(self.col_bits, self.row_bits + self.col_bits):
-                p = self.decode_inst.get_pin("A{}".format(msb - self.col_bits))
-                self.add_layout_pin("addr0[{}]".format(msb), p.layer, p.ll(), p.width(), p.height())
+                place(self.decode_inst.get_pin("A{}".format(msb - self.col_bits)),
+                      "addr0[{}]".format(msb))
             return
         self.add_io_pin(self.control_inst, "CS", "cs0")
         self.add_io_pin(self.control_inst, "clk_in", "clk0")
@@ -661,9 +674,24 @@ class rom_bank(design, rom_verilog, lef):
         if OPTS.route_supplies:
 
             from openram.router import supply_router as router
+            # The ring is drawn from the bbox edge inward and the outer loop is
+            # one track group wide, so a ring drawn on the content bbox cuts
+            # through the block-level m3/m4 straps at the macro edge (the ROM's
+            # addr0[2..4] escapes were shorted to gnd by the gnd ring strap).
+            # Push the ring out so both loops surround the content.
+            margin = getattr(OPTS, "rom_supply_bbox_margin", 0.0)
+            if not margin and getattr(OPTS, "supply_ring_net_layers", None):
+                from openram.router.router_tech import router_tech
+                rt = router_tech(self.supply_stack, route_track_width=1)
+                wideness = 3 * rt.track_wire + 2 * rt.track_space
+                margin = 2 * wideness + rt.track_space
+            ring_bbox = bbox
+            if margin:
+                ring_bbox = [bbox[0] - vector(margin, margin),
+                             bbox[1] + vector(margin, margin)]
             rtr = router(layers=self.supply_stack,
                         design=self,
-                        bbox=bbox,
+                        bbox=ring_bbox,
                         pin_type=OPTS.supply_pin_type)
             rtr.route()
 
@@ -680,14 +708,21 @@ class rom_bank(design, rom_verilog, lef):
                     # Remove the pin shape(s)
                     self.remove_layout_pin(pin_name)
 
-                    # Get new pins
-                    pins = rtr.get_new_pins(pin_name)
-                    for pin in pins:
-                        self.add_layout_pin(self.ext_supply[pin_name],
-                                            pin.layer,
-                                            pin.ll(),
-                                            pin.width(),
-                                            pin.height())
+                    # One label per supply net, centred on the ring's left
+                    # strap.  The strap is fully on the net's own layer, so
+                    # the label always lands on real metal; a label copied at
+                    # a pin corner can land exactly on the strap edge and the
+                    # LVS deck then drops the net from the top-level ports.
+                    pins = list(rtr.get_new_pins(pin_name))
+                    straps = [p for p in pins if p.width() < p.height()]
+                    label_pin = min(straps or pins, key=lambda p: p.ll().x)
+                    min_width = drc["minwidth_{}".format(label_pin.layer)]
+                    self.add_layout_pin_rect_center(
+                        self.ext_supply[pin_name],
+                        label_pin.layer,
+                        label_pin.center(),
+                        width=min_width,
+                        height=min_width)
 
     def route_escape_pins(self, bbox, inset=0.0):
         pins_to_route = []

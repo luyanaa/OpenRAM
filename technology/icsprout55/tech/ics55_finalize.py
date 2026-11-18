@@ -295,6 +295,35 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
                     "ics55_finalize: top-level repair path is invalid")
             instances[ordinal].cell_index = child_idx
 
+    def widen_repair_to_min_width(region, mw, metal):
+        """Widen each repair piece to METn_W_1 where the growth stays on its net.
+
+        A same-net notch is only as wide as the gap between two rails (the ROM
+        had 0.06 um), and a fill that thin is itself a width marker once the
+        hierarchy is reduced to top-cell shapes.  Growing it to the minimum
+        width pushes it a little further into the rails it already connects,
+        so the patch never leaves the net.
+        """
+
+        out = kdb.Region()
+        for piece in region.each():
+            b = piece.bbox()
+            r = kdb.Region(piece)
+            if b.width() < mw:
+                d = (mw - b.width() + 1) // 2
+                r = kdb.Region(kdb.Box(b.left - d, b.bottom, b.right + d, b.top))
+            if b.height() < mw:
+                d = (mw - b.height() + 1) // 2
+                b2 = r.bbox()
+                r = kdb.Region(kdb.Box(b2.left, b2.bottom - d, b2.right, b2.top + d))
+            grown = r - metal
+            if grown.area() > 0 and grown.area() > kdb.Region(piece).area():
+                out += kdb.Region(piece)
+            else:
+                out += r
+        return out
+
+
     def insert_metal_repair(li, lp, region, margin):
         if lp not in LOCAL_METAL_REPAIRS:
             top_cell.shapes(li).insert(region)
@@ -369,6 +398,8 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             if loc.interacting(pr.sized(sp)).count() == 1:
                 notch.insert(piece)
         n_notch += notch.count()
+        notch = widen_repair_to_min_width(notch, um(MIN_WIDTH.get(lp, 0.10)),
+                                          metal + fill)
         insert_metal_repair(li, lp, notch, repair_margin)
 
         # Minimum area (MET1_A_1/METn_A_1): grow under-area polygons where
@@ -425,6 +456,20 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
                                          min(box.right, qb.right), max(box.top, qb.top))
                     if bridge.width() <= 0 or bridge.height() <= 0:
                         continue
+                    # The bridge is the overlap box of two rails, so it can be
+                    # thinner than METn_W_1 (the ROM had 0.06 um between two
+                    # m4 rails).  Such a sliver is a width marker of its own;
+                    # widen it to the minimum, which only merges it further
+                    # into the two rails it already connects.
+                    mw = um(MIN_WIDTH.get(lp, 0.10))
+                    if bridge.width() < mw:
+                        cx = bridge.center().x
+                        bridge = kdb.Box(cx - mw // 2, bridge.bottom,
+                                         cx + (mw + 1) // 2, bridge.top)
+                    if bridge.height() < mw:
+                        cy = bridge.center().y
+                        bridge = kdb.Box(bridge.left, cy - mw // 2,
+                                         bridge.right, cy + (mw + 1) // 2)
                     if loc.interacting(kdb.Region(bridge).sized(sp)).count() <= 2:
                         added_m.insert(bridge)
                         ok = True

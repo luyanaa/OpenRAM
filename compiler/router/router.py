@@ -3,6 +3,8 @@
 # Copyright (c) 2016-2024 Regents of the University of California, Santa Cruz
 # All rights reserved.
 #
+import re
+
 from openram import debug
 from openram.base.vector import vector
 from openram.gdsMill import gdsMill
@@ -142,6 +144,65 @@ class router(router_tech):
         except Exception:
             self._klayout_layout = None
 
+    def prepare_foreign_metal(self, layer_name):
+        """Record the metal a via of this router must not land on.
+
+        A route changes layer by placing a via at a graph node.  That via's
+        pads land on the lower layer, where the *block* may already have a
+        via stack going further down - punching into it silently joins this
+        net to whatever the stack reaches (the icsprout55 ROM's addr0[5]
+        escape landed on a decoder via2 and was extracted as the substrate).
+        The region below is stored once, minus the pins of this router's own
+        nets, and every via placement is tested against it.
+        """
+
+        self._foreign_metal = None
+        self._foreign_dbu = None
+        self._foreign_cache = {}
+        layout = getattr(self, "_klayout_layout", None)
+        if layout is None:
+            return
+        import klayout.db as kdb
+        from openram.tech import layer as tech_layer
+        lpp = tech_layer[layer_name]
+        if not lpp:
+            return
+        li = layout.find_layer(lpp[0], lpp[1] if lpp[1] is not None else 0)
+        if li is None:
+            return
+        dbu = layout.dbu
+        reg = kdb.Region(layout.top_cell().begin_shapes_rec(li))
+        reg.merge()
+        own = kdb.Region()
+        for pin in self.all_pins:
+            if self.layer_key(pin.lpp) != lpp[0]:
+                continue
+            ll, ur = pin.ll(), pin.ur()
+            own.insert(kdb.Box(int(round(ll.x / dbu)), int(round(ll.y / dbu)),
+                               int(round(ur.x / dbu)), int(round(ur.y / dbu))))
+        self._foreign_metal = reg - own
+        self._foreign_dbu = dbu
+
+    def via_lands_on_foreign_metal(self, point):
+        """True when a via at this point would land on another net's metal."""
+
+        region = getattr(self, "_foreign_metal", None)
+        if region is None or region.is_empty():
+            return False
+        import klayout.db as kdb
+        dbu = self._foreign_dbu
+        key = (round(point.x, 3), round(point.y, 3))
+        cached = self._foreign_cache.get(key)
+        if cached is not None:
+            return cached
+        half = kdb.Box(int(round((point.x - 0.085) / dbu)),
+                       int(round((point.y - 0.085) / dbu)),
+                       int(round((point.x + 0.085) / dbu)),
+                       int(round((point.y + 0.085) / dbu)))
+        blocked = not region.interacting(kdb.Region(half)).is_empty()
+        self._foreign_cache[key] = blocked
+        return blocked
+
     def get_all_shapes(self, lpp):
         """ Return every shape on a layer pair as (left, bottom, right, top).
 
@@ -150,6 +211,7 @@ class router(router_tech):
         """
         layout = getattr(self, "_klayout_layout", None)
         if layout is not None:
+            import klayout.db as kdb
             datatype = lpp[1] if len(lpp) > 1 and lpp[1] is not None else 0
             index = layout.find_layer(lpp[0], datatype)
             if index is None:
@@ -160,11 +222,18 @@ class router(router_tech):
             it = top.begin_shapes_rec(index)
             while not it.at_end():
                 shape = it.shape()
-                if not shape.is_text():
-                    box = shape.bbox()
-                    shapes.append((box.left * dbu, box.bottom * dbu,
-                                   box.right * dbu, box.top * dbu))
+                # `shape.bbox()` is in the *cell's* coordinates.  Applying the
+                # iterator transform is essential: without it every leaf-cell
+                # rail is reported at its local position, so the router cannot
+                # see the block-level m3/m4 supplies and draws the supply and
+                # escape trees straight through them (the ROM's addr0[*] nets
+                # were all merged into gnd this way).
+                box = kdb.Box(shape.bbox()) * it.trans()
                 it.next()
+                if shape.is_text():
+                    continue
+                shapes.append((box.left * dbu, box.bottom * dbu,
+                               box.right * dbu, box.top * dbu))
             return shapes
         return self.layout.getAllShapes(lpp)
 
@@ -269,7 +338,7 @@ class router(router_tech):
                 # inside a ring pin.  The ROM ring pins span the whole macro,
                 # so the old test discarded every routed wire and the two
                 # supplies were then routed on top of each other.
-                if shape_list is None and new_shape.core_contained_by_any(self.all_pins):
+                if shape_list is None and new_shape.core_matches_any(self.all_pins):
                     continue
                 if new_shape.core_contained_by_any(self.blockages.query(new_shape.rect)):
                     continue
@@ -287,9 +356,20 @@ class router(router_tech):
         via_lpp = layer[self.via_layer_name]
         valid_lpp = self.horiz_lpp # Just a temporary lpp to prevent errors
 
-        # If the list of shapes is given, don't get them from gdsMill
+        # A via of this router's own via layer is the primary hazard, but a
+        # via on a *neighbouring* via layer is just as bad: landing a via3 on
+        # m3 where the block already has a via2 joins this net to whatever is
+        # below it (the icsprout55 ROM lost addr0[5] to the substrate this
+        # way).  Every via layer is therefore read as a via blockage.
         if shape_list is None:
-            shapes = self.get_all_shapes(via_lpp)
+            via_lpps = []
+            for name, lpp in layer.items():
+                if re.match(r"^via\d+$", str(name)) and lpp:
+                    via_lpps.append(lpp)
+            shapes = []
+            for lpp in via_lpps or [via_lpp]:
+                for rect in self.get_all_shapes(lpp):
+                    shapes.append(rect)
         else:
             shapes = shape_list
         for boundary in shapes:
@@ -311,10 +391,19 @@ class router(router_tech):
     def convert_vias(self):
         """ Convert vias that overlap a pin. """
 
+        # Vias in this router span the two routing layers only.  Forcing the
+        # layer pair to match the pin (as this used to do) let a pin on a
+        # *lower* layer claim a signal via purely because the two overlap in
+        # plan view - the icsprout55 ROM's m3/m4 escape vias sit right above
+        # the m2 gnd rail, so they were renamed "gnd" and the supply router
+        # was then free to route over the escape wires.
+        routing_lpps = (self.horiz_lpp, self.vert_lpp)
         for via in self.vias:
             via_core = via.get_core()
             for pin in self.all_pins:
                 pin_core = pin.get_core()
+                if pin_core.lpp not in routing_lpps:
+                    continue
                 via_core.lpp = pin_core.lpp
                 # If the via overlaps a pin, change its name
                 if via_core.overlaps(pin_core):
@@ -391,6 +480,16 @@ class router(router_tech):
             self.record_net_shapes(net_name, wires, vias)
         return shapes
 
+    @staticmethod
+    def layer_key(lpp):
+        """Return a comparable layer identity for a name or (layer, purpose)."""
+        if isinstance(lpp, str):
+            from openram.tech import layer as tech_layer
+            return tech_layer[lpp][0]
+        if isinstance(lpp, (list, tuple)):
+            return lpp[0]
+        return lpp
+
     def record_net_shapes(self, net_name, wires, vias):
         """ Remember which geometry belongs to which supply net.
 
@@ -403,7 +502,7 @@ class router(router_tech):
             lpp = getattr(shape, "lpp", None)
             if lpp is None:
                 continue
-            entry.append((lpp, shape.ll(), shape.ur()))
+            entry.append((self.layer_key(lpp), shape.ll(), shape.ur()))
 
     @staticmethod
     def rectangles_overlap(first, second):
@@ -510,8 +609,14 @@ class router(router_tech):
             direction = nodes[i].get_direction(nodes[i + 1])
             diff = start - end
             offset = start.min(end)
-            offset = vector(offset.x - self.half_wire,
-                            offset.y - self.half_wire)
+            # `half_wire` is half of track_wire, which can be below the layer
+            # minimum width; a wire drawn from this offset with the clamped
+            # width would be off-centre.  Centre the rect on the same point
+            # with a half-width that matches the width actually used.
+            layer_min_width = self.get_layer_width(start.z)
+            wire_width = max(self.track_wire, layer_min_width)
+            half = snap(wire_width / 2)
+            offset = vector(offset.x - half, offset.y - half)
             if direction == (1, 1): # Via
                 offset = vector(start.x, start.y)
                 via = self.design.add_via_center(layers=self.layers,

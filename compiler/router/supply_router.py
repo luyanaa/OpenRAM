@@ -27,7 +27,6 @@ class supply_router(router):
         # New pins are the side supply pins
         self.new_pins = {}
 
-
     def route(self, vdd_name="vdd", gnd_name="gnd"):
         """ Route the given pins in the given order. """
         debug.info(1, "Running router for {} and {}...".format(vdd_name, gnd_name))
@@ -46,6 +45,7 @@ class supply_router(router):
         # Find blockages and vias
         self.find_blockages()
         self.find_vias()
+        self.prepare_foreign_metal(self.layers[0])
 
         # Convert blockages and vias if they overlap a pin
         self.convert_vias()
@@ -146,6 +146,27 @@ class supply_router(router):
             else:
                 shape_width -= margin * 2
 
+        # One net per metal: with `supply_ring_net_layers` the ring of each net
+        # is drawn on its own layer only, so the two supplies cannot meet.
+        ring_layers = getattr(OPTS, "supply_ring_net_layers", None)
+        if ring_layers:
+            layer = ring_layers[0] if inner else ring_layers[1]
+            pin = self.design.add_layout_pin(text=pin_name,
+                                             layer=layer,
+                                             offset=offset,
+                                             width=shape_width,
+                                             height=shape_height)
+            self.net_shapes.setdefault(pin_name, []).append(
+                (self.layer_key(layer), pin.ll(), pin.ur()))
+            # NOTE: the ring strap is not a routing target yet.  The generic MST
+            # would have to cross the whole macro to reach it, which pulls in
+            # block-level metal and shorts the two supplies, so the ring is
+            # left unconnected until the ROM has dedicated supply straps.
+            fake_pins = []
+            return graph_shape(name=pin_name,
+                               rect=[pin.ll(), pin.ur()],
+                               layer_name_pp=layer), fake_pins
+
         # Add this new pin
         layer = self.get_layer(int(vertical))
         pin = self.design.add_layout_pin(text=pin_name,
@@ -182,19 +203,23 @@ class supply_router(router):
     def add_ring_pin(self, pin_name, num_vias=3, num_fake_pins=4):
         """ Add the supply ring to the layout. """
 
+        ring_layers = getattr(OPTS, "supply_ring_net_layers", None)
+
         # Add side pins
         new_pins = []
         for side in ["top", "bottom", "right", "left"]:
-            new_shape, fake_pins = self.add_side_pin(pin_name, side, num_vias, num_fake_pins)
-            ll, ur = new_shape.rect
-            rect = [ll, ur]
-            layer = self.get_layer(side in ["left", "right"])
-            new_pin = graph_shape(name=pin_name,
-                                  rect=rect,
-                                  layer_name_pp=layer)
-            new_pins.append(new_pin)
+            new_shape, fake_pins = self.add_side_pin(pin_name, side,
+                                                     num_vias, num_fake_pins)
+            new_pins.append(new_shape)
             self.pins[pin_name].update(fake_pins)
-            self.fake_pins.extend(fake_pins)
+
+        if ring_layers:
+            # One ring per layer: the loop is closed on a single layer, so no
+            # corner vias are added and no via can bridge the two supplies.
+            self.new_pins[pin_name] = new_pins
+            for pin in new_pins:
+                self.blockages.append(self.inflate_shape(pin))
+            return
 
         # Add vias to the corners
         shift = self.track_wire + self.track_space
@@ -210,16 +235,6 @@ class supply_router(router):
                     offset = vector(top_left.x + j * shift, top_left.y - k * shift)
                     self.design.add_via_center(layers=self.layers,
                                                offset=offset)
-
-        # Register the ring geometry with its net so the route-overlap check
-        # can see it.  Without this the ring pins are invisible to the check
-        # and a route of the other net can place a via straight onto them
-        # (that is the vdd M3 ring / gnd M4 tree overlap the ROM shows).
-        ring_rects = []
-        for side_pin in new_pins:
-            layer = side_pin.lpp
-            ring_rects.append((layer, side_pin.ll(), side_pin.ur()))
-        self.net_shapes.setdefault(pin_name, []).extend(ring_rects)
 
         # Save side pins for routing
         self.new_pins[pin_name] = new_pins

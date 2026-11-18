@@ -163,6 +163,10 @@ class graph:
         for node in nodes:
             if self.is_node_blocked(node):
                 return True
+            # A layer change may not land on another net's metal below.
+            checker = getattr(self.router, "via_lands_on_foreign_metal", None)
+            if checker is not None and checker(node.center):
+                return True
 
         # Skip if no via is present
         if len(self.graph_vias) == 0:

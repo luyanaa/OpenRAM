@@ -85,6 +85,25 @@ class graph_shape(pin_layout):
         return False
 
 
+    def core_matches_any(self, shape_list):
+        """Return if the core of this shape is the same rectangle as another's.
+
+        Two different nets can occupy the same area (a signal escape that ends
+        inside a wide supply pin).  Containment is therefore the wrong test to
+        recognise "this shape is my own pin": it also discards every foreign
+        shape that happens to lie inside a pin, and the router then draws a
+        supply wire straight over it.
+        """
+
+        self_core = self.get_core()
+        for shape in shape_list:
+            shape_core = shape.get_core()
+            if shape_core.same_lpp(self_core.lpp, shape_core.lpp) and \
+                    shape_core.contains(self_core) and \
+                    self_core.contains(shape_core):
+                return True
+        return False
+
     def aligns(self, other):
         """ Return if the other shape aligns with this shape. """
 

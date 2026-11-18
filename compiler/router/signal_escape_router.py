@@ -40,6 +40,7 @@ class signal_escape_router(router):
         # Find blockages and vias
         self.find_blockages()
         self.find_vias()
+        self.prepare_foreign_metal(self.layers[0])
 
         # Convert blockages and vias if they overlap a pin
         self.convert_vias()

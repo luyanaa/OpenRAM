@@ -161,22 +161,36 @@ def main(argv=None):
             print("  {:4s} layer {:3d} ({:.3f},{:.3f})".format(
                 name, layer, x * dbu, y * dbu))
 
+    # Test EVERY label of a net against EVERY label of every other net.  A
+    # single-seed test reports "separate" when that one label happens to sit
+    # on an isolated segment, which is a false negative.
     connected = []
     for i, first in enumerate(names):
         for second in names[i + 1:]:
-            layer, x, y, region = seeds[first]
-            tlayer, tx, ty, _ = seeds[second]
-            path = search(layout, metals, vias, layer, region,
-                          kdb.Point(int(tx), int(ty)), tlayer)
-            if path is None:
-                print("{} and {}: separate (no path)".format(first, second))
-                continue
-            connected.append((first, second))
-            print("{} and {}: CONNECTED via {} shape(s)".format(
-                first, second, len(path)))
-            for step, (play, l, b, r, t) in enumerate(path):
-                print("  {:2d} layer {:3d} ({:.3f},{:.3f})-({:.3f},{:.3f})".format(
-                    step, play, l * dbu, b * dbu, r * dbu, t * dbu))
+            for (flayer, fx, fy) in spots[first]:
+                region = polygon_at(layout, metals, flayer, fx, fy)
+                if region is None:
+                    print("  no conductor under {} label at ({:.3f},{:.3f})".format(
+                        first, fx * dbu, fy * dbu))
+                    continue
+                for (tlayer, tx, ty) in spots[second]:
+                    path = search(layout, metals, vias, flayer, region,
+                                  kdb.Point(int(tx), int(ty)), tlayer)
+                    if path is None:
+                        continue
+                    connected.append((first, second))
+                    print("{} label ({:.3f},{:.3f}) and {} label ({:.3f},{:.3f}): "
+                          "CONNECTED via {} shape(s)".format(
+                              first, fx * dbu, fy * dbu,
+                              second, tx * dbu, ty * dbu, len(path)))
+                    for step, (play, l, b, r, t) in enumerate(path):
+                        print("  {:2d} layer {:3d} ({:.3f},{:.3f})-({:.3f},{:.3f})".format(
+                            step, play, l * dbu, b * dbu, r * dbu, t * dbu))
+                    break
+                if connected:
+                    break
+            if not any(pair == (first, second) for pair in connected):
+                print("{} and {}: separate (all label pairs)".format(first, second))
 
     if connected:
         print("SHORT: {}".format(", ".join("{}/{}".format(a, b)
