@@ -10,6 +10,7 @@ from math import ceil
 from openram.base import geometry
 from openram.base import design
 from openram.sram_factory import factory
+from openram import OPTS
 from openram.base import vector
 from openram.tech import layer, drc
 
@@ -114,11 +115,17 @@ class rom_precharge_array(design):
         cell_y = 0
         # columns are bit lines
         cell_x = 0
+        # The poly taps carry the gate net down to m2 through a minimum-area
+        # m1 pad.  Those pads are 0.27 um wide and the base array's bitline
+        # straps (m1, 0.09 wide at the 0.67 um bitline pitch) run straight
+        # through this row, so a tap on a bitline column shorts the precharge
+        # gate to the bitline/substrate.  Offset the taps off the columns.
+        tap_offset = getattr(OPTS, "rom_poly_tap_offset", 0.43)
 
         for col in range(self.cols):
 
             if col % self.strap_spacing == 0:
-                self.tap_insts[strap_num].place(vector(cell_x + self.poly_space, cell_y + self.poly_tap.height))
+                self.tap_insts[strap_num].place(vector(cell_x + self.poly_space + tap_offset, cell_y + self.poly_tap.height))
                 strap_num += 1
 
                 if self.tap_direction == "col":
@@ -127,7 +134,7 @@ class rom_precharge_array(design):
             self.pmos_insts[col].place(vector(cell_x, cell_y))
             cell_x += self.pmos.width
 
-        self.tap_insts[strap_num].place(vector(cell_x + self.poly_space, cell_y + self.poly_tap.height))
+        self.tap_insts[strap_num].place(vector(cell_x + self.poly_space + tap_offset, cell_y + self.poly_tap.height))
 
     def create_layout_pins(self):
         self.copy_layout_pin(self.tap_insts[0], "poly_tap", "gate")
@@ -144,8 +151,18 @@ class rom_precharge_array(design):
 
         tmp_vdd = self.get_pin("vdd_tmp")
 
-        self.add_layout_pin_rect_center("vdd", layer=self.strap_layer, offset=tmp_vdd.lc(), height=tmp_vdd.height())
-        self.add_segment_center(layer=self.strap_layer, start=tmp_vdd.lc(), end=tmp_vdd.rc(), width=tmp_vdd.height())
+        # `tmp_vdd.height()` is the bbox height of the merged vdd pin, not the
+        # rail width: it is 0.385 um here, so the strap drawn with it reaches
+        # up into the gate bus row and shorts vdd to the precharge gate (the
+        # LVS extraction then sees all 68 precharge PMOS with gate = vdd and
+        # folds them into multi-finger devices).  Draw the strap with the
+        # routing layer's own width instead; the horizontal pin routing above
+        # already provides the connections to each PMOS source.
+        vdd_width = drc["minwidth_{}".format(self.strap_layer)]
+        self.add_layout_pin_rect_center("vdd", layer=self.strap_layer,
+                                        offset=tmp_vdd.lc(), height=vdd_width)
+        self.add_segment_center(layer=self.strap_layer, start=tmp_vdd.lc(),
+                                end=tmp_vdd.rc(), width=vdd_width)
         self.remove_layout_pin("vdd_tmp")
 
 
