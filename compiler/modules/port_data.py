@@ -522,7 +522,30 @@ class port_data(design):
         for bit in range(self.num_wmasks):
             wmask_in_name = "wmask_in_{}".format(bit)
             bank_wmask_name = "bank_wmask_{}".format(bit)
-            self.copy_layout_pin(self.write_mask_and_array_inst, wmask_in_name, bank_wmask_name)
+            if OPTS.tech_name.startswith("gf180mcu"):
+                # The AND array's input pad sits 0.12 um from the data pin of
+                # the same bit (din_0 pad x 1654..1710 vs wmask_in_0 pad
+                # 1620..1696).  The top-level channel router then assigns both
+                # nets the same vertical escape column, so bank_wmask_i's m4
+                # escape runs straight through din0_i's and LVS merges the
+                # data bus with the mask inputs.  Expose the mask input two
+                # m2 pitches to the left instead; the AND array has no metal
+                # in that corridor, so an m2 stub joins it to the pad.
+                pin = self.write_mask_and_array_inst.get_pin(wmask_in_name)
+                target = vector(pin.cx() - 2 * self.m2_pitch, pin.cy())
+                self.add_rect_center(layer="m2",
+                                     offset=vector(0.5 * (target.x + pin.lx()),
+                                                   pin.cy()),
+                                     width=pin.lx() - target.x + drc["minwidth_m2"],
+                                     height=pin.height())
+                self.add_layout_pin(text=bank_wmask_name,
+                                    layer="m2",
+                                    offset=target - vector(0.5 * pin.width(),
+                                                           0.5 * pin.height()),
+                                    width=pin.width(),
+                                    height=pin.height())
+            else:
+                self.copy_layout_pin(self.write_mask_and_array_inst, wmask_in_name, bank_wmask_name)
 
     def route_write_mask_and_array_to_write_driver(self, port):
         """
@@ -552,22 +575,30 @@ class port_data(design):
                 m1_drop = 4 * self.m2_pitch
                 m3_top = vector(wmask_pos.x, wmask_pos.y - m1_drop)
                 # Every vertical path through the write driver rows is blocked
-                # (its m1/m2 bitline straps leave no legal channel), so come
-                # down in the free corridor left of the enable rail and enter
-                # the rail from its left end.  The bitlines are already routed
-                # on m3 at their pin columns, so pick a column halfway between
-                # the last bitline to the left and the rail.
-                bitline_xs = []
-                for blbr in ("bl", "br"):
-                    for i in range(self.word_size + self.num_spare_cols):
-                        for p in wdriver_inst.get_pins("{0}_{1}".format(blbr, i)):
-                            bitline_xs.append(p.cx())
-                left_xs = [x for x in bitline_xs if x < wdriver_en_pin.lx()]
-                if left_xs:
-                    corner_x = 0.5 * (max(left_xs) + wdriver_en_pin.lx())
+                # (its m1/m2 bitline straps leave no legal channel), and the
+                # bitlines, data pins and mask inputs are already routed on m3
+                # at their own columns.  Drop into the widest gap between those
+                # columns that still lands on the enable rail; fall back to the
+                # free corridor left of the rail when no gap is wide enough.
+                col_xs = []
+                for name in (["bl_{0}".format(i) for i in range(self.num_cols)]
+                             + ["br_{0}".format(i) for i in range(self.num_cols)]
+                             + ["data_{0}".format(i) for i in range(self.word_size + self.num_spare_cols)]):
+                    for p in wdriver_inst.get_pins(name):
+                        col_xs.append(p.cx())
+                inside = [x for x in col_xs
+                          if wdriver_en_pin.lx() <= x <= wdriver_en_pin.rx()]
+                edges = ([wdriver_en_pin.lx()] + sorted(inside)
+                         + [wdriver_en_pin.rx()])
+                gap = max(zip(edges, edges[1:]), key=lambda ab: ab[1] - ab[0])
+                if gap[1] - gap[0] >= 1.0:
+                    corner = vector(0.5 * (gap[0] + gap[1]),
+                                    wdriver_en_pin.cy())
+                    corner_on_rail = True
                 else:
-                    corner_x = wdriver_en_pin.lx() - 2 * self.m2_pitch
-                corner = vector(corner_x, wdriver_en_pin.cy())
+                    corner = vector(wdriver_en_pin.lx() - 2 * self.m2_pitch,
+                                    wdriver_en_pin.cy())
+                    corner_on_rail = False
                 self.add_rect_center(layer="m1",
                                      offset=vector(wmask_pos.x,
                                                    wmask_pos.y - 0.5 * m1_drop),
@@ -586,10 +617,12 @@ class port_data(design):
                 self.add_via_stack_center(from_layer="m3",
                                           to_layer="m1",
                                           offset=corner)
-                self.add_rect_center(layer="m1",
-                                     offset=vector(0.5 * (corner.x + wdriver_en_pin.lx()),
-                                                   corner.y),
-                                     width=wdriver_en_pin.lx() - corner.x + drc["minwidth_m1"])
+                if not corner_on_rail:
+                    # Joining stub from the corridor into the rail's left end.
+                    self.add_rect_center(layer="m1",
+                                         offset=vector(0.5 * (corner.x + wdriver_en_pin.lx()),
+                                                       corner.y),
+                                         width=wdriver_en_pin.lx() - corner.x + drc["minwidth_m1"])
             else:
                 mid_pos = vector(wdriver_pos.x, wmask_pos.y)
 

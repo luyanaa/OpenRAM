@@ -1348,16 +1348,23 @@ class sram_1bank(design, verilog, lef):
             layer_stack = self.m4_stack if OPTS.tech_name == "icsprout55" else self.top_stack
             # Keep ICS55 data-DFF trunks off the M3 supply mesh.
             route_directions = ("V", "H") if OPTS.tech_name == "icsprout55" else None
-            if OPTS.tech_name == "gf180mcu" and OPTS.bitcell == "pbitcell":
+            if OPTS.tech_name.startswith("gf180mcu") and (OPTS.bitcell == "pbitcell" or self.num_wmasks > 0):
                 # channel_route's default "pref" mapping puts the vertical
                 # escapes on m3 (m3 is vertical-preferred) and the tracks on
                 # m4.  On a write-only port the control-logic outputs have no
                 # s_en pin and therefore sit inside the vertical span of those
                 # escapes: the m3 w_en horizontal and the m3 pad of its via
                 # stack then touch the m3 data-channel verticals (DRC-invisible
-                # overlap, LVS reports din0 bus shorted to w_en).  Swap the
-                # mapping for the multiport path only: tracks on m3, escapes
-                # on m4, so the control layer is clear.
+                # overlap, LVS reports din0 bus shorted to w_en).
+                #
+                # A write mask hits the same collision on cell1rw: the bank
+                # carries its w_en net from the control logic to the mask AND
+                # array on an m3 strap just above the bank bottom, and the
+                # default m3 escapes of the data channel cross it (LVS merged
+                # din0_0..7, w_en0 and bank_wmask0_* into one net).  Swap the
+                # mapping whenever the data channel exists on this technology
+                # so the escapes go on m4 and the m3 control layer stays
+                # clear.
                 route_directions = ("H", "V")
             if port == 0:
                 # This is relative to the bank at 0,0 or the s_en which is routed on M3 also
