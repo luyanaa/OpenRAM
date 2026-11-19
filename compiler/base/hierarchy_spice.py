@@ -50,6 +50,7 @@ class spice():
         if not os.path.exists(self.lvs_file):
             self.lvs_file = self.sp_file
 
+        self.valid_signal_types = ["INOUT", "INPUT", "OUTPUT", "BIAS", "POWER", "GROUND"]
         # Holds subckts/mods for this module
         self.mods = set()
         # Holds the pins for this module (in order)
@@ -699,7 +700,8 @@ class spice():
     def get_instance_connections(self):
         conns = []
         for inst in self.insts:
-            conns.append(inst.get_connections())
+            if "contact" not in inst.name:
+                conns.append(inst.get_connections())
         return conns
 
     def is_net_alias(self, known_net, net_alias, mod, exclusion_set):
@@ -824,6 +826,12 @@ class net_spice():
     def __init__(self, name, mod):
         self.name = name
         self.pins = []
+        # Identities of the pins in self.pins, for a constant-time membership
+        # check. Pins compare by identity, so this answers "pin in self.pins"
+        # without searching the list: that search is linear per connect_pin()
+        # call, which made connecting all pins of a net quadratic in its pin
+        # count. Shared with self.pins in __deepcopy__.
+        self._pin_ids = set()
         self.mod = mod
         self.inst = None
 
@@ -832,10 +840,11 @@ class net_spice():
 
     def connect_pin(self, pin):
         debug.check(isinstance(pin, pin_spice), "pin must be a pin_spice object")
-        if pin in self.pins:
+        if id(pin) in self._pin_ids:
             debug.warning("pin {} was already connected to net {} ... why was it connected again?".format(pin.name, self.name))
         else:
             self.pins.append(pin)
+            self._pin_ids.add(id(pin))
 
     def set_inst(self, inst):
         self.inst = inst
@@ -876,4 +885,5 @@ class net_spice():
         if original.pins != []:
             # TODO: honestly I'm not sure if this is right but we'll see...
             net.pins = original.pins
+            net._pin_ids = original._pin_ids
         return net

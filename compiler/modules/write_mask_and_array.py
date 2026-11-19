@@ -12,6 +12,7 @@ from openram.base import vector
 from openram.sram_factory import factory
 from openram.modules.write_driver_array import write_driver_strength_kwargs
 from openram import OPTS
+from openram.tech import drc
 
 
 class write_mask_and_array(design):
@@ -108,6 +109,10 @@ class write_mask_and_array(design):
             base = vector(self.offsets[int(i * write_bits)], 0)
             self.and2_insts[i].place(base)
 
+        # decide whethre to connect nwell to avoid drc errors
+        if self.bitcell.width < drc("nwell_to_nwell"):
+            self.and2.extend_wells(width=self.and2.width + drc("nwell_to_nwell"))
+        
     def add_layout_pins(self):
 
         # Create the enable pin that connects all write mask AND array's B pins

@@ -146,6 +146,20 @@ preferred_directions = {
 # The exported M5 obstruction keeps SoC signal routing out of that region.
 power_grid = m3_stack
 
+# LEF DATABASE MICRONS (LEF units per micron); the GDS database unit is 1 nm.
+lef_units = 1000
+
+# Ring around the replica array.  The bitcell vdd/gnd rails run horizontally,
+# so the array is tapped from the left and right ring sides only.
+power_ring_top = True
+power_ring_bottom = True
+power_ring_left = True
+power_ring_right = True
+connect_ring_top = []
+connect_ring_bottom = []
+connect_ring_left = ['vdd', 'gnd']
+connect_ring_right = ['vdd', 'gnd']
+
 
 ###################################################
 # GDS layer map (Calibre deck LAYER MAP)

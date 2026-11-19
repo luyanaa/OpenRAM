@@ -239,7 +239,11 @@ class supply_router(router):
         for side in ["top", "bottom", "right", "left"]:
             new_shape, fake_pins = self.add_side_pin(pin_name, side,
                                                      num_vias, num_fake_pins)
-            new_pins.append(new_shape)
+            ll, ur = new_shape.rect
+            new_pin = graph_shape(name=pin_name,
+                                  rect=[ll, ur],
+                                  layer_name_pp=new_shape.layer)
+            new_pins.append(new_pin)
             self.pins[pin_name].update(fake_pins)
 
         if ring_layers:

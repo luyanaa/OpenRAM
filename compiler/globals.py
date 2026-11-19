@@ -1,6 +1,6 @@
 # See LICENSE for licensing information.
 #
-# Copyright (c) 2016-2024 Regents of the University of California and The Board
+# Copyright (c) 2016-2026 Regents of the University of California and The Board
 # of Regents for the Oklahoma Agricultural and Mechanical College
 # (acting for and on behalf of Oklahoma State University)
 # All rights reserved.
@@ -16,6 +16,7 @@ import shutil
 import optparse
 import copy
 import importlib
+import importlib.util
 import getpass
 import subprocess
 from openram import debug
@@ -23,11 +24,13 @@ from openram import options
 
 
 from openram import OPENRAM_HOME
-VERSION = open(OPENRAM_HOME + "/../VERSION").read().rstrip()
+with open(OPENRAM_HOME + "/../VERSION", "r", encoding="utf-8") as version_file:
+    VERSION = version_file.read().rstrip()
 NAME = "OpenRAM v{}".format(VERSION)
 USAGE = "sram_compiler.py [options] <config file>\nUse -h for help.\n"
 
 OPTS = options.options()
+_config_modules = {}
 
 
 def parse_args():
@@ -71,6 +74,9 @@ def parse_args():
                              help="Increase the verbosity level"),
         optparse.make_option("-t", "--tech",
                              dest="tech_name",
+                             help="Technology name"),
+        optparse.make_option("-f", "--tech_file",
+                             dest="tech_file",
                              help="Technology name"),
         optparse.make_option("-s", "--spice",
                              dest="spice_name",
@@ -129,7 +135,7 @@ def print_banner():
     debug.print_raw("|=========" + " ".center(60) + "=========|")
     user_info = "Usage help: openram-user-group@ucsc.edu"
     debug.print_raw("|=========" + user_info.center(60) + "=========|")
-    dev_info = "Development help: openram-dev-group@ucsc.edu"
+    dev_info = "Development help: https://github.com/VLSIDA/OpenRAM/issues"
     debug.print_raw("|=========" + dev_info.center(60) + "=========|")
     debug.print_raw("|=========" + "See LICENSE for license info".center(60) + "=========|")
     debug.print_raw("|==============================================================================|")
@@ -249,12 +255,14 @@ def setup_bitcell():
     # If we have non-1rw ports,
     # and the user didn't over-ride the bitcell manually,
     # figure out the right bitcell to use
+    # num_ports is used by the peripheral modules (port_data et al.)
+    # regardless of whether a parameterized or custom bitcell is used.
+    OPTS.num_ports = OPTS.num_rw_ports + OPTS.num_w_ports + OPTS.num_r_ports
     if OPTS.bitcell == "pbitcell":
         OPTS.bitcell = "pbitcell"
         OPTS.dummy_bitcell = "dummy_pbitcell"
         OPTS.replica_bitcell = "replica_pbitcell"
     else:
-        OPTS.num_ports = OPTS.num_rw_ports + OPTS.num_w_ports + OPTS.num_r_ports
         OPTS.bitcell = "bitcell_{}port".format(OPTS.num_ports)
         OPTS.dummy_bitcell = "dummy_" + OPTS.bitcell
         OPTS.replica_bitcell = "replica_" + OPTS.bitcell
@@ -352,9 +360,16 @@ def read_config(config_file, is_unit_test=False):
     # Import the configuration file of which modules to use
     debug.info(1, "Configuration file is " + config_file + ".py")
     try:
-        config = importlib.import_module(module_name)
-    except ImportError:
-        debug.error("Unable to read configuration file: {0}".format(config_file), 2)
+        config = _config_modules.get(OPTS.config_file)
+        if config is None:
+            # Load the requested file without consulting Python's module-name cache.
+            spec = importlib.util.spec_from_file_location(module_name, OPTS.config_file)
+            config = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(config)
+            _config_modules[OPTS.config_file] = config
+    except (ImportError, OSError, SyntaxError) as error:
+        debug.error("Unable to read configuration file: {0}: {1}".format(
+            OPTS.config_file, error), 2)
 
     OPTS.overridden = {}
     config_keys = set(config.__dict__)
@@ -554,6 +569,12 @@ def set_default_corner():
     # Load scales are fanout multiples of the default spice input slew
     if (OPTS.slew_scales == ""):
         OPTS.slew_scales = [0.25, 1, 8]
+
+    # Lower bound for the max_transition emitted on input pins. A
+    # characterized slew range can be far tighter than the technology can
+    # actually drive, which produces a limit downstream STA rejects.
+    if (OPTS.max_transition == ""):
+        OPTS.max_transition = 0.5
 
 
 def import_tech():

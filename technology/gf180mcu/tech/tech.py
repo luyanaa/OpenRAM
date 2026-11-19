@@ -251,6 +251,9 @@ GDS={}
 #calculate the size of a user unit in meters, divide the second number
 #by the first."
 GDS["unit"]=(0.001,1e-6)
+
+# LEF database units per micron
+lef_units = 2000
 # default label zoom
 GDS["zoom"] = 0.5
 
@@ -302,6 +305,17 @@ preferred_directions = {"poly": "V",
 ###################################################
 # Use M3/M4
 power_grid = m3_stack
+
+# Ring around the replica array; the bitcell rails run horizontally, so the
+# array is tapped from the left and right ring sides.
+power_ring_top = True
+power_ring_bottom = True
+power_ring_left = True
+power_ring_right = True
+connect_ring_top = []
+connect_ring_bottom = []
+connect_ring_left = ['vdd', 'gnd']
+connect_ring_right = ['vdd', 'gnd']
 
 ###################################################
 ##GDS Layer Map

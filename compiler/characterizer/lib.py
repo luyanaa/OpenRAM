@@ -281,7 +281,7 @@ class lib:
         self.lib.write("    default_input_pin_cap    : 1.0 ;\n")
         self.lib.write("    default_inout_pin_cap    : 1.0 ;\n")
         self.lib.write("    default_output_pin_cap   : 0.0 ;\n")
-        self.lib.write("    default_max_transition   : 0.5 ;\n")
+        self.lib.write("    default_max_transition   : {} ;\n".format(OPTS.max_transition))
         self.lib.write("    default_fanout_load      : 1.0 ;\n")
         self.lib.write("    default_max_fanout   : 4.0 ;\n")
         self.lib.write("    default_connection_class : universal ;\n\n")
@@ -367,8 +367,8 @@ class lib:
         self.lib.write("    type (data){\n")
         self.lib.write("    base_type : array;\n")
         self.lib.write("    data_type : bit;\n")
-        self.lib.write("    bit_width : {0};\n".format(self.sram.word_size))
-        self.lib.write("    bit_from : {0};\n".format(self.sram.word_size - 1))
+        self.lib.write("    bit_width : {0};\n".format(self.sram.word_size + self.sram.num_spare_cols))
+        self.lib.write("    bit_from : {0};\n".format(self.sram.word_size + self.sram.num_spare_cols - 1))
         self.lib.write("    bit_to : 0;\n")
         self.lib.write("    }\n\n")
 
@@ -432,7 +432,7 @@ class lib:
         self.lib.write("        }\n")
 
 
-        self.lib.write("        pin(dout{0}[{1}:0]){{\n".format(read_port,self.sram.word_size-1))
+        self.lib.write("        pin(dout{0}[{1}:0]){{\n".format(read_port,self.sram.word_size + self.sram.num_spare_cols - 1))
         self.lib.write("        timing(){ \n")
         self.lib.write("            timing_sense : non_unate; \n")
         self.lib.write("            related_pin : \"clk{0}\"; \n".format(read_port))
@@ -465,7 +465,7 @@ class lib:
         self.lib.write("            address : addr{0}; \n".format(write_port))
         self.lib.write("            clocked_on  : clk{0}; \n".format(write_port))
         self.lib.write("        }\n")
-        self.lib.write("        pin(din{0}[{1}:0]){{\n".format(write_port,self.sram.word_size-1))
+        self.lib.write("        pin(din{0}[{1}:0]){{\n".format(write_port,self.sram.word_size + self.sram.num_spare_cols - 1))
         self.write_FF_setuphold(write_port)
         self.lib.write("        }\n") # pin
         self.lib.write("    }\n") #bus
@@ -484,9 +484,8 @@ class lib:
         self.lib.write("        bus_type  : addr; \n")
         self.lib.write("        direction  : input; \n")
         self.lib.write("        capacitance : {0};  \n".format(tech.spice["dff_in_cap"]/1000))
-        # No per-bus max_transition: the largest characterized input slew is
-        # an artificial limit (tens of ps here) that STA then enforces as a
-        # design-wide max transition.  The SDC is the authority on slews.
+        max_transition = max(OPTS.max_transition, self.slews[-1])
+        self.lib.write("        max_transition       : {0};\n".format(max_transition))
         self.lib.write("        pin(addr{0}[{1}:0])".format(port,self.sram.addr_size-1))
         self.lib.write("{\n")
 
@@ -501,6 +500,8 @@ class lib:
         self.lib.write("        bus_type  : wmask; \n")
         self.lib.write("        direction  : input; \n")
         self.lib.write("        capacitance : {0};  \n".format(tech.spice["dff_in_cap"] / 1000))
+        max_transition = max(OPTS.max_transition, self.slews[-1])
+        self.lib.write("        max_transition       : {0};\n".format(max_transition))
         self.lib.write("        pin(wmask{0}[{1}:0])".format(port, self.sram.num_wmasks - 1))
         self.lib.write("{\n")
 
@@ -514,6 +515,12 @@ class lib:
         ctrl_pin_names = ["csb{0}".format(port)]
         if port in self.readwrite_ports:
             ctrl_pin_names.append("web{0}".format(port))
+        if port in self.write_ports:
+            if self.sram.num_spare_cols == 1:
+                ctrl_pin_names.append("spare_wen{0}".format(port))
+            else:
+                for bit in range(self.sram.num_spare_cols):
+                    ctrl_pin_names.append("spare_wen{0}[{1}]".format(port, bit))
 
         for i in ctrl_pin_names:
             self.lib.write("    pin({0})".format(i))
@@ -649,10 +656,7 @@ class lib:
 
         else:
             self.d = delay(self.sram, self.sp_file, self.corner)
-            if (self.sram.num_spare_rows == 0):
-                probe_address = "1" * self.sram.addr_size
-            else:
-                probe_address = "0" + "1" * (self.sram.addr_size - 1)
+            probe_address = get_probe_address(self.sram)
             probe_data = self.sram.word_size - 1
             char_results = self.d.analyze(probe_address, probe_data, self.load_slews)
 
