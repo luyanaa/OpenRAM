@@ -204,7 +204,7 @@ def write_drc_script(cell_name, gds_name, extract, final_verification, output_pa
       f.write("drc catchup\n")
     f.write("drc check\n")
     f.write('puts "Finished drc check"\n')
-    if OPTS.tech_name == "gf180mcu":
+    if OPTS.tech_name.startswith("gf180mcu"):
         # gf180mcu only: a catchup *after* drc check re-reports phantom tiles
         # on this hierarchy.  Measured on gf180_16x8_pdn (same .mag layout):
         #   catchup; check; count          -> 0
