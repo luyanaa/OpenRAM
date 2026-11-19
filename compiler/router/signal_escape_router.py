@@ -21,9 +21,11 @@ class signal_escape_router(router):
 
         # `router` is the base router class
         router.__init__(self, layers, design, bbox)
-        # Escape stubs inherit the block pin pitch, so the wider track-width
-        # wire leaves only 0.13 um to its neighbour (METn_S_2 wants 0.15).
-        self.min_width_wires = True
+        # icsprout55: escape stubs inherit the block pin pitch, so the wider
+        # track-width wire leaves only 0.13 um to its neighbour and METn_S_2
+        # wants 0.15.  Other technologies keep the track-width wires (gf180mcu
+        # is DRC-clean with them and thinner escape wires regress it).
+        self.min_width_wires = (OPTS.tech_name == "icsprout55")
 
         # New pins are the side supply pins
         self.new_pins = {}
