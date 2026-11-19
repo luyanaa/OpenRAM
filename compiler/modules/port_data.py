@@ -540,19 +540,70 @@ class port_data(design):
 
             wmask_pos = wmask_out_pin.center()
             wdriver_pos = wdriver_en_pin.rc() - vector(self.m2_pitch, 0)
-            mid_pos = vector(wdriver_pos.x, wmask_pos.y)
 
-            # Add driver on mask output
-            self.add_via_stack_center(from_layer=wmask_out_pin.layer,
-                                      to_layer="m1",
-                                      offset=wmask_pos)
-            # Add via for the write driver array's enable input
-            self.add_via_stack_center(from_layer=wdriver_en_pin.layer,
-                                      to_layer="m2",
-                                      offset=wdriver_pos)
+            if OPTS.tech_name.startswith("gf180mcu"):
+                # The gf180mcu write-driver cell carries its bl/br straps over
+                # the full cell height on m2 (the vdd/gnd rails are the only
+                # m1 that crosses the cell).  An m2 drop from the mask output
+                # therefore lands on the last bitline of the byte lane and
+                # shorts wdriver_sel_0/1 to bl_3/bl_7.  The drivers have no m3,
+                # so keep the mask pin on m1 for a short stub, cross on m3 and
+                # re-enter the enable rail through a via stack.
+                m1_drop = 4 * self.m2_pitch
+                m3_top = vector(wmask_pos.x, wmask_pos.y - m1_drop)
+                # Every vertical path through the write driver rows is blocked
+                # (its m1/m2 bitline straps leave no legal channel), so come
+                # down in the free corridor left of the enable rail and enter
+                # the rail from its left end.  The bitlines are already routed
+                # on m3 at their pin columns, so pick a column halfway between
+                # the last bitline to the left and the rail.
+                bitline_xs = []
+                for blbr in ("bl", "br"):
+                    for i in range(self.word_size + self.num_spare_cols):
+                        for p in wdriver_inst.get_pins("{0}_{1}".format(blbr, i)):
+                            bitline_xs.append(p.cx())
+                left_xs = [x for x in bitline_xs if x < wdriver_en_pin.lx()]
+                if left_xs:
+                    corner_x = 0.5 * (max(left_xs) + wdriver_en_pin.lx())
+                else:
+                    corner_x = wdriver_en_pin.lx() - 2 * self.m2_pitch
+                corner = vector(corner_x, wdriver_en_pin.cy())
+                self.add_rect_center(layer="m1",
+                                     offset=vector(wmask_pos.x,
+                                                   wmask_pos.y - 0.5 * m1_drop),
+                                     height=m1_drop + drc["minwidth_m1"])
+                self.add_via_stack_center(from_layer="m1",
+                                          to_layer="m3",
+                                          offset=m3_top)
+                self.add_rect_center(layer="m3",
+                                     offset=vector(0.5 * (m3_top.x + corner.x),
+                                                   m3_top.y),
+                                     width=m3_top.x - corner.x + drc["minwidth_m3"])
+                self.add_rect_center(layer="m3",
+                                     offset=vector(corner.x,
+                                                   0.5 * (m3_top.y + corner.y)),
+                                     height=m3_top.y - corner.y + drc["minwidth_m3"])
+                self.add_via_stack_center(from_layer="m3",
+                                          to_layer="m1",
+                                          offset=corner)
+                self.add_rect_center(layer="m1",
+                                     offset=vector(0.5 * (corner.x + wdriver_en_pin.lx()),
+                                                   corner.y),
+                                     width=wdriver_en_pin.lx() - corner.x + drc["minwidth_m1"])
+            else:
+                mid_pos = vector(wdriver_pos.x, wmask_pos.y)
 
-            # Route between write mask AND array and write driver array
-            self.add_wire(self.m1_stack, [wmask_pos, mid_pos, wdriver_pos])
+                # Add driver on mask output
+                self.add_via_stack_center(from_layer=wmask_out_pin.layer,
+                                          to_layer="m1",
+                                          offset=wmask_pos)
+                # Add via for the write driver array's enable input
+                self.add_via_stack_center(from_layer=wdriver_en_pin.layer,
+                                          to_layer="m2",
+                                          offset=wdriver_pos)
+
+                # Route between write mask AND array and write driver array
+                self.add_wire(self.m1_stack, [wmask_pos, mid_pos, wdriver_pos])
 
     def route_column_mux_to_precharge_array(self, port):
         """ Routing of BL and BR between col mux and precharge array """
