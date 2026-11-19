@@ -19,8 +19,12 @@ class local_bitcell_array(bitcell_base_array):
     This can either be a single aray on its own if there is no hierarchical WL
     or it can be combined into a larger array with hierarchical WL.
     """
-    def __init__(self, rows, cols, rbl=None, left_rbl=None, right_rbl=None, name=""):
-        super().__init__(name=name, rows=rows, cols=cols, column_offset=0)
+    def __init__(self, rows, cols, rbl=None, left_rbl=None, right_rbl=None,
+                 row_offset=0, name=""):
+        # Upstream v1.2.50 made row_offset a required argument of
+        # bitcell_base_array; forward it (0 unless a caller mirrors rows).
+        super().__init__(name=name, rows=rows, cols=cols, column_offset=0,
+                         row_offset=row_offset)
         debug.info(2, "Creating {0} {1}x{2} rbl: {3} left_rbl: {4} right_rbl: {5}".format(name,
                                                                                           rows,
                                                                                           cols,

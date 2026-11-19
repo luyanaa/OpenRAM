@@ -18,7 +18,10 @@ class rom_base_array(bitcell_base_array):
 
     def __init__(self, rows, cols, strap_spacing, bitmap, tap_spacing = 4, name="", bitline_layer="m1", wordline_layer="m2", tap_direction="row", pitch_match=False):
 
-        super().__init__(name=name, rows=rows, cols=cols, column_offset=0)
+        # Upstream v1.2.50 made row_offset a required argument of
+        # bitcell_base_array; the ROM array always starts at row 0.
+        super().__init__(name=name, rows=rows, cols=cols, column_offset=0,
+                         row_offset=0)
 
         self.data = bitmap
         self.tap_direction = tap_direction
