@@ -26,6 +26,9 @@ class supply_router(router):
         self.pin_type = pin_type
         # New pins are the side supply pins
         self.new_pins = {}
+        # Supply routes keep the track width: drawing them at the layer
+        # minimum leaves small holes between the ring straps that the reduced
+        # top-interconnect view reports as MET4_min_hole.
 
     def route(self, vdd_name="vdd", gnd_name="gnd"):
         """ Route the given pins in the given order. """
@@ -165,23 +168,29 @@ class supply_router(router):
             fake_pins = []
             fake = self.track_wire
             count = 2
+            # Keep the targets flush with the strap's *inner* edge.  A target
+            # in the middle lets the router run in the gap between the two
+            # rings, 0.13 um from the strap, which violates METn_S_2 (0.15)
+            # because the ring is wide metal.
             if vertical:
                 step = shape_height / (count + 1)
+                inner_x = offset.x if inner else offset.x + shape_width - fake
                 for i in range(count):
                     cy = offset.y + step * (i + 1)
                     fake_pins.append(graph_shape(
                         pin_name,
-                        [vector(offset.x, cy - fake / 2),
-                         vector(offset.x + shape_width, cy + fake / 2)],
+                        [vector(inner_x, cy - fake / 2),
+                         vector(inner_x + fake, cy + fake / 2)],
                         layer))
             else:
                 step = shape_width / (count + 1)
+                inner_y = offset.y if inner else offset.y + shape_height - fake
                 for i in range(count):
                     cx = offset.x + step * (i + 1)
                     fake_pins.append(graph_shape(
                         pin_name,
-                        [vector(cx - fake / 2, offset.y),
-                         vector(cx + fake / 2, offset.y + shape_height)],
+                        [vector(cx - fake / 2, inner_y),
+                         vector(cx + fake / 2, inner_y + fake)],
                         layer))
             return graph_shape(name=pin_name,
                                rect=[pin.ll(), pin.ur()],

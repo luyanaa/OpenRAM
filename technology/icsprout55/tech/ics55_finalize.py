@@ -588,6 +588,25 @@ def finalize_gds(in_gds, out_gds, top=None, lib_cells=(), report=print, margin=0
             inserted.add(okey)
             n_direct += 1
 
+        # Enclosed gaps can exist only in the reduced view (a child-cell strap
+        # fills them in the full view) and then trip METn_min_hole.  Fill them
+        # when the full view really has metal there, so the patch cannot join
+        # two different nets.
+        direct_view = kdb.Region(top_cell.shapes(li))
+        direct_view.merge()
+        hole_fill = kdb.Region()
+        for hole in direct_view.holes().each():
+            if hole.area() > um2(HOLE_MAX):
+                continue
+            piece = kdb.Region()
+            piece.insert(hole)
+            if (piece - full).area() > 0:
+                continue
+            hole_fill += piece
+        if not hole_fill.is_empty():
+            top_cell.shapes(li).insert(hole_fill)
+            n_direct += hole_fill.count()
+
     # OpenRAM writes its abstract boundary on 351/12.  The ics55 DRC deck
     # reads (351,12) as CHIPBLK (the chip outline) and then applies the
     # chip-edge enclosure rules to every macro and leaf cell.  A macro is not

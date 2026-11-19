@@ -647,7 +647,15 @@ class router(router_tech):
             # width would be off-centre.  Centre the rect on the same point
             # with a half-width that matches the width actually used.
             layer_min_width = self.get_layer_width(start.z)
-            wire_width = max(self.track_wire, layer_min_width)
+            # `min_width_wires` draws every wire at the layer minimum instead
+            # of the (wider) track width.  The escape router needs this: its
+            # stubs inherit the block pin pitch (0.30 um), so 0.17-wide wires
+            # leave 0.13 um gaps, which violates METn_S_2 (0.15 um for wide
+            # metal).  0.10-wide wires leave 0.20 um and stay legal.
+            if getattr(self, "min_width_wires", False) and layer_min_width:
+                wire_width = layer_min_width
+            else:
+                wire_width = max(self.track_wire, layer_min_width)
             half = snap(wire_width / 2)
             offset = vector(offset.x - half, offset.y - half)
             if direction == (1, 1): # Via
@@ -663,7 +671,10 @@ class router(router_tech):
                 # lookup through the design-rule table is not reliable here
                 # (the rule may be a callable and the key may be absent).
                 min_width = self.get_layer_width(start.z)
-                wire_width = max(self.track_wire, min_width)
+                if getattr(self, "min_width_wires", False) and min_width:
+                    wire_width = min_width
+                else:
+                    wire_width = max(self.track_wire, min_width)
                 wire = self.design.add_rect(layer=self.get_layer(start.z),
                                             offset=offset,
                                             width=abs(diff.x) + wire_width,
