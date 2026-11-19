@@ -1268,8 +1268,16 @@ class sram_1bank(design, verilog, lef):
             # supply rail.  Both endpoints are clear on m2, so route the net
             # there instead (see the technology's layer_properties).
             if port == 0 and getattr(layer_props.bank, "col_addr_m2_route", False):
-                for bank_pin, dff_pin in route_map:
-                    self.route_col_addr_m2(bank_pin, dff_pin, offset)
+                # One m2 row per net.  With words_per_row > 1 there is more
+                # than one column-address bit and sharing the row merges them
+                # (LVS paired bank addr0_0 with addr0_1).  The net whose dff
+                # output is left-most takes the lowest row so that no
+                # horizontal crosses another net's vertical.
+                ordered = sorted(route_map, key=lambda pair: pair[1].cx())
+                for index, (bank_pin, dff_pin) in enumerate(ordered):
+                    row_y = offset.y - (len(ordered) - 1 - index) * self.m2_pitch
+                    self.route_col_addr_m2(bank_pin, dff_pin,
+                                           vector(offset.x, row_y))
             elif port == 0:
                 cr = channel_route(netlist=route_map,
                                    offset=offset,
