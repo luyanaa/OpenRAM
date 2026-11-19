@@ -251,6 +251,20 @@ class capped_replica_bitcell_array(bitcell_base_array):
 
 
         self.route_power_ring(self.supply_stack[2], self.supply_stack[0])
+        # Keep the wordline tie column clear of the ring's nearest rail pad:
+        # both pads are 0.38 um wide and the technology tie column sits 0.52 um
+        # from the rail, leaving a 0.14 um m2 gap (M2.2a).  Shift the tie column
+        # outward by the missing amount (it only lengthens the arm that reaches
+        # the poly band).
+        self._tie_shift = 0.0
+        tie = getattr(self.cell, "wordline_tie", None)
+        if tie and OPTS.tech_name.startswith("gf180mcu"):
+            rail = min(self.left_vdd_x_center, self.left_gnd_x_center)
+            tie_pad_right = tie["x_center"] + tie["half"]["pad"]
+            gap = (rail - 0.19) - tie_pad_right
+            need = drc("m2_to_m2")
+            if 0 < gap < need:
+                self._tie_shift = need - gap
         self._strap_routing_endpoints = []
         self.route_supplies()
 
@@ -526,7 +540,7 @@ class capped_replica_bitcell_array(bitcell_base_array):
             pad0, pad1 = span(tie["pad_y"])
             via1_0, via1_1 = span(tie["via1_y"])
 
-            xc = ox + tie["x_center"]
+            xc = ox + tie["x_center"] - getattr(self, "_tie_shift", 0.0)
             # Right end of the tie column: overshoot the poly band's left edge
             # so the arm merges with the band and the m3 landing merges with
             # the strap.
