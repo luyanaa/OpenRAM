@@ -371,8 +371,17 @@ class router(router_tech):
                 # inside a ring pin.  The ROM ring pins span the whole macro,
                 # so the old test discarded every routed wire and the two
                 # supplies were then routed on top of each other.
-                if shape_list is None and new_shape.core_matches_any(self.all_pins):
-                    continue
+                if shape_list is None:
+                    # icsprout55: containment also discarded every foreign
+                    # shape that happened to lie inside a wide pin, so the
+                    # router drew supply wires over them.  Other technologies
+                    # keep the historical containment skip (it shapes their
+                    # routing topology).
+                    if OPTS.tech_name == "icsprout55":
+                        if new_shape.core_matches_any(self.all_pins):
+                            continue
+                    elif new_shape.core_contained_by_any(self.all_pins):
+                        continue
                 if new_shape.core_contained_by_any(self.blockages.query(new_shape.rect)):
                     continue
                 # Merge previous blockages into this one if possible
@@ -393,14 +402,17 @@ class router(router_tech):
         # via on a *neighbouring* via layer is just as bad: landing a via3 on
         # m3 where the block already has a via2 joins this net to whatever is
         # below it (the icsprout55 ROM lost addr0[5] to the substrate this
-        # way).  Every via layer is therefore read as a via blockage.
+        # way).  Every via layer is therefore read as a via blockage - but only
+        # on icsprout55: on gf180mcu the extra blockages change the supply
+        # routing topology and cost a well tie.
+        multi_via = (shape_list is None and OPTS.tech_name == "icsprout55")
         if shape_list is None:
             via_lpps = []
             for name, lpp in layer.items():
                 if re.match(r"^via\d+$", str(name)) and lpp:
                     via_lpps.append(lpp)
             shapes = []
-            for lpp in via_lpps or [via_lpp]:
+            for lpp in (via_lpps if multi_via else [via_lpp]):
                 for rect in self.get_all_shapes(lpp):
                     shapes.append(rect)
         else:
@@ -431,11 +443,12 @@ class router(router_tech):
         # the m2 gnd rail, so they were renamed "gnd" and the supply router
         # was then free to route over the escape wires.
         routing_lpps = (self.horiz_lpp, self.vert_lpp)
+        guard_layers = (OPTS.tech_name == "icsprout55")
         for via in self.vias:
             via_core = via.get_core()
             for pin in self.all_pins:
                 pin_core = pin.get_core()
-                if pin_core.lpp not in routing_lpps:
+                if guard_layers and pin_core.lpp not in routing_lpps:
                     continue
                 via_core.lpp = pin_core.lpp
                 # If the via overlaps a pin, change its name
@@ -653,10 +666,16 @@ class router(router_tech):
             # leave 0.13 um gaps, which violates METn_S_2 (0.15 um for wide
             # metal).  0.10-wide wires leave 0.20 um and stay legal.
             if getattr(self, "min_width_wires", False) and layer_min_width:
+                # icsprout55 (min-width escape wires): centre the rect on the
+                # width actually drawn, otherwise the wire sits off-centre.
                 wire_width = layer_min_width
+                half = snap(wire_width / 2)
             else:
+                # Other technologies keep the historical offset: shifting it
+                # by (minwidth - track_wire)/2 moves every route and breaks
+                # gf180mcu well ties.
                 wire_width = max(self.track_wire, layer_min_width)
-            half = snap(wire_width / 2)
+                half = self.half_wire
             offset = vector(offset.x - half, offset.y - half)
             if direction == (1, 1): # Via
                 offset = vector(start.x, start.y)

@@ -48,7 +48,12 @@ class supply_router(router):
         # Find blockages and vias
         self.find_blockages()
         self.find_vias()
-        self.prepare_foreign_metal(self.layers[0])
+        # icsprout55-only guard: its macro rings sit on the same layers as the
+        # block supplies, so a via can land on the other net's metal.  Other
+        # technologies keep their historical via placement (on gf180mcu the
+        # guard stopped a well tie and left a pfet bulk on a floating well).
+        if OPTS.tech_name == "icsprout55":
+            self.prepare_foreign_metal(self.layers[0])
 
         # Convert blockages and vias if they overlap a pin
         self.convert_vias()
@@ -172,9 +177,11 @@ class supply_router(router):
             # in the middle lets the router run in the gap between the two
             # rings, 0.13 um from the strap, which violates METn_S_2 (0.15)
             # because the ring is wide metal.
+            flush = (OPTS.tech_name == "icsprout55")
             if vertical:
                 step = shape_height / (count + 1)
-                inner_x = offset.x if inner else offset.x + shape_width - fake
+                inner_x = (offset.x if inner else offset.x + shape_width - fake) \
+                    if flush else offset.x + 0.5 * (shape_width - fake)
                 for i in range(count):
                     cy = offset.y + step * (i + 1)
                     fake_pins.append(graph_shape(
@@ -184,7 +191,8 @@ class supply_router(router):
                         layer))
             else:
                 step = shape_width / (count + 1)
-                inner_y = offset.y if inner else offset.y + shape_height - fake
+                inner_y = (offset.y if inner else offset.y + shape_height - fake) \
+                    if flush else offset.y + 0.5 * (shape_height - fake)
                 for i in range(count):
                     cx = offset.x + step * (i + 1)
                     fake_pins.append(graph_shape(

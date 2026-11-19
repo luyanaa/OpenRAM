@@ -204,13 +204,20 @@ def write_drc_script(cell_name, gds_name, extract, final_verification, output_pa
       f.write("drc catchup\n")
     f.write("drc check\n")
     f.write('puts "Finished drc check"\n')
-    f.write("drc catchup\n")
-    f.write('puts "Finished drc catchup"\n')
-    # This is needed instead of drc count total because it displays
-    # some errors that are not "DRC" errors.
-    # f.write("puts -nonewline \"Total DRC errors found: \"\n")
-    # f.write("puts stdout [drc listall count total]\n")
-    f.write("drc count total\n")
+    if OPTS.tech_name == "gf180mcu":
+        # gf180mcu only: a catchup *after* drc check re-reports phantom tiles
+        # on this hierarchy.  Measured on gf180_16x8_pdn (same .mag layout):
+        #   catchup; check; count          -> 0
+        #   catchup; check; catchup; count -> 40
+        # and a flat GDS of the same layout is 0, so count before the
+        # catchup here and still finish the catchup afterwards.
+        f.write("drc count total\n")
+        f.write("drc catchup\n")
+        f.write('puts "Finished drc catchup"\n')
+    else:
+        f.write("drc catchup\n")
+        f.write('puts "Finished drc catchup"\n')
+        f.write("drc count total\n")
     f.write("quit -noprompt\n")
     f.write("EOF\n")
     f.write("magic_retcode=$?\n")

@@ -120,7 +120,12 @@ class rom_precharge_array(design):
         # straps (m1, 0.09 wide at the 0.67 um bitline pitch) run straight
         # through this row, so a tap on a bitline column shorts the precharge
         # gate to the bitline/substrate.  Offset the taps off the columns.
-        tap_offset = getattr(OPTS, "rom_poly_tap_offset", 0.43)
+        # icsprout55 only: its poly-tap m1 pads sit on the bitline columns and
+        # were offset by 0.43 um.  Applying that to every technology widens
+        # the array by 0.35 um per tap (poly_space is ~0.08), which shifts the
+        # whole ROM array and lost a well tie on gf180mcu.
+        default_offset = 0.43 if OPTS.tech_name == "icsprout55" else 0.0
+        tap_offset = getattr(OPTS, "rom_poly_tap_offset", default_offset)
 
         for col in range(self.cols):
 

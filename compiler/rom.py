@@ -158,7 +158,12 @@ class rom():
         # Should also save the provided data file
         start_time = datetime.datetime.now()
         from shutil import copyfile
-        copyfile(OPTS.config_file, OPTS.output_path + OPTS.output_name + '.py')
+        # A config that lives in its own output directory (the work-area
+        # convention) would otherwise raise SameFileError and abort save()
+        # after DRC/LVS already passed.
+        config_dest = OPTS.output_path + OPTS.output_name + '.py'
+        if os.path.abspath(OPTS.config_file) != os.path.abspath(config_dest):
+            copyfile(OPTS.config_file, config_dest)
         os.makedirs(os.path.dirname(OPTS.output_path + self.rom_data), exist_ok=True)
         copyfile(self.rom_data, OPTS.output_path + self.rom_data)
         debug.print_raw("Config: Writing to {0}".format(OPTS.output_path + OPTS.output_name + '.py'))

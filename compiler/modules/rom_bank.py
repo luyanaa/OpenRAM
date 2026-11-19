@@ -371,7 +371,11 @@ class rom_bank(design, rom_verilog, lef):
         # decoder (they interlock).  Its bottom m1 strap used to sit 0.03 um
         # above the row decoder's last address pad and shorted it to the
         # supply strap in LVS; keep a real clearance instead.
-        clearance = getattr(OPTS, "rom_col_decode_clearance", 0.15)
+        # icsprout55 needs the clearance (its column-decode array's m1 strap
+        # otherwise shorts the row decoder's last address pad).  gf180mcu must
+        # keep 0: the shift loses a well tie and its ROM LVS stops matching.
+        default_clearance = 0.15 if OPTS.tech_name == "icsprout55" else 0.0
+        clearance = getattr(OPTS, "rom_col_decode_clearance", default_clearance)
         col_decode_y += clearance
         self.col_decode_offset = vector(self.decode_inst.width - self.col_decode_inst.width, col_decode_y)
         self.col_decode_inst.place(offset=self.col_decode_offset)
