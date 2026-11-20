@@ -263,7 +263,8 @@ class bank(design):
 
         # LOWER RIGHT QUADRANT
         # To the right of the bitcell array
-        x_offset = self.bitcell_array_right + self.port_address[port].width + self.decoder_gap
+        x_offset = (self.bitcell_array_right + self.port_address[port].width
+                    + self.decoder_gap + self.wl_bus_width)
         self.port_address_offsets[port] = vector(x_offset,
                                                  self.main_bitcell_array_bottom)
 
@@ -306,8 +307,9 @@ class bank(design):
         # Put the third port's row decoder on the right, below port 1.
         # The port-2 data row stays on the bottom; keeping the address
         # decoder out of the port-0 data row lets addr2 escape to the right.
+        # The extra `wl_bus_width` is the channel its wordlines climb in.
         x_offset = (self.bitcell_array_right + self.port_address[port].width
-                    + self.decoder_gap)
+                    + self.decoder_gap + self.wl_bus_width)
         y_offset = (self.port_address_offsets[1].y
                     - self.port_address[port].height - self.decoder_gap)
         self.port_address_offsets[port] = vector(x_offset, y_offset)
@@ -396,6 +398,26 @@ class bank(design):
         self.decoder_gap = max(2 * drc("pwell_to_nwell") + drc("nwell_enclose_active"),
                                2 * self.m2_pitch,
                                drc("nwell_to_nwell"))
+
+        # A third port needs a third row decoder, but only two decoder columns
+        # can be row-aligned with the bitcell array.  The odd decoder sits a
+        # full decoder height below the array, so its wordlines have to climb
+        # past the array in a channel beside it.  Reserve room for one m1 trunk
+        # per wordline (plus the m2 driver legs' via pads) between the array
+        # and that decoder column; without it the trunks end up inside the
+        # array and short the wordlines to the bitcell vdd/gnd rails.
+        #
+        # 0.60 is the clearance from the array edge to the first trunk (m1
+        # spacing plus the via pad's overhang), 0.27 the trunk pitch (a 0.17
+        # via pad next to a 0.10 m2 wire with 0.12 spacing), 0.45 the margin
+        # before the decoder column.
+        self.wl_bus_width = 0
+        if len(self.all_ports) >= 3:
+            self.wl_bus_x0 = 0.60
+            self.wl_bus_pitch = 0.27
+            self.wl_bus_width = (self.wl_bus_x0
+                                 + self.num_rows * self.wl_bus_pitch
+                                 + 0.45)
 
     def add_modules(self):
         """ Add all the modules using the class loader """
@@ -1000,8 +1022,21 @@ class bank(design):
             rbl_wl_name = self.bitcell_array.get_rbl_wordline_names(port)[port]
         else:
             rbl_wl_name = None
+        array_names = self.bitcell_array.get_wordline_names(port) + [rbl_wl_name]
+
+        # With three ports the right-hand decoder column is pushed out by the
+        # wordline bus channel.  The port whose decoder could not be placed
+        # beside the array routes through that channel; the port above it has
+        # to keep its jogs off m1 so the bus stubs can cross them.
+        if self.wl_bus_width > 0 and port > 0:
+            if port == len(self.all_ports) - 1:
+                self.route_port_address_wl_bus(port, driver_names, array_names)
+            else:
+                self.route_port_address_m2_channel(port, driver_names, array_names)
+            return
+
         # rbl_wl in next line will be ignored by zip once driver_names is exhausted in the no rbl case
-        for (driver_name, array_name) in zip(driver_names, self.bitcell_array.get_wordline_names(port) + [rbl_wl_name]):
+        for (driver_name, array_name) in zip(driver_names, array_names):
             # The mid guarantees we exit the input cell to the right.
             driver_wl_pin = self.port_address_inst[port].get_pin(driver_name)
             if side == "left":
@@ -1046,6 +1081,67 @@ class bank(design):
                     self.add_path(rl, [mid1, mid2, bitcell_wl_pos])
             else:
                 self.add_path(bitcell_wl_pin.layer, [driver_wl_pos, mid1, mid2, bitcell_wl_pos])
+
+    def route_port_address_wl_bus(self, port, driver_names, array_names):
+        """Route a row decoder that sits below the array through the wl bus.
+
+        The decoder's wordline pins are a full decoder height below their
+        bitcell stripes, so every wordline needs a vertical run that must stay
+        out of the array.  Each net gets:
+
+          * an m2 leg from the decoder pin to its trunk column,
+          * an m1 trunk in the channel between the array and the decoders,
+          * a short m1 stub onto the end of its bitcell wordline stripe.
+
+        Trunks are ordered left-to-right with the wordline index, so a stub
+        only crosses trunks whose nets have already terminated at a lower
+        stripe; the m2 legs may cross the m1 trunks freely.
+        """
+
+        array_right = self.bitcell_array_inst.rx()
+        for index, (driver_name, array_name) in enumerate(zip(driver_names, array_names)):
+            if array_name is None:
+                continue
+            driver_pin = self.port_address_inst[port].get_pin(driver_name)
+            wl_pin = self.bitcell_array_inst.get_pin(array_name)
+
+            driver_pos = driver_pin.center()
+            stripe_end = wl_pin.rc()
+            trunk_x = array_right + self.wl_bus_x0 + index * self.wl_bus_pitch
+            trunk_bottom = vector(trunk_x, driver_pos.y)
+            trunk_top = vector(trunk_x, stripe_end.y)
+
+            self.add_via_center(layers=self.m1_stack, offset=driver_pos)
+            self.add_path("m2", [driver_pos, trunk_bottom])
+            self.add_via_center(layers=self.m1_stack, offset=trunk_bottom)
+            self.add_path("m1", [trunk_bottom, trunk_top, stripe_end])
+
+    def route_port_address_m2_channel(self, port, driver_names, array_names):
+        """Route a row-aligned decoder with its jogs on m2.
+
+        The rows line up with the bitcell stripes, so only a short jog is
+        needed beside the array.  Keep that jog (and the horizontal leg that
+        reaches the channel) on m2: the wordline-bus stubs of the port below
+        run across the same channel on m1, so an m1 jog here would collide
+        with whichever stub happens to land on the same row.
+        """
+
+        channel_x = self.bitcell_array_inst.rx() + 0.30
+        for (driver_name, array_name) in zip(driver_names, array_names):
+            if array_name is None:
+                continue
+            driver_pin = self.port_address_inst[port].get_pin(driver_name)
+            wl_pin = self.bitcell_array_inst.get_pin(array_name)
+
+            driver_pos = driver_pin.center()
+            stripe_end = wl_pin.rc()
+            channel_bottom = vector(channel_x, driver_pos.y)
+            channel_top = vector(channel_x, stripe_end.y)
+
+            self.add_via_center(layers=self.m1_stack, offset=driver_pos)
+            self.add_path("m2", [driver_pos, channel_bottom, channel_top])
+            self.add_via_center(layers=self.m1_stack, offset=channel_top)
+            self.add_path("m1", [channel_top, stripe_end])
 
     def route_port_address_right(self, port):
         """ Connecting Wordline driver output to Bitcell WL connection  """
