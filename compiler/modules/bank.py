@@ -1185,6 +1185,12 @@ class bank(design):
         for (control_signal, pin) in connection:
             control_pin = self.bus_pins[port][control_signal]
             control_pos = vector(control_pin.cx(), pin.cy())
+            if OPTS.tech_name.startswith("gf180mcu"):
+                # The top-level supply router punches its m2 via on the bank's
+                # supply pin a few unit slivers from this control-signal pad
+                # (M2.2a).  Jog the stack along y; the path to the signal pin is
+                # still drawn on the pin's own layer.
+                control_pos = control_pos + vector(0, 0.45)
             # If the y doesn't overlap the bus, add a segment
             if pin.cy() < control_pin.by():
                 self.add_path("m2", [control_pos, control_pin.bc()])
